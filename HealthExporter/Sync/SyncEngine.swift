@@ -1,0 +1,352 @@
+import Foundation
+import HealthKit
+import UIKit
+
+/// Orchestrates read → normalize → spool → deliver.
+///
+/// Design notes worth keeping in mind when changing this file:
+///
+/// * Paged anchored queries do both the historical backfill *and* incremental
+///   sync. Starting from a nil anchor walks the entire store in insertion order,
+///   which produces the history and leaves the anchor correctly positioned. One
+///   mechanism, no cutover, no possibility of a gap between the two.
+/// * The anchor is persisted only after the page has been written to the spool.
+/// * Records older than `backfillStart` are read but not emitted, so the anchor
+///   still advances over ancient data without paying to normalize and ship it.
+@MainActor
+final class SyncEngine: ObservableObject {
+
+    enum Phase: Equatable {
+        case idle
+        case waitingForUnlock
+        case syncing(metric: String, progress: Int, total: Int)
+        case delivering(remaining: Int)
+        case failed(String)
+
+        var isRunning: Bool {
+            switch self {
+            case .syncing, .delivering: return true
+            case .idle, .failed, .waitingForUnlock: return false
+            }
+        }
+    }
+
+    struct Settings: Codable {
+        /// History cutoff. Defaulting to everything is tempting but a decade of
+        /// per-second heart-rate data is a slow first run for little benefit.
+        var backfillStartDate: Date = Calendar.current.date(byAdding: .year, value: -2, to: Date()) ?? Date()
+        var pageSize: Int = 2_000
+        /// Days of daily statistics to re-emit each run. Statistic IDs are
+        /// deterministic, so overlap is a harmless upsert and covers late-arriving
+        /// samples that change a past day's total.
+        var statisticsLookbackDays: Int = 7
+        var sink = SinkConfiguration()
+        var lastFullSyncAt: Date?
+    }
+
+    @Published private(set) var phase: Phase = .idle
+    @Published private(set) var lastSummary: String?
+    @Published private(set) var pendingBatches: Int = 0
+    @Published var settings: Settings {
+        didSet { settingsStore.mutate { $0 = settings } }
+    }
+
+    private let settingsStore = StateStore<Settings>(filename: "sync-settings.json", fallback: Settings())
+    private let authorization: HealthAuthorization
+    private let reader: HealthReader
+    private var isSyncing = false
+
+    init(authorization: HealthAuthorization) {
+        self.authorization = authorization
+        self.reader = HealthReader(healthStore: authorization.healthStore)
+        self.settings = settingsStore.value
+        self.pendingBatches = Outbox.shared.pendingCount
+    }
+
+    /// Metrics worth a deduplicated daily rollup. Deliberately a short list: the
+    /// unit must be known ahead of the query, and these are the numbers most
+    /// likely to drive a workflow.
+    private static let statisticsMetrics = [
+        "StepCount", "DistanceWalkingRunning", "DistanceCycling", "ActiveEnergyBurned",
+        "BasalEnergyBurned", "FlightsClimbed", "AppleExerciseTime", "AppleStandTime",
+        "RestingHeartRate", "HeartRateVariabilitySDNN", "BodyMass", "OxygenSaturation",
+        "RespiratoryRate", "VO2Max", "DietaryEnergyConsumed", "DietaryWater"
+    ]
+
+    // MARK: - Entry points
+
+    /// Full pass over every enabled type. Safe to call repeatedly; overlapping
+    /// invocations are collapsed.
+    func syncAll(reason: String) async {
+        guard !isSyncing else {
+            Log.shared.debug("sync", "Sync already running; skipping \(reason)")
+            return
+        }
+        guard authorization.isAvailable else {
+            phase = .failed("HealthKit unavailable")
+            return
+        }
+        guard UIApplication.shared.isProtectedDataAvailable else {
+            // HealthKit is encrypted while locked. Not an error — just not now.
+            phase = .waitingForUnlock
+            Log.shared.info("sync", "Deferred \(reason): device locked, HealthKit unreadable")
+            return
+        }
+
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let types = Array(authorization.enabledSampleTypes).sorted { $0.identifier < $1.identifier }
+        guard !types.isEmpty else {
+            phase = .failed("No metric groups enabled")
+            return
+        }
+
+        Log.shared.info("sync", "Starting sync (\(reason)) over \(types.count) types")
+        let started = Date()
+        var totalEmitted = 0
+        var failures = 0
+
+        for (index, type) in types.enumerated() {
+            phase = .syncing(metric: type.identifier.healthKitSlug,
+                             progress: index + 1,
+                             total: types.count)
+            do {
+                totalEmitted += try await drain(type: type)
+            } catch let error as HealthReader.ReadError {
+                if case .protectedDataUnavailable = error {
+                    phase = .waitingForUnlock
+                    Log.shared.warn("sync", "Device locked mid-sync; stopping cleanly")
+                    break
+                }
+                failures += 1
+                AnchorStore.shared.recordError(error.localizedDescription, for: type.identifier)
+                Log.shared.error("sync", "\(type.identifier): \(error.localizedDescription)")
+            } catch {
+                failures += 1
+                AnchorStore.shared.recordError(error.localizedDescription, for: type.identifier)
+            }
+        }
+
+        totalEmitted += await syncStatistics()
+        totalEmitted += emitCharacteristicsIfNeeded()
+
+        await deliverPending()
+
+        settings.lastFullSyncAt = Date()
+        let elapsed = Int(Date().timeIntervalSince(started))
+        lastSummary = "\(totalEmitted) records in \(elapsed)s" + (failures > 0 ? ", \(failures) failed" : "")
+        pendingBatches = Outbox.shared.pendingCount
+        if case .waitingForUnlock = phase {} else { phase = .idle }
+        Log.shared.info("sync", "Finished: \(lastSummary ?? "")")
+        Outbox.shared.pruneArchive()
+    }
+
+    /// Only the types an observer flagged. Used on background wake so a nudge
+    /// about step count doesn't walk all 170 types.
+    func syncDirtyTypes() async {
+        let dirty = AnchorStore.shared.dirtyTypes
+        guard !dirty.isEmpty else { return }
+        let types = authorization.enabledSampleTypes.filter { dirty.contains($0.identifier) }
+        guard !types.isEmpty else { return }
+
+        guard UIApplication.shared.isProtectedDataAvailable else {
+            Log.shared.info("sync", "Dirty-type sync deferred: device locked")
+            return
+        }
+
+        Log.shared.info("sync", "Draining \(types.count) flagged type(s)")
+        var emitted = 0
+        for type in types {
+            do { emitted += try await drain(type: type) } catch {
+                AnchorStore.shared.recordError(error.localizedDescription, for: type.identifier)
+            }
+        }
+        await deliverPending()
+        pendingBatches = Outbox.shared.pendingCount
+        Log.shared.info("sync", "Flagged drain emitted \(emitted) records")
+    }
+
+    // MARK: - Per-type drain
+
+    /// Pages through everything new for one type. Returns records emitted.
+    private func drain(type: HKSampleType) async throws -> Int {
+        let identifier = type.identifier
+        var anchor = AnchorStore.shared.anchor(for: identifier)
+        var emitted = 0
+        var pages = 0
+        let cutoff = settings.backfillStartDate
+
+        while true {
+            let page = try await reader.anchoredPage(type: type,
+                                                     anchor: anchor,
+                                                     limit: settings.pageSize)
+            var records: [HealthRecord] = []
+            var newestEnd: Date?
+
+            for sample in page.added {
+                // Read but don't emit pre-cutoff samples: the anchor still
+                // advances past them, so history is consumed without paying to
+                // normalize and ship data the user didn't ask for.
+                guard sample.endDate >= cutoff else { continue }
+                if let record = Normalizer.record(from: sample) {
+                    records.append(record)
+                    if newestEnd == nil || sample.endDate > (newestEnd ?? .distantPast) {
+                        newestEnd = sample.endDate
+                    }
+                }
+            }
+            // Tombstones carry no type or date, only a UUID. Emitting them is
+            // what keeps the destination from diverging permanently.
+            for deleted in page.deleted {
+                records.append(HealthRecord.deletion(uuid: deleted.uuid))
+            }
+
+            if !records.isEmpty {
+                Outbox.shared.write(records)
+                emitted += records.count
+            }
+
+            // Anchor advances only now that the page is durably on disk. Doing
+            // this earlier turns any failure into silent, undetectable data loss.
+            AnchorStore.shared.setAnchor(page.newAnchor,
+                                         for: identifier,
+                                         lastSampleEnd: newestEnd,
+                                         added: records.count)
+            anchor = page.newAnchor
+            pages += 1
+
+            guard page.likelyHasMore else { break }
+            guard pages < 500 else {
+                Log.shared.warn("sync", "\(identifier): stopped after \(pages) pages; will resume next run")
+                break
+            }
+            // Yield so a long backfill doesn't starve the main actor.
+            await Task.yield()
+        }
+
+        if pages > 1 {
+            Log.shared.info("sync", "\(identifier.healthKitSlug): \(emitted) records over \(pages) pages")
+        }
+        return emitted
+    }
+
+    // MARK: - Statistics
+
+    private func syncStatistics() async -> Int {
+        let end = Date()
+        let start = Calendar.current.date(byAdding: .day,
+                                          value: -settings.statisticsLookbackDays,
+                                          to: end) ?? end
+        var emitted: [HealthRecord] = []
+
+        for name in SyncEngine.statisticsMetrics {
+            guard let type = HKObjectType.quantityType(
+                forIdentifier: MetricCatalog.quantityIdentifier(name)
+            ) else { continue }
+            guard let unit = UnitResolver.shared.staticUnit(for: type) else { continue }
+
+            do {
+                let stats = try await reader.dailyStatistics(type: type, from: start, to: end)
+                for stat in stats {
+                    if let record = Normalizer.statisticRecord(stat, unit: unit) {
+                        emitted.append(record)
+                    }
+                }
+            } catch {
+                Log.shared.debug("stats", "\(name): \(error.localizedDescription)")
+            }
+        }
+
+        guard !emitted.isEmpty else { return 0 }
+        Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
+        Log.shared.info("stats", "Emitted \(emitted.count) daily rollups")
+        return emitted.count
+    }
+
+    // MARK: - Characteristics
+
+    /// Wrapped in a struct rather than stored as a bare `Date?`: a top-level
+    /// optional round-trips through JSON awkwardly.
+    private struct CharacteristicsState: Codable {
+        var lastEmittedAt: Date?
+    }
+
+    private let characteristicsStore = StateStore<CharacteristicsState>(
+        filename: "characteristics.json",
+        fallback: CharacteristicsState()
+    )
+
+    /// Static profile data — re-emitted monthly rather than every sync, since it
+    /// changes approximately never.
+    private func emitCharacteristicsIfNeeded() -> Int {
+        let last = characteristicsStore.value.lastEmittedAt ?? .distantPast
+        guard Date().timeIntervalSince(last) > 30 * 86_400 else { return 0 }
+        let records = reader.characteristics()
+        guard !records.isEmpty else { return 0 }
+        Outbox.shared.write(records)
+        characteristicsStore.mutate { $0.lastEmittedAt = Date() }
+        return records.count
+    }
+
+    // MARK: - Delivery
+
+    /// Hands pending batches to the configured sink with bounded retries.
+    func deliverPending() async {
+        let sink: ExportSink = settings.sink.isUsable
+            ? HTTPSink(configuration: settings.sink)
+            : FileSink()
+
+        let pending = Outbox.shared.pendingBatches()
+        guard !pending.isEmpty else { return }
+
+        // FileSink is a no-op: the files stay put for the share sheet, which is
+        // exactly the v1 behaviour. Nothing to deliver, nothing to archive.
+        guard !(sink is FileSink) else {
+            pendingBatches = pending.count
+            return
+        }
+
+        for (index, batch) in pending.enumerated() {
+            phase = .delivering(remaining: pending.count - index)
+            var attempt = 0
+            var delay: UInt64 = 2_000_000_000 // 2s
+
+            while attempt < 4 {
+                attempt += 1
+                switch await sink.deliver(batch) {
+                case .success:
+                    Outbox.shared.archive(batch)
+                    Log.shared.info("deliver", "\(batch.displayName) accepted")
+                    attempt = .max
+                case .failure(let error):
+                    let sinkError = error as? SinkError
+                    if sinkError?.isRetryable == true, attempt < 4 {
+                        // Exponential backoff with jitter, capped.
+                        let jitter = UInt64.random(in: 0...500_000_000)
+                        try? await Task.sleep(nanoseconds: min(delay + jitter, 60_000_000_000))
+                        delay *= 2
+                    } else {
+                        // Permanent failure: park it. Looping forever on a 400
+                        // just burns battery and hides the problem.
+                        Log.shared.error("deliver",
+                            "\(batch.displayName) parked: \(error.localizedDescription)")
+                        attempt = .max
+                    }
+                }
+            }
+        }
+        pendingBatches = Outbox.shared.pendingCount
+    }
+
+    // MARK: - Maintenance
+
+    func resetSyncState() {
+        AnchorStore.shared.resetAll()
+        lastSummary = "Anchors cleared"
+    }
+
+    func refreshCounts() {
+        pendingBatches = Outbox.shared.pendingCount
+    }
+}
