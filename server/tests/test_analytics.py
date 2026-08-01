@@ -189,6 +189,47 @@ class AggregationTests(AnalyticsTestCase):
         self.assertEqual(catalog["heart_rate"]["default_agg"], "avg")
 
 
+class DisplayNameTests(TestCase):
+    """`heart_rate_variability_sdnn` is an identifier: right for the wire, for a
+    dictionary key and for a log line, and wrong for a screen."""
+
+    def test_apple_wording_wins_over_a_literal_reading(self):
+        from ingest.analytics import display_name
+
+        self.assertEqual(display_name("oxygen_saturation"), "Blood Oxygen")
+        self.assertEqual(display_name("step_count"), "Steps")
+        self.assertEqual(display_name("body_mass"), "Weight")
+
+    def test_acronyms_are_not_title_cased_into_typos(self):
+        from ingest.analytics import display_name
+
+        self.assertEqual(display_name("vo2_max"), "VO2 Max")
+        self.assertEqual(display_name("heart_rate_variability_sdnn"), "Heart Rate Variability")
+        self.assertEqual(display_name("uv_exposure"), "UV Exposure")
+
+    def test_unknown_slugs_still_read_as_english(self):
+        """There are ~170 of these and new ones arrive with every OS release, so
+        the fallback has to be good rather than a placeholder."""
+        from ingest.analytics import display_name
+
+        self.assertEqual(display_name("six_minute_walk_test_distance"),
+                         "Six Minute Walk Test Distance")
+        self.assertEqual(display_name("number_of_times_fallen"), "Number of Times Fallen")
+        # "Apple" is branding on the identifier, not part of the measurement.
+        self.assertEqual(display_name("apple_move_time"), "Move Time")
+
+    def test_the_catalog_carries_labels(self):
+        from ingest.analytics import metric_catalog
+
+        Record.objects.create(
+            id="dn-1", kind=Record.Kind.QUANTITY,
+            metric="HKQuantityTypeIdentifierHeartRateVariabilitySDNN",
+            metric_slug="heart_rate_variability_sdnn", unit="ms", aggregation="discrete",
+            value=40, start=datetime(2026, 7, 15, 4, tzinfo=dt_timezone.utc),
+        )
+        self.assertEqual(metric_catalog()[0]["label"], "Heart Rate Variability")
+
+
 class ExportTests(AnalyticsTestCase):
     def test_csv_streams_selected_metrics(self):
         self.make(id="s1", value=100)

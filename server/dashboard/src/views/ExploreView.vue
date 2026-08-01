@@ -20,7 +20,12 @@ const search = ref('')
 const current = computed(() => catalog.value.find((m) => m.metric_slug === selected.value))
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return q ? catalog.value.filter((m) => m.metric_slug.includes(q)) : catalog.value
+  if (!q) return catalog.value
+  // Matches the readable name *and* the slug: the list is read by name, but
+  // anything you copy out of a log or an API response is a slug.
+  return catalog.value.filter(
+    (m) => m.metric_slug.includes(q) || (m.label || '').toLowerCase().includes(q)
+  )
 })
 
 async function loadCatalog() {
@@ -69,7 +74,7 @@ loadCatalog().then(load)
       <label for="metric">Metric</label>
       <select id="metric" v-model="selected">
         <option v-for="m in filtered" :key="m.metric_slug" :value="m.metric_slug">
-          {{ m.metric_slug }} ({{ m.count.toLocaleString() }})
+          {{ m.label || m.metric_slug }} ({{ m.count.toLocaleString() }})
         </option>
       </select>
       <input v-model="search" type="text" placeholder="filter metrics…" style="width: 150px" />
@@ -87,7 +92,7 @@ loadCatalog().then(load)
     <ChartCard
       v-if="series"
       :series="series"
-      :title="selected.replace(/_/g, ' ')"
+      :title="current?.label || selected"
       :unit="current?.unit || ''"
       :cumulative="agg === 'sum'"
       :refreshing="loading"

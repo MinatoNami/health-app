@@ -40,6 +40,71 @@ DISCRETE_AGGS = {"avg", "min", "max", "count"}
 SOURCE_ROLLUP = "statistic"
 SOURCE_RAW = "raw_sum"
 
+# Slugs whose plain reading is wrong, awkward, or simply not what Apple calls
+# the same measurement. Everything else is derived, because there are ~170 of
+# them and enumerating that by hand is a list that rots.
+#
+# Mirrors HealthExporter/Core/MetricName.swift. The duplication is deliberate:
+# the phone names types it has never uploaded (the metric picker, the coverage
+# grid), and the server names slugs no build of the app may know about, so
+# neither can be the sole source. Keep the two tables in step.
+_METRIC_NAMES = {
+    "step_count": "Steps",
+    "distance_walking_running": "Walking + Running Distance",
+    "distance_cycling": "Cycling Distance",
+    "distance_swimming": "Swimming Distance",
+    "active_energy_burned": "Active Energy",
+    "basal_energy_burned": "Resting Energy",
+    "apple_exercise_time": "Exercise Minutes",
+    "apple_stand_time": "Stand Minutes",
+    "apple_stand_hour": "Stand Hours",
+    "apple_walking_steadiness": "Walking Steadiness",
+    "sleep_analysis": "Sleep",
+    "body_mass": "Weight",
+    "oxygen_saturation": "Blood Oxygen",
+    "heart_rate_variability_sdnn": "Heart Rate Variability",
+    "walking_heart_rate_average": "Walking Heart Rate",
+    "resting_heart_rate": "Resting Heart Rate",
+    "environmental_audio_exposure": "Environmental Sound Levels",
+    "headphone_audio_exposure": "Headphone Audio Levels",
+    "dietary_energy_consumed": "Dietary Energy",
+    "dietary_water": "Water",
+    "workout": "Workouts",
+    "unknown": "Unknown",
+}
+
+# Acronyms and unit names. Title-casing these gives "Sdnn" and "Vo2", which read
+# as typos.
+_UPPERCASE_PARTS = {"sdnn", "vo2", "bmi", "uv", "ecg", "hrv", "spo2", "rr"}
+_LOWERCASE_PARTS = {"of", "in", "on", "per", "and", "the"}
+
+
+def display_name(slug: str) -> str:
+    """The name a person would say for a metric slug.
+
+    `heart_rate_variability_sdnn` is an identifier: right for the wire, for a
+    dictionary key and for a log line, wrong for a screen.
+    """
+    if slug in _METRIC_NAMES:
+        return _METRIC_NAMES[slug]
+    if not slug:
+        return "Unknown"
+
+    parts = slug.split("_")
+    # "Apple" is branding on the identifier, not part of the measurement's name.
+    if len(parts) > 1 and parts[0] == "apple":
+        parts = parts[1:]
+
+    words = []
+    for index, part in enumerate(parts):
+        if part in _UPPERCASE_PARTS:
+            words.append(part.upper())
+        elif index > 0 and part in _LOWERCASE_PARTS:
+            words.append(part)
+        else:
+            words.append(part[:1].upper() + part[1:])
+    return " ".join(words)
+
 
 class InvalidRange(ValueError):
     """A date the caller supplied could not be parsed."""
@@ -79,6 +144,7 @@ def metric_catalog() -> list[dict]:
         catalog.append(
             {
                 "metric_slug": row["metric_slug"],
+                "label": display_name(row["metric_slug"]),
                 "count": row["count"],
                 "unit": row["unit"] or "",
                 "aggregation": row["aggregation"] or "",

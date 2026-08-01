@@ -106,7 +106,7 @@ struct ServerView: View {
                     Text(metric.latestSampleDate?.formatted(.relative(presentation: .named)) ?? "never")
                         .foregroundStyle(.orange)
                 } label: {
-                    Text(metric.metricSlug).font(.caption.monospaced())
+                    Text(metric.metricSlug.metricDisplayName).font(.caption)
                 }
             }
         }

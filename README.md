@@ -33,7 +33,7 @@ Full design rationale: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 4. **Select your iPhone and Run.** HealthKit returns nothing useful in the
    Simulator, and background delivery doesn't work there at all.
 
-5. **Grant access.** Tap *Request Health Access* on the Status tab. You get
+5. **Grant access.** Tap *Request Health Access* on the Summary tab. You get
    **one** prompt per data type, ever — enable every group you might want on the
    Metrics tab *before* requesting. Afterwards the only way to change your mind is
    Settings → Privacy & Security → Health.
@@ -206,7 +206,7 @@ and picks up on unlock.
 
 Background sync fails quietly by default. Two things to check:
 
-- **Status tab → Stale metrics.** Anything that produced data before but hasn't
+- **Summary tab → Coverage.** Anything that produced data before but hasn't
   in 48 hours. Revoked permissions, background delivery dying after an OS update,
   and expired tokens all look like silence.
 - **Exports tab → View Log.** Persisted across launches, exportable via the

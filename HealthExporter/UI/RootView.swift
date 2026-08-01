@@ -15,7 +15,7 @@ struct RootView: View {
     var body: some View {
         TabView(selection: $services.selectedTab) {
             StatusView()
-                .tabItem { Label("Status", systemImage: "waveform.path.ecg") }
+                .tabItem { Label("Summary", systemImage: "heart.text.square") }
                 .tag(AppServices.Tab.status)
             InsightsView()
                 .tabItem { Label("Insights", systemImage: "sparkles") }

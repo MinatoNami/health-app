@@ -14,7 +14,7 @@ struct MetricBar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Text(slug.replacingOccurrences(of: "_", with: " "))
+                Text(slug.metricDisplayName)
                     .font(.caption)
                     .lineLimit(1)
                 if isStale {

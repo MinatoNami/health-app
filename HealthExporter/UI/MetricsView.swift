@@ -55,7 +55,11 @@ struct GroupDetailView: View {
         List {
             ForEach(rows, id: \.identifier) { row in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(row.slug).font(.body.monospaced())
+                    Text(row.slug.metricDisplayName).font(.body)
+                    // The identifier still shown, quietly: this screen is also
+                    // where you go to work out why a type is not arriving, and
+                    // that conversation happens in slugs.
+                    Text(row.slug).font(.caption2.monospaced()).foregroundStyle(.tertiary)
                     HStack(spacing: 8) {
                         if let last = row.state?.lastSampleEnd {
                             Text("last \(last.formatted(date: .abbreviated, time: .shortened))")

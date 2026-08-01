@@ -954,7 +954,7 @@ def snapshot(
         stale.append(
             {
                 "metric_slug": comparison["metric_slug"],
-                "label": comparison["label"],
+                "label": analytics.display_name(comparison["metric_slug"]),
                 "last_recorded_at": seen.isoformat() if seen else None,
                 "days_since": (as_of - seen.astimezone(analytics.zone(tz_name)).date()).days
                 if seen
