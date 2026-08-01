@@ -495,10 +495,13 @@ cmd_llm() {
   compose "up -d web" >/dev/null 2>&1
   sleep 2
 
+  # `manage.py shell -c`, not `python -c`: the latter never calls django.setup(),
+  # so reading a setting raises ImproperlyConfigured and this probe reported
+  # "not reachable" for a model server that was answering perfectly well.
   local probe
-  probe=$(remote "cd $REMOTE_DIR && docker compose exec -T web python -c \"
+  probe=$(remote "cd $REMOTE_DIR && docker compose exec -T web python manage.py shell -c \"
 from ingest.llm import client
-import django, json
+import json
 print(json.dumps(client.status()))
 \" 2>/dev/null" || true)
 
