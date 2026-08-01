@@ -307,6 +307,32 @@ class IdempotencyTests(IngestTestCase):
 
         self.assertEqual(response.status_code, 503)
 
+    def test_batch_abandoned_mid_flight_is_reclaimed(self):
+        """A worker killed during ingest leaves the row claimed forever. Without
+        reclaiming, the client gets 503 on every retry of that key: a batch that
+        can never complete and never fails."""
+        from datetime import timedelta
+
+        from ingest.service import STALE_PROCESSING_AFTER
+
+        stuck = Batch.objects.create(
+            idempotency_key="stuck.ndjson", status=Batch.Status.PROCESSING
+        )
+        Batch.objects.filter(pk=stuck.pk).update(
+            received_at=timezone.now() - STALE_PROCESSING_AFTER - timedelta(minutes=1)
+        )
+
+        response = self.post(ndjson(header_line(), quantity()), key="stuck.ndjson")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Record.objects.count(), 1)
+
+    def test_recently_claimed_batch_is_not_stolen(self):
+        """A slow but live ingest must not have its key taken out from under it."""
+        Batch.objects.create(idempotency_key="live.ndjson", status=Batch.Status.PROCESSING)
+        response = self.post(ndjson(header_line(), quantity()), key="live.ndjson")
+        self.assertEqual(response.status_code, 503)
+
     def test_failed_batch_is_reprocessed_on_retry(self):
         record = quantity()
         Batch.objects.create(idempotency_key="retry.ndjson", status=Batch.Status.FAILED)

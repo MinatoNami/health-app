@@ -13,7 +13,7 @@ whole file over one corrupt line.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.db import transaction
 from django.utils import timezone
@@ -331,20 +331,47 @@ def _apply_deletes(delete_ids: list[str], device: Device, batch: Batch) -> tuple
     return applied, created
 
 
+# How long a batch may sit in PROCESSING before it is assumed dead.
+#
+# A worker killed mid-ingest — a deploy, an OOM, a restart — leaves the row
+# claimed forever. The client then gets 503 on every retry of that key, backs
+# off, gives up for the run, and tries again next sync: a batch that can never
+# complete and never fails, retried indefinitely. Generous enough that a
+# genuinely slow ingest is never stolen from a live worker.
+STALE_PROCESSING_AFTER = timedelta(minutes=30)
+
+
 @transaction.atomic
 def claim_batch(idempotency_key: str, byte_count: int = 0) -> tuple[Batch, bool]:
     """Reserves the key. Returns (batch, is_new).
 
     A previously failed batch is reclaimed so a retry reprocesses it rather
-    than replaying a failure forever.
+    than replaying a failure forever. So is one abandoned mid-flight.
     """
     batch, created = Batch.objects.select_for_update().get_or_create(
         idempotency_key=idempotency_key,
         defaults={"batch_id": "", "byte_count": byte_count},
     )
-    if not created and batch.status == Batch.Status.FAILED:
+    if created:
+        return batch, True
+
+    if batch.status == Batch.Status.FAILED:
         batch.status = Batch.Status.PROCESSING
         batch.error = ""
         batch.save(update_fields=["status", "error"])
         return batch, True
+
+    if (
+        batch.status == Batch.Status.PROCESSING
+        and timezone.now() - batch.received_at > STALE_PROCESSING_AFTER
+    ):
+        log.warning(
+            "Reclaiming batch %s abandoned in processing since %s",
+            idempotency_key,
+            batch.received_at,
+        )
+        batch.received_at = timezone.now()
+        batch.save(update_fields=["received_at"])
+        return batch, True
+
     return batch, created
