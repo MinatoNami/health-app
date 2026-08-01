@@ -110,6 +110,13 @@ end
 # linked automatically by the Swift importer, so no explicit link phase is
 # needed. The HealthKit *entitlement* is what actually matters, and that is set
 # above via CODE_SIGN_ENTITLEMENTS.
+#
+# xcodeproj seeds a Frameworks group with an SDK-relative Foundation reference
+# that Xcode renders in red because the path doesn't resolve. Harmless, but it
+# looks like a broken project, so strip it and the empty group.
+target.frameworks_build_phase.clear
+project.frameworks_group&.recursive_children&.each(&:remove_from_project)
+project.frameworks_group&.remove_from_project
 
 # --- Shared scheme so the target is runnable straight after cloning ----------
 

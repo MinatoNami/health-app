@@ -4,6 +4,7 @@ struct SettingsView: View {
     @EnvironmentObject private var authorization: HealthAuthorization
     @EnvironmentObject private var engine: SyncEngine
     @State private var showResetConfirmation = false
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -83,6 +84,13 @@ struct SettingsView: View {
                          + "upsert by UUID.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Button("Delete Pending Batches", role: .destructive) {
+                        showDeleteConfirmation = true
+                    }
+                    Text("Empties the outbox. Use after a failed run leaves duplicate "
+                         + "batches behind.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Settings")
@@ -90,6 +98,15 @@ struct SettingsView: View {
                                 isPresented: $showResetConfirmation,
                                 titleVisibility: .visible) {
                 Button("Reset", role: .destructive) { engine.resetSyncState() }
+                Button("Cancel", role: .cancel) {}
+            }
+            .confirmationDialog("Delete all pending batches?",
+                                isPresented: $showDeleteConfirmation,
+                                titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    Outbox.shared.deleteAllPending()
+                    engine.refreshCounts()
+                }
                 Button("Cancel", role: .cancel) {}
             }
         }

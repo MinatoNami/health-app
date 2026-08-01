@@ -54,7 +54,18 @@ final class SyncEngine: ObservableObject {
     private let settingsStore = StateStore<Settings>(filename: "sync-settings.json", fallback: Settings())
     private let authorization: HealthAuthorization
     private let reader: HealthReader
+
+    /// Every entry point funnels through this gate. Sync **must** be serialized:
+    /// `HKObserverQuery` fires once immediately when executed, so registering
+    /// observers for ~130 types kicks off ~130 simultaneous drain requests. Run
+    /// concurrently, they re-read the same types from the same stale anchor,
+    /// write duplicate batches, clobber each other's anchors, and exhaust memory.
     private var isSyncing = false
+    /// Set when a request arrives mid-run. Coalesces a burst into exactly one
+    /// follow-up pass instead of dropping the requests or running them in
+    /// parallel.
+    private var rerunRequested = false
+    private var debounceTask: Task<Void, Never>?
 
     init(authorization: HealthAuthorization) {
         self.authorization = authorization
@@ -79,7 +90,8 @@ final class SyncEngine: ObservableObject {
     /// invocations are collapsed.
     func syncAll(reason: String) async {
         guard !isSyncing else {
-            Log.shared.debug("sync", "Sync already running; skipping \(reason)")
+            rerunRequested = true
+            Log.shared.debug("sync", "Sync in progress; queued follow-up for \(reason)")
             return
         }
         guard authorization.isAvailable else {
@@ -94,11 +106,12 @@ final class SyncEngine: ObservableObject {
         }
 
         isSyncing = true
-        defer { isSyncing = false }
+        rerunRequested = false
 
         let types = Array(authorization.enabledSampleTypes).sorted { $0.identifier < $1.identifier }
         guard !types.isEmpty else {
             phase = .failed("No metric groups enabled")
+            isSyncing = false
             return
         }
 
@@ -140,11 +153,35 @@ final class SyncEngine: ObservableObject {
         if case .waitingForUnlock = phase {} else { phase = .idle }
         Log.shared.info("sync", "Finished: \(lastSummary ?? "")")
         Outbox.shared.pruneArchive()
+
+        isSyncing = false
+        if rerunRequested {
+            rerunRequested = false
+            await syncDirtyTypes()
+        }
+    }
+
+    /// Coalescing entry point for observer notifications.
+    ///
+    /// Never `await` a drain directly from an observer callback: 130 observers
+    /// firing at registration would mean 130 concurrent drains. This collapses a
+    /// burst into a single pass a few seconds later.
+    func requestDirtyDrain() {
+        debounceTask?.cancel()
+        debounceTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.syncDirtyTypes()
+        }
     }
 
     /// Only the types an observer flagged. Used on background wake so a nudge
-    /// about step count doesn't walk all 170 types.
+    /// about step count doesn't walk all 130 types.
     func syncDirtyTypes() async {
+        guard !isSyncing else {
+            rerunRequested = true
+            return
+        }
         let dirty = AnchorStore.shared.dirtyTypes
         guard !dirty.isEmpty else { return }
         let types = authorization.enabledSampleTypes.filter { dirty.contains($0.identifier) }
@@ -154,6 +191,9 @@ final class SyncEngine: ObservableObject {
             Log.shared.info("sync", "Dirty-type sync deferred: device locked")
             return
         }
+
+        isSyncing = true
+        rerunRequested = false
 
         Log.shared.info("sync", "Draining \(types.count) flagged type(s)")
         var emitted = 0
@@ -165,6 +205,8 @@ final class SyncEngine: ObservableObject {
         await deliverPending()
         pendingBatches = Outbox.shared.pendingCount
         Log.shared.info("sync", "Flagged drain emitted \(emitted) records")
+
+        isSyncing = false
     }
 
     // MARK: - Per-type drain
@@ -182,19 +224,29 @@ final class SyncEngine: ObservableObject {
                                                      anchor: anchor,
                                                      limit: settings.pageSize)
             var records: [HealthRecord] = []
+            records.reserveCapacity(page.added.count)
             var newestEnd: Date?
 
-            for sample in page.added {
-                // Read but don't emit pre-cutoff samples: the anchor still
-                // advances past them, so history is consumed without paying to
-                // normalize and ship data the user didn't ask for.
-                guard sample.endDate >= cutoff else { continue }
-                if let record = Normalizer.record(from: sample) {
-                    records.append(record)
-                    if newestEnd == nil || sample.endDate > (newestEnd ?? .distantPast) {
-                        newestEnd = sample.endDate
+            for (offset, sample) in page.added.enumerated() {
+                // HealthKit samples are Objective-C objects that pile up in the
+                // autorelease pool. Without draining it per sample, a page of
+                // 2,000 (times hundreds of pages) is a steady climb to a jetsam
+                // kill rather than flat memory use.
+                autoreleasepool {
+                    // Read but don't emit pre-cutoff samples: the anchor still
+                    // advances past them, so history is consumed without paying
+                    // to normalize and ship data the user didn't ask for.
+                    guard sample.endDate >= cutoff else { return }
+                    if let record = Normalizer.record(from: sample) {
+                        records.append(record)
+                        if sample.endDate > (newestEnd ?? .distantPast) {
+                            newestEnd = sample.endDate
+                        }
                     }
                 }
+                // Normalization runs on the main actor, so yield periodically to
+                // keep the UI responsive instead of hanging for seconds at a time.
+                if offset % 200 == 199 { await Task.yield() }
             }
             // Tombstones carry no type or date, only a UUID. Emitting them is
             // what keeps the destination from diverging permanently.

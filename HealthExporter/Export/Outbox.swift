@@ -25,6 +25,18 @@ final class Outbox {
         var sizeDescription: String {
             ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
         }
+
+        /// Record count is encoded in the filename
+        /// (`batch-<date>-<time>-<id>-<count>.ndjson`) rather than derived by
+        /// counting newlines. Reading every file to answer "how many records?"
+        /// made `pendingCount` cost O(bytes on disk) — with a few hundred spooled
+        /// batches that meant hundreds of megabytes re-read on every sync, and
+        /// enough concurrent file handles to exhaust the descriptor limit.
+        static func recordCount(from url: URL) -> Int {
+            let stem = url.deletingPathExtension().lastPathComponent
+            guard let last = stem.split(separator: "-").last else { return 0 }
+            return Int(last) ?? 0
+        }
     }
 
     private let lock = NSLock()
@@ -95,7 +107,9 @@ final class Outbox {
             guard encoded > 0 else { continue }
 
             let stamp = DateFormatter.fileStamp.string(from: Date())
-            let url = dir.appendingPathComponent("batch-\(stamp)-\(batchId.prefix(8)).ndjson")
+            let url = dir.appendingPathComponent(
+                "batch-\(stamp)-\(batchId.prefix(8))-\(encoded).ndjson"
+            )
 
             lock.lock()
             do {
@@ -140,21 +154,20 @@ final class Outbox {
                     url: url,
                     createdAt: values?.creationDate ?? .distantPast,
                     byteCount: values?.fileSize ?? 0,
-                    recordCount: Outbox.countLines(url) - 1 // minus the header line
+                    recordCount: Batch.recordCount(from: url)
                 )
             }
             .sorted { $0.createdAt > $1.createdAt }
     }
 
-    /// Counts newlines without loading the file into memory.
-    private static func countLines(_ url: URL) -> Int {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return 0 }
-        defer { try? handle.close() }
-        var count = 0
-        while let chunk = try? handle.read(upToCount: 64 * 1024), !chunk.isEmpty {
-            count += chunk.reduce(0) { $1 == 0x0A ? $0 + 1 : $0 }
-        }
-        return count
+    /// Cheap: a directory listing, no file opens. This is called at the end of
+    /// every drain, so it must not touch file contents.
+    private func fileCount(in dir: URL?) -> Int {
+        guard let dir,
+              let urls = try? FileManager.default.contentsOfDirectory(
+                  at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]
+              ) else { return 0 }
+        return urls.filter { $0.pathExtension == "ndjson" }.count
     }
 
     // MARK: - Lifecycle
@@ -176,6 +189,17 @@ final class Outbox {
         try? FileManager.default.removeItem(at: batch.url)
     }
 
+    /// Empties the outbox. Needed after a bad run leaves duplicate batches
+    /// behind — harmless to a server that upserts, but they waste disk and make
+    /// the pending count meaningless.
+    @discardableResult
+    func deleteAllPending() -> Int {
+        let batches = pendingBatches()
+        for batch in batches { try? FileManager.default.removeItem(at: batch.url) }
+        Log.shared.warn("outbox", "Deleted \(batches.count) pending batch file(s)")
+        return batches.count
+    }
+
     /// Drops archived batches older than the retention window. Unbounded local
     /// retention of health data is a liability, not a feature.
     func pruneArchive(olderThan days: Int = 14) {
@@ -185,7 +209,7 @@ final class Outbox {
         }
     }
 
-    var pendingCount: Int { pendingBatches().count }
+    var pendingCount: Int { fileCount(in: Paths.outboxDirectory) }
 }
 
 extension DateFormatter {

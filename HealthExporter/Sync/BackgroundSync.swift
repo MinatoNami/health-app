@@ -148,14 +148,11 @@ final class BackgroundSync {
                 AnchorStore.shared.markDirty(identifier)
                 completion()
 
+                // Request a *coalesced* drain rather than awaiting one here.
+                // Observer queries fire once as soon as they're executed, so
+                // awaiting directly means ~130 concurrent drains at launch.
                 Task { @MainActor in
-                    // A little extra runway for an opportunistic drain. If the
-                    // system suspends us first, the dirty flag survives.
-                    let assertion = UIApplication.shared.beginBackgroundTask(withName: "hk-drain")
-                    await AppServices.shared.syncEngine.syncDirtyTypes()
-                    if assertion != .invalid {
-                        UIApplication.shared.endBackgroundTask(assertion)
-                    }
+                    AppServices.shared.syncEngine.requestDirtyDrain()
                 }
             }
             authorization.healthStore.execute(query)

@@ -131,9 +131,16 @@ Three overlapping mechanisms, because no single one is reliable:
    drain of flagged types when the device unlocks.
 
 The observer never does the work itself. It marks the type dirty, persists that
-flag, and returns immediately — because if the completion handler isn't called,
-HealthKit retries with backoff and **stops background delivery entirely after
-three failures**. That failure is silent.
+flag, requests a *coalesced* drain, and returns immediately — because if the
+completion handler isn't called, HealthKit retries with backoff and **stops
+background delivery entirely after three failures**. That failure is silent.
+
+**Sync is strictly serialized**, and this is not optional. `HKObserverQuery` fires
+once as soon as it's executed, so registering observers for ~130 types produces
+~130 simultaneous drain requests at launch. Run in parallel they re-read the same
+types from the same stale anchor, write duplicate batches, clobber each other's
+anchors, and exhaust memory. `SyncEngine` gates every entry point behind
+`isSyncing` and collapses concurrent requests into a single follow-up pass.
 
 **Expect hourly-ish, not real-time.** And expect nothing at all while the phone
 is locked: HealthKit encrypts its store, so reads fail with
@@ -234,9 +241,13 @@ Everything else in the standard quantity and category catalogs is covered — ab
 
 ## Known rough edges
 
-- **Normalization runs on the main actor.** During a large first sync this can
-  cause UI stutter. Correct, just not smooth. Moving `Normalizer` off-actor is
-  the fix if it bothers you.
+- **Normalization runs on the main actor.** It yields every 200 samples so the UI
+  stays responsive, but a large first sync still feels sluggish. Moving
+  `Normalizer` off-actor is the real fix if it bothers you.
+- **Batch record counts come from the filename**, not from reading the file.
+  Counting newlines to answer "how many records?" made `pendingCount` cost
+  O(bytes on disk) and, called after every drain, exhausted the file-descriptor
+  limit. Don't reintroduce it.
 - **Reproductive health and symptoms default to off.** Toggle them on in Metrics
   before requesting access if you want them.
 - **First sync can take a while** with a multi-year history. Keep the app
