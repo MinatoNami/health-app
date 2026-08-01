@@ -263,3 +263,36 @@ class DashboardSessionTests(TestCase):
         self.login()
         self.client.post("/v1/auth/session/logout")
         self.assertIn(self.client.get("/v1/analytics/metrics").status_code, (401, 403))
+
+
+class ThrottleIdentityTests(TestCase):
+    """The login throttle must key on the real client, not a client-supplied
+    header. nginx *appends* to X-Forwarded-For, so the first entry is whatever
+    the caller sent — trusting it makes the limit decorative."""
+
+    def setUp(self):
+        cache.clear()
+        User.objects.create_user(username="thr", password="thr-p4ssw0rd-x")
+
+    def attempt(self, xff=None):
+        headers = {"x-forwarded-for": xff} if xff else {}
+        return self.client.post(
+            "/v1/auth/login",
+            data=json.dumps({"username": "thr", "password": "wrong"}),
+            content_type="application/json",
+            headers=headers,
+        )
+
+    def test_spoofed_forwarded_for_cannot_reset_the_limit(self):
+        """Simulates the production topology, where nginx appends the real peer
+        to whatever the caller sent. NUM_PROXIES=1 makes DRF read the last
+        entry — the peer — instead of the attacker-controlled first one."""
+        spoofed_then_real = "9.9.9.9, 127.0.0.1"
+        other_spoof = "8.8.8.8, 127.0.0.1"
+
+        codes = [self.attempt(xff=spoofed_then_real).status_code for _ in range(12)]
+        self.assertIn(429, codes, "the limit never engaged at all")
+
+        # A different spoofed prefix must not buy a fresh bucket.
+        self.assertEqual(self.attempt(xff=other_spoof).status_code, 429)
+        self.assertEqual(self.attempt(xff="1.2.3.4, 127.0.0.1").status_code, 429)

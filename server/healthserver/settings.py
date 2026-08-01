@@ -128,6 +128,15 @@ REST_FRAMEWORK = {
     # legitimately drains a backlog of batches back to back, and a 429 there
     # would just add backoff to work that has to happen anyway.
     "DEFAULT_THROTTLE_RATES": {"login": env("LOGIN_RATE_LIMIT", "10/min")},
+    # Exactly one proxy (nginx) sits in front, so the client identity is the
+    # LAST entry in X-Forwarded-For.
+    #
+    # Without this, DRF takes the *first* entry — which is whatever the client
+    # sent, because nginx appends rather than replaces. That made the login
+    # throttle trivially bypassable: a different spoofed X-Forwarded-For per
+    # request gets a fresh bucket every time, and the rate limit on the only
+    # password-accepting endpoint becomes decorative.
+    "NUM_PROXIES": 1,
 }
 
 # nginx terminates TLS on the tailnet interface and proxies plaintext to

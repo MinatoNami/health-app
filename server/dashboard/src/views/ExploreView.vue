@@ -55,7 +55,10 @@ watch(selected, () => {
   agg.value = current.value?.default_agg || 'avg'
   load()
 })
-watch([agg, () => props.range], load)
+// deep, because the date inputs mutate range.from/range.to in place rather
+// than replacing the object — without it, editing a date silently leaves this
+// view showing the previous range's data.
+watch([agg, () => props.range], load, { deep: true })
 
 loadCatalog().then(load)
 </script>

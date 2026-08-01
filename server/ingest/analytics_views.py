@@ -8,6 +8,7 @@ the same endpoints stay usable from a script with a token.
 import csv
 import logging
 
+from django.core.cache import cache
 from django.http import StreamingHttpResponse
 from rest_framework import status
 from rest_framework.authentication import SessionAuthentication
@@ -69,6 +70,9 @@ def series(request):
     return Response(payload)
 
 
+OVERVIEW_CACHE_SECONDS = 60
+
+
 @api_view(["GET"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
@@ -77,6 +81,15 @@ def overview(request):
         request.query_params.get("from"), request.query_params.get("to")
     )
     tz_name = request.query_params.get("tz")
+
+    # Cached per range: a two-year overview runs seven aggregates over the whole
+    # table and measured ~1.6s, and flipping between range presets re-requests
+    # it constantly. Short enough that new uploads still show up promptly.
+    cache_key = f"ingest:overview:v1:{start_date}:{end_date}:{tz_name or 'default'}"
+    cached = cache.get(cache_key)
+    if cached is not None and request.query_params.get("fresh") != "1":
+        return Response({**cached, "cached": True})
+
     catalog = {m["metric_slug"]: m for m in analytics.metric_catalog()}
 
     charts = []
@@ -116,16 +129,16 @@ def overview(request):
                 "basis": "day",
             }
 
-    return Response(
-        {
-            "from": start_date.isoformat(),
-            "to": end_date.isoformat(),
-            "summary": analytics.summary(start, end, tz_name),
-            "latest": latest,
-            "charts": charts,
-            "available_metrics": len(catalog),
-        }
-    )
+    payload = {
+        "from": start_date.isoformat(),
+        "to": end_date.isoformat(),
+        "summary": analytics.summary(start, end, tz_name),
+        "latest": latest,
+        "charts": charts,
+        "available_metrics": len(catalog),
+    }
+    cache.set(cache_key, payload, OVERVIEW_CACHE_SECONDS)
+    return Response({**payload, "cached": False})
 
 
 class _Echo:
