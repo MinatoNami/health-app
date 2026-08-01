@@ -39,16 +39,45 @@ final class SyncEngine: ObservableObject {
         /// Days of daily statistics to re-emit each run. Statistic IDs are
         /// deterministic, so overlap is a harmless upsert and covers late-arriving
         /// samples that change a past day's total.
-        var statisticsLookbackDays: Int = 7
+        ///
+        /// 90 rather than 7 because these rollups are the *only* deduplicated
+        /// totals the server ever sees. iPhone and Watch both write step counts,
+        /// so a day without a rollup can only be estimated by summing raw
+        /// samples — which measures ~1.9x high, and up to 3.5x. Every extra day
+        /// here is a day the dashboard can report as fact instead of an
+        /// estimate. The cost is one statistics query per metric per run.
+        var statisticsLookbackDays: Int = 90
         var sink = SinkConfiguration()
         var lastFullSyncAt: Date?
+    }
+
+    /// Result of the last manual Test Connection.
+    enum ConnectionTest: Equatable {
+        case untested
+        case running
+        case succeeded(String)
+        case failed(String)
     }
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lastSummary: String?
     @Published private(set) var pendingBatches: Int = 0
+    @Published private(set) var connectionTest: ConnectionTest = .untested
     @Published var settings: Settings {
         didSet { settingsStore.mutate { $0 = settings } }
+    }
+
+    /// Lives in the Keychain rather than in `settings`, so it is deliberately
+    /// not part of the persisted struct. Exposed here so the settings screen
+    /// has something bindable.
+    var bearerToken: String {
+        get { Keychain.shared.bearerToken }
+        set {
+            objectWillChange.send()
+            Keychain.shared.bearerToken = newValue
+            // A new token invalidates whatever the last test proved.
+            connectionTest = .untested
+        }
     }
 
     private let settingsStore = StateStore<Settings>(filename: "sync-settings.json", fallback: Settings())
@@ -72,6 +101,30 @@ final class SyncEngine: ObservableObject {
         self.reader = HealthReader(healthStore: authorization.healthStore)
         self.settings = settingsStore.value
         self.pendingBatches = Outbox.shared.pendingCount
+        migrateSupersededPin()
+        migrateStatisticsLookback()
+    }
+
+    /// Existing installs persisted the old 7-day default, and a stored value
+    /// wins over a new one. Without this the change would only reach fresh
+    /// installs, leaving the dashboard estimating totals it could report
+    /// exactly. Only moves the old default — a deliberate choice is left alone.
+    private func migrateStatisticsLookback() {
+        guard settings.statisticsLookbackDays == 7 else { return }
+        settings.statisticsLookbackDays = 90
+        Log.shared.info("sync", "Raised statistics lookback to 90 days for deduplicated daily totals")
+    }
+
+    /// Moves a stored pin forward when the server certificate has been rotated.
+    ///
+    /// The persisted value wins over `defaultPin`, so without this a rotation
+    /// would strand every existing install on a pin that no longer matches —
+    /// visible only as uploads that silently stop.
+    private func migrateSupersededPin() {
+        let stored = CertificatePinner.normalize(settings.sink.pinnedCertificateSHA256)
+        guard SinkConfiguration.supersededPins.contains(stored) else { return }
+        settings.sink.pinnedCertificateSHA256 = SinkConfiguration.defaultPin
+        Log.shared.info("sink", "Updated stored certificate pin after server certificate rotation")
     }
 
     /// Metrics worth a deduplicated daily rollup. Deliberately a short list: the
@@ -150,7 +203,17 @@ final class SyncEngine: ObservableObject {
         let elapsed = Int(Date().timeIntervalSince(started))
         lastSummary = "\(totalEmitted) records in \(elapsed)s" + (failures > 0 ? ", \(failures) failed" : "")
         pendingBatches = Outbox.shared.pendingCount
-        if case .waitingForUnlock = phase {} else { phase = .idle }
+        // Preserve both terminal states rather than flattening to idle. The
+        // read half of a run can finish perfectly while delivery is dead — an
+        // expired token stops the upload circuit breaker, and overwriting that
+        // with "idle" shows a green checkmark over a queue that is going
+        // nowhere, which is worse than not detecting it at all. The next run
+        // sets .syncing on entry, so neither state can linger once work
+        // resumes.
+        switch phase {
+        case .waitingForUnlock, .failed: break
+        default: phase = .idle
+        }
         Log.shared.info("sync", "Finished: \(lastSummary ?? "")")
         Outbox.shared.pruneArchive()
 
@@ -359,6 +422,13 @@ final class SyncEngine: ObservableObject {
             return
         }
 
+        // A revoked or expired token fails every batch identically. Without a
+        // circuit breaker, a backlog of thousands of batches becomes thousands
+        // of pointless 401s — minutes of radio, and the real problem buried at
+        // the bottom of the log.
+        var consecutiveAuthFailures = 0
+        let authFailureLimit = 3
+
         for (index, batch) in pending.enumerated() {
             phase = .delivering(remaining: pending.count - index)
             var attempt = 0
@@ -370,9 +440,15 @@ final class SyncEngine: ObservableObject {
                 case .success:
                     Outbox.shared.archive(batch)
                     Log.shared.info("deliver", "\(batch.displayName) accepted")
+                    consecutiveAuthFailures = 0
                     attempt = .max
                 case .failure(let error):
                     let sinkError = error as? SinkError
+                    if case .unauthorized = sinkError {
+                        consecutiveAuthFailures += 1
+                    } else if sinkError?.isRetryable != true {
+                        consecutiveAuthFailures = 0
+                    }
                     if sinkError?.isRetryable == true, attempt < 4 {
                         // Exponential backoff with jitter, capped.
                         let jitter = UInt64.random(in: 0...500_000_000)
@@ -387,8 +463,115 @@ final class SyncEngine: ObservableObject {
                     }
                 }
             }
+
+            if consecutiveAuthFailures >= authFailureLimit {
+                // Stop and say so plainly. The batches stay in the outbox, so
+                // nothing is lost — this only avoids burning the backlog
+                // against a credential that is not going to start working.
+                phase = .failed("Server rejected the token — sign in again")
+                Log.shared.error("deliver",
+                    "Stopped after \(consecutiveAuthFailures) authentication failures; "
+                    + "\(pending.count - index - 1) batch(es) left queued. Sign in again in Settings.")
+                pendingBatches = Outbox.shared.pendingCount
+                return
+            }
         }
         pendingBatches = Outbox.shared.pendingCount
+    }
+
+    /// True once a token is held, whether it was pasted in or obtained by
+    /// signing in.
+    var isSignedIn: Bool { !bearerToken.isEmpty }
+
+    /// Trades a username and password for a token. The password is used for the
+    /// single request and never stored.
+    func signIn(username: String, password: String) async {
+        connectionTest = .running
+        let label = await UIDevice.current.name
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.signIn(username: username, password: password, deviceLabel: label) {
+        case .success(let message):
+            objectWillChange.send()
+            connectionTest = .succeeded(message)
+            Log.shared.info("sink", "Signed in: \(message)")
+        case .failure(let error):
+            connectionTest = .failed(error.localizedDescription)
+            Log.shared.error("sink", "Sign-in failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Revokes the token server-side, then clears it locally.
+    func signOut() async {
+        let sink = HTTPSink(configuration: settings.sink)
+        let result = await sink.signOut()
+        objectWillChange.send()
+        connectionTest = .untested
+        // Uploading with no credential would just park every batch on a 401.
+        settings.sink.enabled = false
+        if case .failure(let error) = result {
+            Log.shared.warn("sink", "Signed out locally, but the server was not reachable to revoke the token: \(error.localizedDescription)")
+        } else {
+            Log.shared.info("sink", "Signed out and revoked the token")
+        }
+    }
+
+    /// Last successful reading of what the server holds, for the Server tab.
+    @Published private(set) var serverStatus: ServerStatus?
+    @Published private(set) var serverStatusError: String?
+    @Published private(set) var isLoadingServerStatus = false
+
+    /// Daily series behind the Status tab's charts.
+    @Published private(set) var trends: AnalyticsOverview?
+
+    func refreshTrends() async {
+        guard settings.sink.endpoint != nil, isSignedIn else { return }
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success(let overview) = await sink.fetchOverview() {
+            trends = overview
+        }
+        // Deliberately silent on failure: the charts are a nicety, and the
+        // Server tab already surfaces connection problems properly. Throwing an
+        // error banner onto the main screen for a decorative fetch would train
+        // people to ignore the banner that matters.
+    }
+
+    func refreshServerStatus(fresh: Bool = false) async {
+        guard settings.sink.endpoint != nil, isSignedIn else {
+            serverStatusError = "Sign in first."
+            return
+        }
+        isLoadingServerStatus = true
+        defer { isLoadingServerStatus = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.fetchStatus(fresh: fresh) {
+        case .success(let status):
+            serverStatus = status
+            serverStatusError = nil
+        case .failure(let error):
+            // The previous reading is deliberately kept: a failed refresh
+            // should not blank the screen, since stale numbers still say more
+            // than nothing at all.
+            serverStatusError = error.localizedDescription
+        }
+    }
+
+    /// One round trip to the destination's ping endpoint, carrying no health
+    /// data. Background sync fails quietly — a stale token, a mistyped URL, or
+    /// a certificate that no longer matches the pin all look identical to
+    /// "nothing has happened yet" until someone checks.
+    func testConnection() async {
+        connectionTest = .running
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.probe() {
+        case .success(let message):
+            connectionTest = .succeeded(message)
+            Log.shared.info("sink", "Connection test succeeded: \(message)")
+        case .failure(let error):
+            let detail = error.localizedDescription
+            connectionTest = .failed(detail)
+            Log.shared.error("sink", "Connection test failed: \(detail)")
+        }
     }
 
     // MARK: - Maintenance

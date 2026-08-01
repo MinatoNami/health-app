@@ -5,6 +5,10 @@ struct SettingsView: View {
     @EnvironmentObject private var engine: SyncEngine
     @State private var showResetConfirmation = false
     @State private var showDeleteConfirmation = false
+    @State private var username = ""
+    /// Never persisted: it exists only for the request that exchanges it for a
+    /// token, and is cleared as soon as that returns.
+    @State private var password = ""
 
     var body: some View {
         NavigationStack {
@@ -19,6 +23,11 @@ struct SettingsView: View {
                     Text("Samples older than this are read — so the sync cursor still "
                          + "advances past them — but not exported. Reaching back years "
                          + "mostly buys you per-second heart rate data.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Moving this date **earlier does not fetch older data on its own**. "
+                         + "The cursor has already advanced past those samples, so you also "
+                         + "have to reset it below.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -44,17 +53,13 @@ struct SettingsView: View {
                         get: { engine.settings.sink.enabled },
                         set: { engine.settings.sink.enabled = $0 }
                     ))
-                    TextField("https://your-server/v1/health/batches", text: Binding(
+                    TextField("https://your-server", text: Binding(
                         get: { engine.settings.sink.baseURL },
                         set: { engine.settings.sink.baseURL = $0 }
                     ))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
-                    SecureField("Bearer token", text: Binding(
-                        get: { engine.settings.sink.bearerToken },
-                        set: { engine.settings.sink.bearerToken = $0 }
-                    ))
                     if engine.settings.sink.enabled && engine.settings.sink.endpoint == nil {
                         Label("Needs a valid https:// URL", systemImage: "exclamationmark.triangle")
                             .font(.caption)
@@ -64,6 +69,102 @@ struct SettingsView: View {
                          + "are retried; permanent failures are parked rather than looped.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Certificate pin") {
+                    TextField("SHA-256 of the server certificate", text: Binding(
+                        get: { engine.settings.sink.pinnedCertificateSHA256 },
+                        set: { engine.settings.sink.pinnedCertificateSHA256 = $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.caption.monospaced())
+                    Text("A Tailscale hostname can't get a publicly trusted certificate, so "
+                         + "the app trusts this one certificate and nothing else — narrower "
+                         + "than installing a CA profile, which would trust that CA for every "
+                         + "site. Get the value from ./deploy.sh pin. Leave empty to validate "
+                         + "normally against system roots instead.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Account") {
+                    if engine.isSignedIn {
+                        Label("Signed in", systemImage: "person.crop.circle.badge.checkmark")
+                            .foregroundStyle(.green)
+                        Button("Sign Out", role: .destructive) {
+                            Task { await engine.signOut() }
+                        }
+                        Text("Signing out revokes this device's token on the server, so a "
+                             + "copy of it left anywhere else stops working too.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        TextField("Username", text: $username)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textContentType(.username)
+                        SecureField("Password", text: $password)
+                            .textContentType(.password)
+                        Button {
+                            Task {
+                                await engine.signIn(username: username, password: password)
+                                // Held only for the one request that exchanges
+                                // it for a token.
+                                password = ""
+                            }
+                        } label: {
+                            HStack {
+                                Text("Sign In")
+                                if engine.connectionTest == .running {
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            }
+                        }
+                        .disabled(username.isEmpty || password.isEmpty
+                                  || engine.connectionTest == .running
+                                  || engine.settings.sink.endpoint == nil)
+                        Text("The server returns a token, which is kept in the Keychain. Your "
+                             + "password is never stored on the device.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("Connection") {
+                    Button {
+                        Task { await engine.testConnection() }
+                    } label: {
+                        HStack {
+                            Text("Test Connection")
+                            if engine.connectionTest == .running {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(engine.connectionTest == .running
+                              || engine.settings.sink.endpoint == nil
+                              || !engine.isSignedIn)
+
+                    switch engine.connectionTest {
+                    case .untested:
+                        Text("Checks the URL, the certificate pin, and the token in one "
+                             + "request. Sends no health data.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    case .running:
+                        EmptyView()
+                    case .succeeded(let message):
+                        Label(message, systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    case .failed(let message):
+                        Label(message, systemImage: "xmark.octagon")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 Section("Permissions") {
@@ -80,8 +181,14 @@ struct SettingsView: View {
                         showResetConfirmation = true
                     }
                     Text("Clears every anchor. The next sync re-reads all history from "
-                         + "the backfill date, re-emitting records the destination should "
-                         + "upsert by UUID.")
+                         + "the backfill date and re-uploads it — hundreds of megabytes, "
+                         + "and hours of background time.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("It does not duplicate anything: every record carries a stable "
+                         + "id, so the server updates in place rather than inserting again. "
+                         + "Deletions also survive — a re-sent record cannot resurrect one "
+                         + "you removed from Health.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Delete Pending Batches", role: .destructive) {

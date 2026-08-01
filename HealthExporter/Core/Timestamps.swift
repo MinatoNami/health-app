@@ -24,9 +24,26 @@ enum Timestamps {
         formatter(for: timeZone).string(from: date)
     }
 
+    /// Parses an ISO 8601 timestamp, with or without fractional seconds.
+    ///
+    /// Both spellings have to be accepted. The exporter emits whole seconds,
+    /// but Django's `isoformat()` includes microseconds, so a parser built only
+    /// for `.withInternetDateTime` silently returns nil for every timestamp the
+    /// server sends — which reads downstream as "no data", not as a parse
+    /// failure. `ISO8601DateFormatter` will not accept both from one instance,
+    /// hence the second formatter rather than an extra option.
     static func parse(_ string: String) -> Date? {
-        formatter(for: TimeZone(secondsFromGMT: 0) ?? .current).date(from: string)
+        let utc = TimeZone(secondsFromGMT: 0) ?? .current
+        if let date = formatter(for: utc).date(from: string) { return date }
+        return fractionalFormatter.date(from: string)
     }
+
+    private static let fractionalFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
 
     /// `HKMetadataKeyTimeZone` holds an IANA name when the sample carries one.
     /// Prefer it over the device's current zone: it tells you where the user

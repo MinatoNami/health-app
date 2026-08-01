@@ -1,0 +1,40 @@
+name: health-server
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Loopback only, and the 127.0.0.1 prefix is the entire point: a bare
+    # "5432:5432" binds 0.0.0.0, which on this host means every machine on the
+    # tailnet can reach the health database directly. Bound this way, the only
+    # route in is an SSH tunnel, which reuses the access control already
+    # governing the host rather than inventing a second one.
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    # Loopback only. nginx terminates TLS and proxies here, so binding
+    # 0.0.0.0 would publish an unencrypted copy of the endpoint on the tailnet.
+    ports:
+      - "127.0.0.1:8081:8000"
+
+volumes:
+  pgdata:
