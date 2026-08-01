@@ -535,6 +535,78 @@ final class SyncEngine: ObservableObject {
         // people to ignore the banner that matters.
     }
 
+    // MARK: - Insights
+
+    /// The deterministic analysis, and the last generated explanation of it.
+    ///
+    /// Kept apart deliberately. The snapshot is what was measured and loads in
+    /// well under a second; an insight is an explanation that takes a local
+    /// model tens of seconds and may not arrive at all. Storing them in one
+    /// property would mean a failed generation blanking numbers that were never
+    /// in doubt.
+    @Published private(set) var snapshot: HealthSnapshot?
+    @Published private(set) var snapshotError: String?
+    @Published private(set) var insight: InsightResult?
+    @Published private(set) var insightError: String?
+    @Published private(set) var insightStatus: InsightStatus?
+    @Published private(set) var isAsking = false
+
+    func refreshSnapshot() async {
+        guard settings.sink.endpoint != nil, isSignedIn else {
+            snapshotError = "Sign in on the Settings tab to see your summary."
+            return
+        }
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.fetchSnapshot() {
+        case .success(let value):
+            snapshot = value
+            snapshotError = nil
+        case .failure(let error):
+            // The previous reading is kept: stale numbers still say more than a
+            // blank screen, and the error line says they are stale.
+            snapshotError = error.localizedDescription
+        }
+        if case .success(let status) = await sink.fetchInsightStatus() {
+            insightStatus = status
+        }
+    }
+
+    func ask(_ question: String, context: String = "", remember: Bool = true) async {
+        guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
+        isAsking = true
+        insightError = nil
+        defer { isAsking = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.ask(question: question, context: context, remember: remember) {
+        case .success(let result):
+            insight = result
+        case .failure(let error):
+            insightError = error.localizedDescription
+            Log.shared.error("insight", "Question failed: \(error.localizedDescription)")
+        }
+    }
+
+    func requestWeeklyReview() async {
+        guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
+        isAsking = true
+        insightError = nil
+        defer { isAsking = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.weeklyReview() {
+        case .success(let result):
+            insight = result
+        case .failure(let error):
+            insightError = error.localizedDescription
+        }
+    }
+
+    func clearInsight() {
+        insight = nil
+        insightError = nil
+    }
+
     func refreshServerStatus(fresh: Bool = false) async {
         guard settings.sink.endpoint != nil, isSignedIn else {
             serverStatusError = "Sign in first."

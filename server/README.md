@@ -116,6 +116,16 @@ be deleted before the first sync ever shipped it.
 | GET | `/v1/analytics/metrics` | session/bearer | Metric catalog |
 | GET | `/v1/analytics/series` | session/bearer | Daily series for one metric |
 | GET | `/v1/export/records.csv` | session/bearer | Streaming CSV export |
+| GET | `/v1/analysis/snapshot` | session/bearer | Baselines, trends, coverage — no model |
+| GET | `/v1/analysis/trend` | session/bearer | One metric: moving averages, slope |
+| GET | `/v1/analysis/quality` | session/bearer | Data-quality report per metric |
+| GET | `/v1/analysis/sleep` | session/bearer | Duration, bedtime, consistency |
+| GET | `/v1/analysis/anomalies` | session/bearer | Sustained shifts from personal baseline |
+| GET/POST | `/v1/analysis/goals` | session/bearer | Targets and measured progress |
+| GET | `/v1/insights/status` | session/bearer | Where summaries are processed |
+| POST | `/v1/insights/ask` | session/bearer | Ask a question (runs the model) |
+| POST | `/v1/insights/weekly` | session/bearer | Weekly review |
+| GET/DELETE | `/v1/insights/history` | session | Stored questions; permanent deletion |
 | POST | `/v1/health/batches` | Bearer | Ingest an NDJSON batch |
 | GET | `/v1/health/ping` | Bearer | Cheap probe — powers Test Connection |
 | GET | `/v1/health/stats` | Bearer | Per-device counts, top metrics |
@@ -266,11 +276,85 @@ server/
 ├── docker-compose.yml     Postgres + gunicorn
 ├── healthserver/          Django project settings
 ├── ingest/
-│   ├── models.py          Device, ApiToken, Batch, Record
+│   ├── models.py          Device, ApiToken, Batch, Record, Goal, InsightTurn
 │   ├── ndjson.py          Streaming line reader
 │   ├── service.py         Batch → rows, upsert, tombstones
 │   ├── auth.py            Bearer token authentication
 │   ├── parsers.py         Hands DRF the raw stream
-│   └── views.py           Endpoints and status-code policy
-└── tests/test_ingest.py   Contract tests
+│   ├── views.py           Endpoints and status-code policy
+│   ├── analytics.py       Dashboard aggregation (rollups over raw sums)
+│   ├── health_analysis.py Baselines, trends, coverage grading
+│   ├── safety.py          Rule-based escalation, before and after the model
+│   ├── insight_views.py   /v1/analysis/* and /v1/insights/*
+│   └── llm/
+│       ├── client.py      OpenAI-compatible chat over the tailnet
+│       ├── tools.py       The eight read-only tools the model may call
+│       ├── prompts.py     System prompt and the structured answer schema
+│       └── service.py     snapshot → safety → tools → answer → safety
+└── tests/                 Contract, analysis, and safety tests
 ```
+
+---
+
+## Insights
+
+```
+HealthKit → validated storage → deterministic summaries → controlled LLM → cautious explanations
+```
+
+The split that matters is between `/v1/analysis/*` and `/v1/insights/*`. Analysis
+is arithmetic: same inputs, same output, no network call off the machine. Insights
+asks a language model to explain that arithmetic, and is slower and
+non-deterministic. The dashboard labels them differently for the same reason.
+
+**The model never does arithmetic.** It reaches data through eight read-only
+tools that return already-computed figures with units, windows, valid-day counts
+and confidence attached. No SQL, no credentials, no raw rows.
+
+**Three rules shape every number:**
+
+- Windows end *yesterday*. Today is partial, and a half day of steps against
+  full-day baselines reads as a collapse in activity that is only the clock.
+- The 7-day current window and the 28-day baseline do **not** overlap.
+- Coverage travels with every figure. A weekly average built from two recorded
+  days is not a weekly average, and the payload says so.
+
+**Safety is decided by rules, not by the model.** Anything that reaches `urgent`
+— a reported symptom like chest pain — is answered from reviewed text with the
+model never called. A post-flight pass blocks diagnoses, medication advice and
+claims that wearable data rules out illness, with negation guards, because "this
+data cannot rule out an illness" is the phrasing the prompt *asks* for.
+
+If the model server is unreachable, slow, or produces something the checks
+reject, the measured snapshot is still returned. That part was measured.
+
+### Pointing it at LM Studio
+
+The model runs on a laptop; the server runs on the tailnet host.
+
+```bash
+# On the machine running LM Studio — publishes to the tailnet only, not to
+# whatever wifi the laptop happens to be on:
+tailscale serve --bg --http=1234 http://127.0.0.1:1234
+
+# From this repo:
+./deploy.sh llm            # uses this machine's MagicDNS name, then verifies
+./deploy.sh llm off        # disable generation; analysis endpoints unaffected
+```
+
+Two failure modes here are silent, and `deploy.sh llm` checks for both:
+
+- LM Studio binds `127.0.0.1` by default, so nothing off that machine sees it.
+- `tailscale serve` routes by **Host header**. A bare tailnet IP connects fine
+  and then returns 404, which reads like a broken API rather than a routing
+  mistake. Use the MagicDNS name.
+
+Plain HTTP is acceptable on this hop because Tailscale encrypts it with
+WireGuard and both ends are machines you control — unlike the phone's upload
+path, which crosses networks Tailscale does not govern and is therefore TLS with
+a pinned certificate.
+
+Questions and answers are kept for `INSIGHT_RETENTION_DAYS` (30 by default) and
+then deleted. The snapshot they were built from is deliberately not stored: it is
+recomputable from records already in the database, so a second copy would only
+widen what a deletion request has to reach.

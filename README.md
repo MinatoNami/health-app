@@ -227,8 +227,13 @@ HealthExporter/
 └── UI/           SwiftUI screens
 
 server/           Django ingest server + deploy script (see server/README.md)
-server/dashboard/ Vue analytics dashboard (charts, CSV export)
+server/dashboard/ Vue analytics dashboard (charts, CSV export, insights)
 ```
+
+The app has five tabs, and five is a ceiling rather than a preference: a sixth
+makes iOS collapse the bar to four plus a "More" list, and what falls into More
+is the *last* two — which on this app meant burying sign-in. Batch files and the
+log moved under Settings → Diagnostics when Insights arrived.
 
 Adding or removing Swift files means regenerating the project:
 
@@ -239,6 +244,26 @@ ruby Tools/generate_project.rb
 
 The generated `.xcodeproj` is committed, so this is only needed when the file
 list changes.
+
+---
+
+## Insights on the phone
+
+The Insights tab shows the server's analysis — every headline metric over the
+last 7 days against the user's own preceding 28, with coverage and a confidence
+grade — and lets you ask questions about it.
+
+Nothing is recomputed on the device. Baselines, coverage grading and the
+deduplication rules underneath them are subtle enough that a second
+implementation would drift, and a phone quietly disagreeing with the dashboard
+about the same week is worse than either number alone. See `server/README.md`
+for how the analysis and the model layer work.
+
+The measured comparison is rendered first and the generated explanation second,
+which is also the order they arrive: the snapshot is one fast query, an answer is
+a local model working for tens of seconds. When the model server is asleep — it
+lives on a laptop, so it often is — the screen still carries everything that was
+actually recorded.
 
 ---
 

@@ -176,6 +176,7 @@ struct SettingsView: View {
                 }
 
                 Section("Diagnostics") {
+                    NavigationLink("Batch Files & Log") { ExportsView() }
                     NavigationLink("Diagnostics") { DiagnosticsView() }
                     Button("Reset Sync Cursors", role: .destructive) {
                         showResetConfirmation = true

@@ -2,6 +2,16 @@ import SwiftUI
 
 /// Batch files, with a share sheet. This is the v1 delivery mechanism: the file
 /// on disk *is* the export.
+///
+/// Pushed from Settings rather than owning a tab. It lost the tab when Insights
+/// gained one: a sixth item makes iOS collapse the bar to four plus "More", and
+/// what fell into More was Settings — the screen holding sign-in, which a new
+/// install cannot get past. Manual export is the fallback transport for when the
+/// server is unreachable, so it belongs with the rest of the maintenance tools
+/// rather than one tap from the home screen.
+///
+/// No `NavigationStack` of its own: it is pushed onto Settings', and nesting one
+/// inside another leaves the title and the back button broken.
 struct ExportsView: View {
     @EnvironmentObject private var engine: SyncEngine
     @State private var pending: [Outbox.Batch] = []
@@ -9,52 +19,50 @@ struct ExportsView: View {
     @State private var previewBatch: Outbox.Batch?
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Text("NDJSON — one record per line. Streams cleanly and appends "
-                         + "cheaply, so a server can process a batch without buffering "
-                         + "it whole.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+        List {
+            Section {
+                Text("NDJSON — one record per line. Streams cleanly and appends "
+                     + "cheaply, so a server can process a batch without buffering "
+                     + "it whole.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
 
-                Section("Pending (\(pending.count))") {
-                    if pending.isEmpty {
-                        Text("Nothing queued").foregroundStyle(.secondary)
+            Section("Pending (\(pending.count))") {
+                if pending.isEmpty {
+                    Text("Nothing queued").foregroundStyle(.secondary)
+                }
+                ForEach(pending) { batch in
+                    BatchRow(batch: batch) { previewBatch = batch }
+                }
+                if !pending.isEmpty {
+                    ShareLink(items: pending.map(\.url)) {
+                        Label("Share All Pending", systemImage: "square.and.arrow.up")
                     }
-                    ForEach(pending) { batch in
+                }
+            }
+
+            if !archived.isEmpty {
+                Section("Delivered (\(archived.count))") {
+                    ForEach(archived) { batch in
                         BatchRow(batch: batch) { previewBatch = batch }
                     }
-                    if !pending.isEmpty {
-                        ShareLink(items: pending.map(\.url)) {
-                            Label("Share All Pending", systemImage: "square.and.arrow.up")
-                        }
-                    }
-                }
-
-                if !archived.isEmpty {
-                    Section("Delivered (\(archived.count))") {
-                        ForEach(archived) { batch in
-                            BatchRow(batch: batch) { previewBatch = batch }
-                        }
-                    }
-                }
-
-                Section {
-                    ShareLink(item: Log.shared.exportText(),
-                              preview: SharePreview("Sync log")) {
-                        Label("Export Sync Log", systemImage: "doc.text")
-                    }
-                    NavigationLink("View Log") { LogView() }
                 }
             }
-            .navigationTitle("Exports")
-            .onAppear(perform: reload)
-            .refreshable { reload() }
-            .sheet(item: $previewBatch) { batch in
-                BatchPreview(batch: batch)
+
+            Section {
+                ShareLink(item: Log.shared.exportText(),
+                          preview: SharePreview("Sync log")) {
+                    Label("Export Sync Log", systemImage: "doc.text")
+                }
+                NavigationLink("View Log") { LogView() }
             }
+        }
+        .navigationTitle("Batch Files")
+        .onAppear(perform: reload)
+        .refreshable { reload() }
+        .sheet(item: $previewBatch) { batch in
+            BatchPreview(batch: batch)
         }
     }
 

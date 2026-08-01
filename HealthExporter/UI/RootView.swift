@@ -1,5 +1,9 @@
 import SwiftUI
 
+/// Five tabs, and five is a ceiling rather than a preference: a sixth makes iOS
+/// collapse the bar to four plus a "More" list, and the two that fall in are the
+/// last two — which put sign-in behind an extra tap on an app that does nothing
+/// until you sign in. Batch files moved under Settings when Insights arrived.
 struct RootView: View {
     @EnvironmentObject private var authorization: HealthAuthorization
 
@@ -7,10 +11,10 @@ struct RootView: View {
         TabView {
             StatusView()
                 .tabItem { Label("Status", systemImage: "waveform.path.ecg") }
+            InsightsView()
+                .tabItem { Label("Insights", systemImage: "sparkles") }
             MetricsView()
                 .tabItem { Label("Metrics", systemImage: "list.bullet") }
-            ExportsView()
-                .tabItem { Label("Exports", systemImage: "square.and.arrow.up") }
             ServerView()
                 .tabItem { Label("Server", systemImage: "server.rack") }
             SettingsView()
