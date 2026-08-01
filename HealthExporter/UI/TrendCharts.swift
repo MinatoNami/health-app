@@ -52,13 +52,17 @@ struct TrendChart: View {
         }
     }
 
+    // Plotted against `point.day`, not the raw date string. A string x-axis is
+    // categorical: every point gets equal width, so a metric recorded on 6 days
+    // out of 30 draws as 6 evenly spaced readings and silently implies daily
+    // sampling. On a date axis the gaps are visible, which is the truth.
     @ViewBuilder
     private var chart: some View {
         Chart(series.points) { point in
             switch style {
             case .bars:
                 BarMark(
-                    x: .value("Day", point.date),
+                    x: .value("Day", point.day),
                     y: .value(title, point.value)
                 )
                 .foregroundStyle(Color.accentColor.gradient)
@@ -69,7 +73,7 @@ struct TrendChart: View {
                 // area anchored there is drawn outside the plot rectangle and
                 // bleeds over whatever sits below the chart.
                 AreaMark(
-                    x: .value("Day", point.date),
+                    x: .value("Day", point.day),
                     yStart: .value("Baseline", domain.lowerBound),
                     yEnd: .value(title, point.value)
                 )
@@ -77,7 +81,7 @@ struct TrendChart: View {
                 .interpolationMethod(.monotone)
 
                 LineMark(
-                    x: .value("Day", point.date),
+                    x: .value("Day", point.day),
                     y: .value(title, point.value)
                 )
                 .foregroundStyle(Color.accentColor)

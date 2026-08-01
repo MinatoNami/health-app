@@ -200,12 +200,40 @@ final class Outbox {
         return batches.count
     }
 
-    /// Drops archived batches older than the retention window. Unbounded local
-    /// retention of health data is a liability, not a feature.
-    func pruneArchive(olderThan days: Int = 14) {
+    /// Drops archived batches older than the retention window, then trims the
+    /// remainder to a size cap, oldest first.
+    ///
+    /// Age alone does not bound this. A first sync ships years of history in a
+    /// day or two, so "14 days of archive" was measured at **640MB** on a real
+    /// phone — copies of data already durably on the server, and a meaningful
+    /// slice of the device. The cap is what actually bounds it; the age window
+    /// still handles the quiet case. Unbounded local retention of health data
+    /// is a liability, not a feature.
+    func pruneArchive(olderThan days: Int = 14, maxBytes: Int = 150 * 1024 * 1024) {
         let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
-        for batch in archivedBatches() where batch.createdAt < cutoff {
-            try? FileManager.default.removeItem(at: batch.url)
+        var remaining: [Batch] = []
+        for batch in archivedBatches() {
+            if batch.createdAt < cutoff {
+                try? FileManager.default.removeItem(at: batch.url)
+            } else {
+                remaining.append(batch)
+            }
+        }
+
+        // Newest first, so dropping from the tail keeps the most recently
+        // delivered batches — the ones a re-send would plausibly want.
+        remaining.sort { $0.createdAt > $1.createdAt }
+        var total = 0
+        var removed = 0
+        for batch in remaining {
+            total += batch.byteCount
+            if total > maxBytes {
+                try? FileManager.default.removeItem(at: batch.url)
+                removed += 1
+            }
+        }
+        if removed > 0 {
+            Log.shared.info("outbox", "Trimmed \(removed) archived batch(es) over the size cap")
         }
     }
 

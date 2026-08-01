@@ -24,17 +24,28 @@ const svg = ref(null)
 
 const clean = computed(() => props.points.filter((p) => p.value !== null && p.value !== undefined))
 
+const DAY_MS = 86_400_000
+
+function dayTime(point) {
+  return new Date(point.date + 'T00:00:00').getTime()
+}
+
 const scale = computed(() => {
   const values = clean.value.map((p) => p.value)
   if (!values.length) return null
   const max = Math.max(...values) * 1.12 || 1
   const plotW = W - PAD.left - PAD.right
   const plotH = props.height - PAD.top - PAD.bottom
-  const band = plotW / clean.value.length
+  // One band per calendar day in the range, not per data point: a day with no
+  // data has to leave a hole rather than let its neighbours close ranks.
+  const t0 = dayTime(clean.value[0])
+  const days = Math.max(1, Math.round((dayTime(clean.value[clean.value.length - 1]) - t0) / DAY_MS) + 1)
+  const band = plotW / days
   const width = Math.max(1, Math.min(MAX_BAR, band - GAP))
+  const offset = (i) => Math.round((dayTime(clean.value[i]) - t0) / DAY_MS)
   return {
-    max, plotW, plotH, band, width,
-    x: (i) => PAD.left + i * band + (band - width) / 2,
+    max, plotW, plotH, band, width, offset,
+    x: (i) => PAD.left + offset(i) * band + (band - width) / 2,
     y: (v) => PAD.top + plotH - (v / max) * plotH,
     h: (v) => Math.max(1, (v / max) * plotH),
   }
@@ -123,8 +134,11 @@ function onMove(event) {
   if (!scale.value || !svg.value) return
   const rect = svg.value.getBoundingClientRect()
   const x = ((event.clientX - rect.left) / rect.width) * W - PAD.left
-  const i = Math.floor(x / scale.value.band)
-  hover.value = i >= 0 && i < clean.value.length ? i : null
+  const slot = Math.floor(x / scale.value.band)
+  // Bands are days now, so find the point sitting on that day — a band with no
+  // data simply has no tooltip.
+  const found = clean.value.findIndex((_, i) => scale.value.offset(i) === slot)
+  hover.value = found >= 0 ? found : null
 }
 </script>
 

@@ -25,6 +25,11 @@ const svg = ref(null)
 
 const clean = computed(() => props.points.filter((p) => p.value !== null && p.value !== undefined))
 
+/* Milliseconds for a YYYY-MM-DD day. */
+function dayTime(point) {
+  return new Date(point.date + 'T00:00:00').getTime()
+}
+
 const scale = computed(() => {
   const values = clean.value.map((p) => p.value)
   if (!values.length) return null
@@ -38,23 +43,62 @@ const scale = computed(() => {
   const plotW = W - PAD.left - PAD.right
   const plotH = props.height - PAD.top - PAD.bottom
   const n = clean.value.length
+  // Positioned by date, not by index. Index spacing is categorical: a metric
+  // recorded on 6 days out of 30 would draw as 6 evenly spaced readings and
+  // imply daily sampling. Gaps in the data have to look like gaps.
+  const t0 = dayTime(clean.value[0])
+  const t1 = dayTime(clean.value[n - 1])
+  const span = t1 - t0
   return {
     min, max, plotW, plotH,
-    x: (i) => PAD.left + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW),
+    x: (i) => PAD.left + (n <= 1 || span === 0
+      ? plotW / 2
+      : ((dayTime(clean.value[i]) - t0) / span) * plotW),
     y: (v) => PAD.top + plotH - ((v - min) / (max - min)) * plotH,
   }
 })
 
-const path = computed(() => {
-  if (!scale.value) return ''
-  return clean.value.map((p, i) => `${i ? 'L' : 'M'}${scale.value.x(i).toFixed(1)},${scale.value.y(p.value).toFixed(1)}`).join(' ')
+/* Gaps longer than this start a new segment rather than being bridged. A
+ * straight line drawn across three weeks of no readings looks exactly like
+ * measured data, which is worse than an honest break. */
+const MAX_GAP_DAYS = 3
+const DAY_MS = 86_400_000
+
+/* Contiguous runs, split wherever the data actually stops. */
+const segments = computed(() => {
+  if (!scale.value) return []
+  const runs = []
+  let current = []
+  clean.value.forEach((p, i) => {
+    if (i > 0 && (dayTime(p) - dayTime(clean.value[i - 1])) / DAY_MS > MAX_GAP_DAYS) {
+      runs.push(current)
+      current = []
+    }
+    current.push(i)
+  })
+  if (current.length) runs.push(current)
+  return runs
 })
 
-const areaPath = computed(() => {
-  if (!scale.value || clean.value.length < 2) return ''
+const paths = computed(() =>
+  segments.value.map((run) =>
+    run.map((i, k) => `${k ? 'L' : 'M'}${scale.value.x(i).toFixed(1)},${scale.value.y(clean.value[i].value).toFixed(1)}`).join(' ')
+  )
+)
+
+const areaPaths = computed(() => {
+  if (!scale.value) return []
   const base = PAD.top + scale.value.plotH
-  return `${path.value} L${scale.value.x(clean.value.length - 1).toFixed(1)},${base} L${scale.value.x(0).toFixed(1)},${base} Z`
+  return segments.value
+    .filter((run) => run.length > 1)
+    .map((run) => {
+      const line = run.map((i, k) => `${k ? 'L' : 'M'}${scale.value.x(i).toFixed(1)},${scale.value.y(clean.value[i].value).toFixed(1)}`).join(' ')
+      return `${line} L${scale.value.x(run[run.length - 1]).toFixed(1)},${base} L${scale.value.x(run[0]).toFixed(1)},${base} Z`
+    })
 })
+
+/* A lone reading with no neighbour would otherwise draw nothing at all. */
+const isolated = computed(() => segments.value.filter((run) => run.length === 1).map((run) => run[0]))
 
 const ticks = computed(() => {
   if (!scale.value) return []
@@ -172,8 +216,18 @@ function onMove(event) {
         >{{ fmt(t) }}</text>
       </g>
 
-      <path v-if="areaPath" :d="areaPath" fill="var(--series-1)" opacity="0.1" />
-      <path :d="path" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+      <path v-for="(d, k) in areaPaths" :key="'a' + k" :d="d" fill="var(--series-1)" opacity="0.1" />
+      <path
+        v-for="(d, k) in paths" :key="'p' + k"
+        :d="d" fill="none" stroke="var(--series-1)"
+        stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+      />
+      <!-- Single readings with no neighbour still need to be visible. -->
+      <circle
+        v-for="i in isolated" :key="'i' + i"
+        :cx="scale.x(i)" :cy="scale.y(clean[i].value)" r="3.5"
+        fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"
+      />
 
       <!-- Crosshair -->
       <g v-if="hover !== null">
