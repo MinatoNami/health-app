@@ -39,7 +39,14 @@ final class SyncEngine: ObservableObject {
         /// Days of daily statistics to re-emit each run. Statistic IDs are
         /// deterministic, so overlap is a harmless upsert and covers late-arriving
         /// samples that change a past day's total.
-        var statisticsLookbackDays: Int = 7
+        ///
+        /// 90 rather than 7 because these rollups are the *only* deduplicated
+        /// totals the server ever sees. iPhone and Watch both write step counts,
+        /// so a day without a rollup can only be estimated by summing raw
+        /// samples — which measures ~1.9x high, and up to 3.5x. Every extra day
+        /// here is a day the dashboard can report as fact instead of an
+        /// estimate. The cost is one statistics query per metric per run.
+        var statisticsLookbackDays: Int = 90
         var sink = SinkConfiguration()
         var lastFullSyncAt: Date?
     }
@@ -95,6 +102,17 @@ final class SyncEngine: ObservableObject {
         self.settings = settingsStore.value
         self.pendingBatches = Outbox.shared.pendingCount
         migrateSupersededPin()
+        migrateStatisticsLookback()
+    }
+
+    /// Existing installs persisted the old 7-day default, and a stored value
+    /// wins over a new one. Without this the change would only reach fresh
+    /// installs, leaving the dashboard estimating totals it could report
+    /// exactly. Only moves the old default — a deliberate choice is left alone.
+    private func migrateStatisticsLookback() {
+        guard settings.statisticsLookbackDays == 7 else { return }
+        settings.statisticsLookbackDays = 90
+        Log.shared.info("sync", "Raised statistics lookback to 90 days for deduplicated daily totals")
     }
 
     /// Moves a stored pin forward when the server certificate has been rotated.
@@ -394,6 +412,13 @@ final class SyncEngine: ObservableObject {
             return
         }
 
+        // A revoked or expired token fails every batch identically. Without a
+        // circuit breaker, a backlog of thousands of batches becomes thousands
+        // of pointless 401s — minutes of radio, and the real problem buried at
+        // the bottom of the log.
+        var consecutiveAuthFailures = 0
+        let authFailureLimit = 3
+
         for (index, batch) in pending.enumerated() {
             phase = .delivering(remaining: pending.count - index)
             var attempt = 0
@@ -405,9 +430,15 @@ final class SyncEngine: ObservableObject {
                 case .success:
                     Outbox.shared.archive(batch)
                     Log.shared.info("deliver", "\(batch.displayName) accepted")
+                    consecutiveAuthFailures = 0
                     attempt = .max
                 case .failure(let error):
                     let sinkError = error as? SinkError
+                    if case .unauthorized = sinkError {
+                        consecutiveAuthFailures += 1
+                    } else if sinkError?.isRetryable != true {
+                        consecutiveAuthFailures = 0
+                    }
                     if sinkError?.isRetryable == true, attempt < 4 {
                         // Exponential backoff with jitter, capped.
                         let jitter = UInt64.random(in: 0...500_000_000)
@@ -421,6 +452,18 @@ final class SyncEngine: ObservableObject {
                         attempt = .max
                     }
                 }
+            }
+
+            if consecutiveAuthFailures >= authFailureLimit {
+                // Stop and say so plainly. The batches stay in the outbox, so
+                // nothing is lost — this only avoids burning the backlog
+                // against a credential that is not going to start working.
+                phase = .failed("Server rejected the token — sign in again")
+                Log.shared.error("deliver",
+                    "Stopped after \(consecutiveAuthFailures) authentication failures; "
+                    + "\(pending.count - index - 1) batch(es) left queued. Sign in again in Settings.")
+                pendingBatches = Outbox.shared.pendingCount
+                return
             }
         }
         pendingBatches = Outbox.shared.pendingCount

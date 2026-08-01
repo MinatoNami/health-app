@@ -73,6 +73,25 @@ function barPath(i, value) {
   return `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z`
 }
 
+/* Keyboard parity with hover: a value revealed only on mouseover is
+ * unreachable for anyone navigating by keyboard, and the tooltip is the
+ * highest-resolution reading on the chart. Arrows step, Home/End jump,
+ * Escape clears. */
+function onKey(event) {
+  const n = clean.value.length
+  if (!n) return
+  const key = event.key
+  if (key === 'Escape') { hover.value = null; return }
+  let next = hover.value
+  if (key === 'ArrowRight') next = next === null ? 0 : Math.min(n - 1, next + 1)
+  else if (key === 'ArrowLeft') next = next === null ? n - 1 : Math.max(0, next - 1)
+  else if (key === 'Home') next = 0
+  else if (key === 'End') next = n - 1
+  else return
+  event.preventDefault()
+  hover.value = next
+}
+
 function fmt(v) {
   if (v === null || v === undefined) return '—'
   const abs = Math.abs(v)
@@ -81,6 +100,17 @@ function fmt(v) {
   if (abs >= 100) return Math.round(v).toLocaleString()
   return Number(v.toFixed(abs < 10 ? 1 : 0)).toLocaleString()
 }
+
+const ariaSummary = computed(() => {
+  if (!clean.value.length) return 'No data'
+  const values = clean.value.map((p) => p.value)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  return `${clean.value.length} daily points from ${clean.value[0].date} to `
+    + `${clean.value[clean.value.length - 1].date}. Low ${fmt(min)}, high ${fmt(max)}, `
+    + `latest ${fmt(values[values.length - 1])} ${props.unit}. `
+    + 'Use arrow keys to read individual days.'
+})
 
 function shortDate(iso) {
   const d = new Date(iso + 'T00:00:00')
@@ -106,8 +136,13 @@ function onMove(event) {
       :viewBox="`0 0 ${W} ${height}`"
       :style="{ height: height + 'px' }"
       role="img"
+      tabindex="0"
+      :aria-label="ariaSummary"
       @mousemove="onMove"
       @mouseleave="hover = null"
+      @keydown="onKey"
+      @focus="hover === null && clean.length ? (hover = clean.length - 1) : null"
+      @blur="hover = null"
     >
       <g>
         <line

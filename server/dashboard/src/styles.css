@@ -192,3 +192,12 @@ table.data td { font-variant-numeric: tabular-nums; color: var(--text-secondary)
 }
 .checks label:has(input:checked) { border-color: var(--text-primary); color: var(--text-primary); }
 .checks input { accent-color: var(--series-1); }
+
+/* Charts are focusable so keyboard users can reach the same per-point values
+   the tooltip shows on hover. The ring has to be visible — an invisible focus
+   target is the same as no target. */
+svg[tabindex='0']:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 3px;
+  border-radius: 4px;
+}

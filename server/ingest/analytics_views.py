@@ -12,9 +12,15 @@ from django.core.cache import cache
 from django.http import StreamingHttpResponse
 from rest_framework import status
 from rest_framework.authentication import SessionAuthentication
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+    throttle_classes,
+)
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import SimpleRateThrottle
 
 from . import analytics
 from .auth import BearerTokenAuthentication
@@ -39,9 +45,48 @@ HEADLINE_METRICS = [
 MAX_EXPORT_ROWS = 2_000_000
 
 
+class _FixedScopeThrottle(SimpleRateThrottle):
+    """SimpleRateThrottle, not ScopedRateThrottle.
+
+    ScopedRateThrottle reads `throttle_scope` off the *view*, not `scope` off
+    the throttle class, and silently allows the request when it finds neither —
+    so a scope set here would have made the limit a no-op that looks configured.
+    Keyed on client IP, which NUM_PROXIES makes trustworthy.
+    """
+
+    def get_cache_key(self, request, view):
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
+
+
+class AnalyticsThrottle(_FixedScopeThrottle):
+    scope = "analytics"
+
+
+class ExportThrottle(_FixedScopeThrottle):
+    """Export is the one endpoint where a stuck retry loop is genuinely
+    expensive — each call can stream hundreds of megabytes and hold a worker
+    for a minute."""
+
+    scope = "export"
+
+
+def _range_or_error(request, default_days=30):
+    """Returns (parsed, error_response). A bad date is the caller's mistake and
+    should say so, rather than quietly answering for a different range."""
+    try:
+        return analytics.parse_range(
+            request.query_params.get("from"),
+            request.query_params.get("to"),
+            default_days=default_days,
+        ), None
+    except analytics.InvalidRange as exc:
+        return None, Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 @api_view(["GET"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
 def metrics(request):
     return Response({"metrics": analytics.metric_catalog()})
 
@@ -49,14 +94,16 @@ def metrics(request):
 @api_view(["GET"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
 def series(request):
     metric = request.query_params.get("metric", "").strip()
     if not metric:
         return Response({"detail": "metric is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    start, end, start_date, end_date = analytics.parse_range(
-        request.query_params.get("from"), request.query_params.get("to")
-    )
+    parsed, error = _range_or_error(request)
+    if error:
+        return error
+    start, end, start_date, end_date = parsed
     agg = request.query_params.get("agg", "").strip().lower()
     if agg not in analytics.CUMULATIVE_AGGS | analytics.DISCRETE_AGGS:
         catalog = {m["metric_slug"]: m for m in analytics.metric_catalog()}
@@ -76,10 +123,12 @@ OVERVIEW_CACHE_SECONDS = 60
 @api_view(["GET"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
 def overview(request):
-    start, end, start_date, end_date = analytics.parse_range(
-        request.query_params.get("from"), request.query_params.get("to")
-    )
+    parsed, error = _range_or_error(request)
+    if error:
+        return error
+    start, end, start_date, end_date = parsed
     tz_name = request.query_params.get("tz")
 
     # Cached per range: a two-year overview runs seven aggregates over the whole
@@ -182,17 +231,17 @@ def _export_rows(queryset):
 @api_view(["GET"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
+@throttle_classes([ExportThrottle])
 def export_csv(request):
     """Streams matching records as CSV.
 
     Streamed, not buffered: this table holds millions of rows and an export of
     "everything" must not have to fit in memory first.
     """
-    start, end, start_date, end_date = analytics.parse_range(
-        request.query_params.get("from"),
-        request.query_params.get("to"),
-        default_days=3650,
-    )
+    parsed, error = _range_or_error(request, default_days=3650)
+    if error:
+        return error
+    start, end, start_date, end_date = parsed
 
     queryset = Record.objects.filter(start__gte=start, start__lt=end)
 
@@ -225,14 +274,14 @@ def export_csv(request):
 @api_view(["GET"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
+@throttle_classes([ExportThrottle])
 def export_summary(request):
     """Row count and rough size for a prospective export, so the UI can warn
     before someone downloads a million rows."""
-    start, end, _, _ = analytics.parse_range(
-        request.query_params.get("from"),
-        request.query_params.get("to"),
-        default_days=3650,
-    )
+    parsed, error = _range_or_error(request, default_days=3650)
+    if error:
+        return error
+    start, end, _, _ = parsed
     queryset = Record.objects.filter(start__gte=start, start__lt=end, deleted_at__isnull=True)
     raw_metrics = request.query_params.get("metrics", "").strip()
     if raw_metrics:

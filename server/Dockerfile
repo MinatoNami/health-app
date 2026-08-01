@@ -31,13 +31,19 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
 
-# Two workers is plenty for one phone, and each holds a database connection.
-# The 180s timeout is sized for a first-sync batch of 5,000 records; the
-# default 30s would kill a legitimate backfill upload mid-write.
+# Four workers, not two: a CSV export holds one worker for the whole download
+# (measured 47s for 1.29M rows), so with two, a single export plus one slow
+# upload leaves nothing for the phone.
+#
+# The 900s timeout is sized for the export, not the upload. gunicorn kills a
+# worker that exceeds it even while it is actively streaming, and the failure
+# mode is nasty: the client has already received a 200 and a partial body, so a
+# truncated CSV looks exactly like a complete one. At ~47s per 334MB today,
+# this leaves room for the archive to grow roughly 15x.
 CMD ["gunicorn", "healthserver.wsgi:application", \
      "--bind", "0.0.0.0:8000", \
-     "--workers", "2", \
-     "--timeout", "180", \
+     "--workers", "4", \
+     "--timeout", "900", \
      "--graceful-timeout", "30", \
      "--max-requests", "500", \
      "--max-requests-jitter", "50", \

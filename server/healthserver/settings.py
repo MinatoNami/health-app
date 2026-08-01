@@ -127,7 +127,14 @@ REST_FRAMEWORK = {
     # Only the login endpoint is throttled. Ingest must not be: the phone
     # legitimately drains a backlog of batches back to back, and a 429 there
     # would just add backoff to work that has to happen anyway.
-    "DEFAULT_THROTTLE_RATES": {"login": env("LOGIN_RATE_LIMIT", "10/min")},
+    "DEFAULT_THROTTLE_RATES": {
+        "login": env("LOGIN_RATE_LIMIT", "10/min"),
+        # Generous — these are cheap and cached. The point is to stop a runaway
+        # client loop, not to ration normal dashboard use.
+        "analytics": env("ANALYTICS_RATE_LIMIT", "240/min"),
+        # Tighter: one call can stream hundreds of megabytes.
+        "export": env("EXPORT_RATE_LIMIT", "12/min"),
+    },
     # Exactly one proxy (nginx) sits in front, so the client identity is the
     # LAST entry in X-Forwarded-For.
     #

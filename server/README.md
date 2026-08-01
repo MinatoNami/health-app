@@ -15,6 +15,9 @@ them in Postgres. Runs on `alena-server` behind nginx, reachable over Tailscale.
 ./deploy.sh token my-phone  # mint a bearer token directly (shown once)
 ./deploy.sh pin             # print the certificate pin for the app
 ./deploy.sh rotate-cert     # reissue the TLS keypair (changes the pin)
+./deploy.sh backup          # run a database backup now
+./deploy.sh backup-verify   # restore the newest backup into a scratch DB
+./deploy.sh backup-pull     # copy backups off the server (~/health-backups)
 ./deploy.sh status          # container + endpoint health
 ./deploy.sh logs            # tail application logs
 ```
@@ -130,6 +133,30 @@ ssh alena-tailscale 'cd health-server && docker compose run --rm web python mana
 
 ---
 
+## Backups
+
+`deploy.sh` installs a nightly `cron.d` job at 03:20 that dumps the database to
+`/var/backups/health/`, gzipped, with 30-day retention. The dump is written to a
+`.partial` file and renamed only on success, then integrity-checked with
+`gzip -t` — an interrupted run leaving a truncated file that *looks* like a
+backup is how you discover you have none. Retention runs after the new backup
+succeeds, so a failing run never prunes the last good copy.
+
+```bash
+./deploy.sh backup-verify   # restores the newest dump into a scratch database
+./deploy.sh backup-pull     # copies them to ~/health-backups
+```
+
+**A backup nobody has restored is a hypothesis.** `backup-verify` loads the
+newest dump into a throwaway database, counts rows, and drops it. Verified at
+1,285,705 records.
+
+`backup-pull` is the part that matters for hardware failure — a backup on the
+same disk as the database only survives mistakes, not a dead drive. Worth
+running periodically, or wiring into a cron on your laptop.
+
+---
+
 ## Dashboard
 
 `https://alena-server.tail03bec9.ts.net/dashboard/` — Vue 3 + Vite, built by
@@ -178,6 +205,12 @@ with the dataviz validator in both light and dark modes.
   creation and is unrecoverable — a database dump yields nothing usable.
 - **Postgres publishes no port.** It is reachable only from the web container;
   binding 5432 on this host would expose it to the whole tailnet.
+- **Login is rate-limited per real client IP.** `NUM_PROXIES=1` plus nginx
+  overwriting `X-Forwarded-For` — with nginx *appending* and DRF reading the
+  first entry, one spoofed header bought a fresh bucket and the limit was
+  decorative. Analytics reads (240/min) and exports (12/min) are throttled too,
+  using `SimpleRateThrottle`: `ScopedRateThrottle` reads `throttle_scope` off
+  the view and silently allows everything without it.
 - **gunicorn binds 127.0.0.1 only.** nginx terminates TLS; without this there
   would be an unencrypted copy of the endpoint on the tailnet.
 - **The certificate is self-signed and pinned by the app.** Tailscale refused a

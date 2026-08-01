@@ -8,6 +8,9 @@
 #   ./deploy.sh token <label>   mint a bearer token directly (shown once)
 #   ./deploy.sh pin             print the certificate pin for the app
 #   ./deploy.sh rotate-cert     reissue the TLS keypair (changes the pin)
+#   ./deploy.sh backup          run a database backup now
+#   ./deploy.sh backup-verify   restore the newest backup into a scratch DB
+#   ./deploy.sh backup-pull     copy backups off the server to this machine
 #   ./deploy.sh status          container + endpoint health
 #   ./deploy.sh logs [n]        tail application logs
 #   ./deploy.sh migrate         run migrations only
@@ -278,6 +281,7 @@ cmd_deploy() {
   ensure_cert
   configure_nginx
   start_services
+  install_backups
   run_migrations
   verify
   print_summary
@@ -287,6 +291,68 @@ cmd_token() {
   [ $# -ge 1 ] || die "usage: ./deploy.sh token <label>"
   require_host
   compose "run --rm web python manage.py issue_token '$1'"
+}
+
+BACKUP_DIR_REMOTE="/var/backups/health"
+
+install_backups() {
+  step "Backups"
+  remote "sudo install -m 755 -o root -g root /dev/stdin /usr/local/bin/health-backup" \
+    < "$LOCAL_DIR/deploy/backup.sh"
+  remote "sudo mkdir -p $BACKUP_DIR_REMOTE && sudo chown ubuntu:ubuntu $BACKUP_DIR_REMOTE"
+
+  # 03:20 rather than 03:00: every other cron on the box fires on the hour, and
+  # a pg_dump competing with them for I/O just makes both slower.
+  remote "sudo tee /etc/cron.d/health-backup >/dev/null <<'CRON'
+# Nightly Health Exporter database backup. Installed by server/deploy.sh.
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+20 3 * * * ubuntu /usr/local/bin/health-backup >> /var/log/health-backup.log 2>&1
+CRON
+sudo chmod 644 /etc/cron.d/health-backup"
+  ok "nightly backup installed (03:20, 30-day retention)"
+}
+
+cmd_backup() {
+  require_host
+  step "Running a backup now"
+  remote "/usr/local/bin/health-backup" 2>&1 | sed 's/^/    /'
+  remote "ls -lh $BACKUP_DIR_REMOTE | tail -5" 2>&1 | sed 's/^/    /'
+}
+
+cmd_backup_pull() {
+  require_host
+  # Outside the repo by default: a 54MB dump of health data has no business
+  # sitting in a working tree where it can be committed by accident.
+  local dest="${1:-$HOME/health-backups}"
+  mkdir -p "$dest"
+  step "Copying backups off the server"
+  # A backup on the same disk as the database only survives mistakes, not
+  # hardware. This is the copy that survives the machine.
+  # No --info=stats1: macOS ships rsync 2.6.9, which predates that flag.
+  rsync -az "$SSH_HOST:$BACKUP_DIR_REMOTE/" "$dest/"
+  ok "pulled to $dest"
+  ls -lh "$dest" | tail -5 | sed 's/^/    /'
+}
+
+cmd_backup_verify() {
+  require_host
+  step "Verifying the newest backup restores"
+  # A backup nobody has restored is a hypothesis. This loads the newest dump
+  # into a scratch database and counts rows, then drops it.
+  remote "cd $REMOTE_DIR && set -e
+    LATEST=\$(ls -t $BACKUP_DIR_REMOTE/health-*.sql.gz 2>/dev/null | head -1)
+    [ -n \"\$LATEST\" ] || { echo 'no backups found'; exit 1; }
+    echo \"restoring \$LATEST into scratch database\"
+    docker compose exec -T db psql -U health -d postgres -c 'DROP DATABASE IF EXISTS restore_check;' >/dev/null
+    docker compose exec -T db psql -U health -d postgres -c 'CREATE DATABASE restore_check;' >/dev/null
+    gunzip -c \"\$LATEST\" | docker compose exec -T db psql -U health -d restore_check -q >/dev/null 2>&1
+    docker compose exec -T db psql -U health -d restore_check -t -c \\
+      \"select 'records: '||count(*) from ingest_record;\"
+    docker compose exec -T db psql -U health -d restore_check -t -c \\
+      \"select 'batches: '||count(*) from ingest_batch;\"
+    docker compose exec -T db psql -U health -d postgres -c 'DROP DATABASE restore_check;' >/dev/null
+    echo 'scratch database dropped'" 2>&1 | sed 's/^/    /'
 }
 
 cmd_admin() {
@@ -369,6 +435,9 @@ case "${1:-deploy}" in
   deploy)  cmd_deploy ;;
   user)    shift; cmd_user "$@" ;;
   admin)   shift; cmd_admin "$@" ;;
+  backup)  cmd_backup ;;
+  backup-pull) shift; cmd_backup_pull "$@" ;;
+  backup-verify) cmd_backup_verify ;;
   rotate-cert) cmd_rotate_cert ;;
   token)   shift; cmd_token "$@" ;;
   pin)     cmd_pin ;;
@@ -377,5 +446,5 @@ case "${1:-deploy}" in
   migrate) cmd_migrate ;;
   shell)   cmd_shell ;;
   destroy) cmd_destroy ;;
-  *)       die "unknown command '$1' (deploy, user, admin, token, pin, rotate-cert, status, logs, migrate, shell, destroy)" ;;
+  *)       die "unknown command '$1' (deploy, user, admin, token, pin, rotate-cert, backup, backup-verify, backup-pull, status, logs, migrate, shell, destroy)" ;;
 esac

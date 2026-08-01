@@ -16,6 +16,7 @@ it, and the dashboard labels the estimated ones. Quietly returning a number that
 is 1.8× too large is far worse than showing a caveat.
 """
 
+import os
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,10 +26,11 @@ from django.db.models.functions import Cast, TruncDate
 
 from .models import Record
 
-# Samples carry a per-sample timezone; days are bucketed in one display zone so
-# a "day" means the same thing across the whole chart. Overwhelmingly one zone
-# in practice.
-DEFAULT_TZ = "Asia/Singapore"
+# Samples carry a per-sample timezone, but a chart needs one definition of "day"
+# or the buckets stop lining up. Configurable because the right answer is where
+# the person lives, not where the server is: leaving this at UTC would split
+# every Singapore evening across two days.
+DEFAULT_TZ = os.environ.get("DISPLAY_TIMEZONE", "Asia/Singapore")
 
 # Aggregations that are valid for a cumulative metric (summing is meaningful)
 # versus a discrete one (summing is meaningless — averaging is the useful view).
@@ -37,6 +39,10 @@ DISCRETE_AGGS = {"avg", "min", "max", "count"}
 
 SOURCE_ROLLUP = "statistic"
 SOURCE_RAW = "raw_sum"
+
+
+class InvalidRange(ValueError):
+    """A date the caller supplied could not be parsed."""
 
 
 def zone(name: str | None) -> ZoneInfo:
@@ -259,8 +265,11 @@ def parse_range(from_raw: str | None, to_raw: str | None, default_days: int = 30
             return fallback
         try:
             return date.fromisoformat(value)
-        except ValueError:
-            return fallback
+        except ValueError as exc:
+            # Silently substituting a default would answer a question nobody
+            # asked, and the caller would believe the numbers apply to the
+            # range they typed.
+            raise InvalidRange(f"invalid date {value!r}; expected YYYY-MM-DD") from exc
 
     end_date = parse(to_raw, today)
     start_date = parse(from_raw, end_date - timedelta(days=default_days - 1))

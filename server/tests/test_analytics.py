@@ -296,3 +296,24 @@ class ThrottleIdentityTests(TestCase):
         # A different spoofed prefix must not buy a fresh bucket.
         self.assertEqual(self.attempt(xff=other_spoof).status_code, 429)
         self.assertEqual(self.attempt(xff="1.2.3.4, 127.0.0.1").status_code, 429)
+
+
+class EndpointThrottleTests(AnalyticsTestCase):
+    """A throttle that silently allows everything is worse than none — it reads
+    as configured. ScopedRateThrottle does exactly that when the view has no
+    throttle_scope, which is how this was first written."""
+
+    def test_export_summary_is_actually_throttled(self):
+        codes = {
+            self.client.get("/v1/export/summary", headers=self.auth()).status_code
+            for _ in range(16)
+        }
+        self.assertIn(429, codes)
+
+    def test_analytics_reads_allow_normal_use(self):
+        # 240/min: a dashboard flipping between ranges must not trip it.
+        codes = {
+            self.client.get("/v1/analytics/metrics", headers=self.auth()).status_code
+            for _ in range(30)
+        }
+        self.assertEqual(codes, {200})
