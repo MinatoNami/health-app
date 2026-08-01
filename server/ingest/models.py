@@ -247,6 +247,32 @@ class Goal(models.Model):
         return f"{self.metric_slug} ≥ {self.target_value} {self.unit}".strip()
 
 
+class AlertState(models.Model):
+    """One open (or closed) alert, so the notifier does not nag.
+
+    Without durable state the nightly freshness check would announce the same
+    dead metric every night for a month, which is how an alert becomes something
+    people filter to a folder they never open. `resolved_at` is what makes
+    recovery reportable: you learn the fix worked without going to look.
+    """
+
+    key = models.CharField(max_length=128, unique=True)
+    label = models.CharField(max_length=128, blank=True)
+    detail = models.TextField(blank=True)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(default=timezone.now)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    # False when the webhook was unreachable. The state is still written, so a
+    # broken notifier cannot cause a re-alert storm once it recovers.
+    notified = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ("-last_sent_at",)
+
+    def __str__(self):
+        return f"{self.key} ({'resolved' if self.resolved_at else 'open'})"
+
+
 class InsightTurn(models.Model):
     """One question and the answer that came back.
 

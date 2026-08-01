@@ -22,6 +22,7 @@ const analysable = ref([])
 const question = ref('')
 const context = ref('')
 const remember = ref(true)
+const followUp = ref(false)
 const asking = ref(false)
 const result = ref(null)
 const error = ref('')
@@ -86,6 +87,8 @@ async function ask(text) {
       question: asked,
       context: context.value,
       remember: remember.value,
+      // Only once there is something to follow up on.
+      follow_up: followUp.value && Boolean(result.value),
     })
   } catch (e) {
     error.value = e.message
@@ -272,6 +275,13 @@ onMounted(() => {
           <label class="remember">
             <input v-model="remember" type="checkbox" />
             Keep this question
+          </label>
+          <!-- Only offered once there is a previous answer to follow up on;
+               a checkbox that does nothing on the first question is a promise
+               the screen cannot keep. -->
+          <label v-if="result" class="remember">
+            <input v-model="followUp" type="checkbox" />
+            Follow up on the last answer
           </label>
         </div>
       </form>

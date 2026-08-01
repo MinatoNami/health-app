@@ -302,6 +302,7 @@ def ask(request):
         tz_name=_tz(request) or request.data.get("tz"),
         owner=_owner(request),
         persist=request.data.get("remember") is not False,
+        follow_up=bool(request.data.get("follow_up")),
     )
     return Response(payload)
 

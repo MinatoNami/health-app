@@ -152,6 +152,22 @@ ssh alena-tailscale 'cd health-server && docker compose run --rm web python mana
 backup is how you discover you have none. Retention runs after the new backup
 succeeds, so a failing run never prunes the last good copy.
 
+Dumps are encrypted with gpg (AES-256, symmetric) before they touch the disk.
+Be precise about what that buys, because the passphrase lives in `.env` on the
+same machine:
+
+- **Protected:** copies pulled to a laptop, backup media, and anyone who ends up
+  with the files but not the `.env` — most of the realistic ways a dump escapes.
+- **Not protected:** someone who already has root on the server.
+
+```bash
+./deploy.sh backup-key      # print the passphrase — save it OFF this machine
+```
+
+That last point is not optional. The passphrase sits on the server it protects,
+so if the machine dies you have encrypted backups and no way to open them, which
+is the same as having none.
+
 ```bash
 ./deploy.sh backup-verify   # restores the newest dump into a scratch database
 ./deploy.sh backup-pull     # copies them to ~/health-backups
@@ -425,3 +441,54 @@ print(r[\"answer\"][\"summary\"] if r[\"answer\"] else r[\"error\"])
 The chest-pain test is the important one. It should come back in well under a
 second — if it takes 25 seconds, the model was consulted and the safety
 short-circuit is not working.
+
+---
+
+## Knowing when a signal dies
+
+The default failure mode of this whole architecture is **silence**. A revoked
+Health permission, a watch left in a drawer, and background delivery dying after
+an OS update all look exactly like a quiet week. Sleep stopped uploading on
+2026-06-27 and nothing said so for 35 days.
+
+So the check runs on a timer and pushes, rather than waiting to be visited:
+
+```bash
+./deploy.sh alerts https://ntfy.example.com/health-sync   # where to push
+./deploy.sh alerts check     # what is stale right now, sends nothing
+./deploy.sh alerts test      # force one through, to prove the webhook works
+./deploy.sh alerts off
+```
+
+Installed by `deploy.sh` as cron: freshness daily at 09:00, weekly review on
+Mondays at 08:30, both logging to `/var/log/health-freshness.log`.
+
+Two things keep it from becoming noise people mute:
+
+- **Thresholds follow expected cadence.** Weight is not step count; alerting
+  after 48h on a metric recorded twice a week trains you to ignore the alert.
+- **It has state.** A dead metric is reported once, then at most weekly.
+  Recovery is reported too, so you learn the fix worked without going to look.
+
+Without `ALERT_WEBHOOK_URL` the check still runs and logs — but logging is what
+it already did, and that is what failed for 35 days.
+
+What leaves the tailnet when an alert fires is metric names and dates ("Sleep
+duration: last recorded 2026-06-27"), never measurements. Still health-adjacent,
+so a self-hosted receiver is the better choice.
+
+The weekly review uses `--skip-if-unreachable`: the model lives on a laptop, and
+a shut laptop is the normal case rather than a fault worth mailing about.
+
+---
+
+## Deleting everything
+
+```bash
+./deploy.sh purge
+```
+
+Prints what it will destroy and, more usefully, what it will not: the backups,
+any copies pulled to your laptop, and the data still in Apple Health — which
+re-uploads on the next sync unless you also reset the cursors in the app. See
+[docs/PRIVACY.md](../docs/PRIVACY.md).

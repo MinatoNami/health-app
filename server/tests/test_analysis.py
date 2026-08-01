@@ -367,6 +367,106 @@ class AnomalyTests(AnalysisTestCase):
         self.assertIn("baseline", found[0]["observation"])
 
 
+class TimezoneTests(AnalysisTestCase):
+    """Day boundaries under DST and travel.
+
+    Singapore has no DST, which is exactly why this needs testing against a zone
+    that does: the bucketing code is only ever exercised in a zone where every
+    day is 24 hours, so a 23-hour day is a case it has never seen.
+    """
+
+    LONDON = ZoneInfo("Europe/London")
+
+    def quantity(self, moment: datetime, value: float, slug="step_count"):
+        self.counter += 1
+        return Record.objects.create(
+            id=f"tz-{self.counter}", device=self.device, batch=self.batch,
+            kind=Record.Kind.QUANTITY, metric=f"HKQuantityTypeIdentifier{slug}",
+            metric_slug=slug, unit="count", aggregation="cumulative",
+            value=value, start=moment, end=moment,
+        )
+
+    def test_samples_bucket_by_local_day_across_a_spring_dst_jump(self):
+        """29 March 2026: London loses an hour at 01:00. Samples either side must
+        land on the days they were actually recorded on."""
+        before = datetime(2026, 3, 28, 23, 30, tzinfo=self.LONDON)
+        after = datetime(2026, 3, 29, 12, 0, tzinfo=self.LONDON)
+        self.quantity(before, 1_000)
+        self.quantity(after, 2_000)
+
+        values = health_analysis.day_values(
+            "step_count", date(2026, 3, 27), date(2026, 3, 30), tz_name="Europe/London"
+        )
+
+        by_day = {v.day.isoformat(): v.value for v in values}
+        self.assertEqual(by_day.get("2026-03-28"), 1_000)
+        self.assertEqual(by_day.get("2026-03-29"), 2_000)
+
+    def test_the_ambiguous_hour_in_autumn_lands_on_one_day(self):
+        """25 October 2026: 01:00–02:00 happens twice in London. Both instants
+        are the same calendar day, so neither may leak into the next."""
+        first = datetime(2026, 10, 25, 1, 30, tzinfo=self.LONDON, fold=0)
+        second = datetime(2026, 10, 25, 1, 30, tzinfo=self.LONDON, fold=1)
+        self.quantity(first, 500)
+        self.quantity(second, 700)
+
+        values = health_analysis.day_values(
+            "step_count", date(2026, 10, 24), date(2026, 10, 26), tz_name="Europe/London"
+        )
+
+        by_day = {v.day.isoformat(): v.value for v in values}
+        self.assertEqual(by_day.get("2026-10-25"), 1_200)
+        self.assertNotIn("2026-10-26", by_day)
+
+    def test_travel_does_not_split_one_night_into_two(self):
+        """A night begun in Singapore and ended in London is still one night.
+        Bucketing by `end` in the display zone is what keeps it that way."""
+        start = datetime(2026, 5, 10, 23, 0, tzinfo=SGT)
+        end = start + timedelta(hours=7)
+        self.counter += 1
+        Record.objects.create(
+            id="tz-sleep", device=self.device, batch=self.batch,
+            kind=Record.Kind.SLEEP, metric="HKCategoryTypeIdentifierSleepAnalysis",
+            metric_slug="sleep_analysis", value=1, start=start, end=end,
+            extra={"is_asleep": True, "duration_seconds": 7 * 3600},
+        )
+
+        summary = health_analysis.sleep_summary(
+            days=5, as_of=date(2026, 5, 12), tz_name="Asia/Singapore"
+        )
+
+        self.assertEqual(summary["nights_recorded"], 1)
+        self.assertEqual(summary["nights"][0]["hours_asleep"], 7.0)
+
+    def test_a_bedtime_reported_in_a_far_zone_is_still_a_bedtime(self):
+        """Read in a zone 7 hours off, a 23:00 local bedtime becomes 16:00 —
+        which the midnight-safe clock arithmetic must not mangle into nonsense."""
+        start = datetime(2026, 5, 10, 23, 0, tzinfo=SGT)
+        self.counter += 1
+        Record.objects.create(
+            id="tz-sleep-2", device=self.device, batch=self.batch,
+            kind=Record.Kind.SLEEP, metric="HKCategoryTypeIdentifierSleepAnalysis",
+            metric_slug="sleep_analysis", value=1,
+            start=start, end=start + timedelta(hours=7),
+            extra={"is_asleep": True, "duration_seconds": 7 * 3600},
+        )
+
+        summary = health_analysis.sleep_summary(
+            days=5, as_of=date(2026, 5, 12), tz_name="Europe/London"
+        )
+
+        self.assertEqual(summary["nights_recorded"], 1)
+        # 23:00 SGT is 16:00 London on the same date.
+        self.assertEqual(summary["nights"][0]["bedtime"], "16:00")
+
+    def test_an_unknown_timezone_falls_back_rather_than_failing(self):
+        self.fill(3, 10_000)
+        values = health_analysis.day_values(
+            "step_count", self.as_of - timedelta(days=3), self.as_of, tz_name="Mars/Olympus"
+        )
+        self.assertEqual(len(values), 3)
+
+
 class AnalysisEndpointTests(AnalysisTestCase):
     def test_snapshot_requires_auth(self):
         self.assertIn(self.client.get("/v1/analysis/snapshot").status_code, (401, 403))

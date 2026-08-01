@@ -75,6 +75,9 @@ export const api = {
   // Model-backed. Slow by nature: a local model works through this for tens of
   // seconds, so callers must show that something is happening.
   insightStatus: () => request('/v1/insights/status'),
+  // `follow_up` replays the last couple of turns for continuity. Only their
+  // summaries — the figures are re-read from the snapshot every time, so the
+  // model cannot cite its own earlier prose back as a measurement.
   ask: (body) => request('/v1/insights/ask', { method: 'POST', body: JSON.stringify(body) }),
   weeklyReview: () => request('/v1/insights/weekly', { method: 'POST', body: '{}' }),
   insightHistory: () => request('/v1/insights/history'),

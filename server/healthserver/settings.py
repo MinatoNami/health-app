@@ -189,6 +189,22 @@ LLM_ENABLED = env_bool("LLM_ENABLED", True)
 # more sensitive than the measurements they are about.
 INSIGHT_RETENTION_DAYS = int(env("INSIGHT_RETENTION_DAYS", "30"))
 
+# Where the nightly freshness check pushes when a signal stops arriving.
+#
+# Unset means "log only", which is the same as not noticing: sleep stopped
+# uploading for 35 days and every screen that could have said so required
+# someone to already suspect it. `./deploy.sh alerts <url>` sets this.
+#
+# Note what leaves the tailnet if you point this at a hosted service: metric
+# names and dates — "Sleep duration: last recorded 2026-06-27". No measurements,
+# but it is still health-adjacent metadata, so a self-hosted ntfy or a
+# Tailscale-reachable endpoint is the better choice.
+ALERT_WEBHOOK_URL = env("ALERT_WEBHOOK_URL", "")
+# "text" posts a plain body with a Title header (ntfy and most generic
+# receivers); "json" sends Slack/Discord-compatible keys.
+ALERT_WEBHOOK_FORMAT = env("ALERT_WEBHOOK_FORMAT", "text")
+ALERT_RENOTIFY_DAYS = int(env("ALERT_RENOTIFY_DAYS", "7"))
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

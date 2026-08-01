@@ -282,6 +282,28 @@ def _run_tool_loop(messages: list[dict], model: str, tz_name: str | None) -> tup
     return messages, log_entries, usage
 
 
+# How many prior turns a follow-up carries. Two is enough for "what about last
+# month?" and short enough that the snapshot — the part that is actually
+# measured — still dominates the context on a local model.
+FOLLOW_UP_TURNS = 2
+
+
+def _prior_turns(owner, limit: int = FOLLOW_UP_TURNS) -> list[dict]:
+    """Earlier questions and their summaries, oldest first.
+
+    Only the summary is replayed, never the observations or the evidence. The
+    figures must come from the snapshot and the tools on every turn — letting a
+    model cite its own earlier prose back as a measurement is exactly how a
+    number that was hedged once becomes a fact later.
+    """
+    turns = []
+    for turn in _owned_by(owner).exclude(answer__isnull=True)[:limit]:
+        summary = (turn.answer or {}).get("summary")
+        if turn.question and summary:
+            turns.append({"question": turn.question, "summary": summary})
+    return list(reversed(turns))
+
+
 def answer(
     question: str,
     *,
@@ -290,6 +312,7 @@ def answer(
     owner=None,
     persist: bool = True,
     instruction: str | None = None,
+    follow_up: bool = False,
 ) -> dict:
     """Answer one question about this person's health data.
 
@@ -336,10 +359,22 @@ def answer(
     if instruction:
         user_message = f"{instruction}\n\n{user_message}" if question else instruction
 
-    messages = [
-        {"role": "system", "content": _system_prompt(verdict, snapshot)},
-        {"role": "user", "content": user_message},
-    ]
+    messages = [{"role": "system", "content": _system_prompt(verdict, snapshot)}]
+
+    # Replayed as real turns rather than pasted into the prompt, so the model
+    # treats them as things it said before rather than as evidence.
+    if follow_up:
+        for turn in _prior_turns(owner):
+            messages.append({"role": "user", "content": turn["question"]})
+            messages.append({"role": "assistant", "content": turn["summary"]})
+        if len(messages) > 1:
+            messages[0]["content"] += (
+                "\nThis is a follow-up. Earlier answers are in the conversation for "
+                "continuity only — re-read the snapshot and the tools for every figure "
+                "you quote, and do not treat anything you said before as a measurement.\n"
+            )
+
+    messages.append({"role": "user", "content": user_message})
 
     try:
         messages, tool_log, usage = _run_tool_loop(messages, model, tz_name)

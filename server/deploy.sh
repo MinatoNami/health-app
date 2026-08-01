@@ -10,7 +10,12 @@
 #   ./deploy.sh rotate-cert     reissue the TLS keypair (changes the pin)
 #   ./deploy.sh llm [url]       point the server at your LM Studio and verify it
 #   ./deploy.sh llm off         disable insight generation
+#   ./deploy.sh alerts <url>    where to push when a signal stops arriving
+#   ./deploy.sh alerts test     send a test alert now
+#   ./deploy.sh alerts check    report stale metrics without sending
+#   ./deploy.sh purge           permanently delete all health data
 #   ./deploy.sh backup          run a database backup now
+#   ./deploy.sh backup-key      show (or generate) the backup passphrase
 #   ./deploy.sh backup-verify   restore the newest backup into a scratch DB
 #   ./deploy.sh backup-pull     copy backups off the server to this machine
 #   ./deploy.sh status          container + endpoint health
@@ -293,6 +298,7 @@ cmd_deploy() {
   configure_nginx
   start_services
   install_backups
+  install_freshness_cron
   run_migrations
   verify
   print_summary
@@ -306,7 +312,19 @@ cmd_token() {
 
 BACKUP_DIR_REMOTE="/var/backups/health"
 
+ensure_backup_key() {
+  # Generated as part of the deploy so backups are never silently plaintext,
+  # but not printed here — `./deploy.sh backup-key` shows it deliberately.
+  if ! remote "grep -q '^BACKUP_PASSPHRASE=.\\+' $REMOTE_DIR/.env"; then
+    set_env_var "BACKUP_PASSPHRASE" "$(openssl rand -base64 36 | tr -d '\n=+/' )"
+    warn "generated a backup passphrase — run ./deploy.sh backup-key and save it"
+    warn "somewhere off this machine, or the encrypted backups are unopenable if"
+    warn "the server is lost."
+  fi
+}
+
 install_backups() {
+  ensure_backup_key
   step "Backups"
   remote "sudo install -m 755 -o root -g root /dev/stdin /usr/local/bin/health-backup" \
     < "$LOCAL_DIR/deploy/backup.sh"
@@ -343,6 +361,43 @@ cmd_backup() {
   remote "ls -lh $BACKUP_DIR_REMOTE | tail -5" 2>&1 | sed 's/^/    /'
 }
 
+# The passphrase protecting the dumps.
+#
+# Generated on the server and never rotated automatically: rotating it would
+# silently strand every existing backup, since gpg symmetric encryption has no
+# key hierarchy to re-wrap. Losing it means losing every backup, so the deploy
+# prints it once and says so.
+cmd_backup_key() {
+  require_host
+
+  if [ "${1:-}" = "--generate" ] || ! remote "grep -q '^BACKUP_PASSPHRASE=.\\+' $REMOTE_DIR/.env"; then
+    if remote "grep -q '^BACKUP_PASSPHRASE=.\\+' $REMOTE_DIR/.env"; then
+      warn "a passphrase already exists. Replacing it makes every existing"
+      warn "backup permanently unreadable — there is no re-wrap for symmetric gpg."
+      confirm "replace it anyway?" || { info "aborted"; exit 0; }
+    fi
+    set_env_var "BACKUP_PASSPHRASE" "$(openssl rand -base64 36 | tr -d '\n=+/' )"
+    ok "generated"
+  fi
+
+  local pass
+  pass=$(remote "sed -n 's/^BACKUP_PASSPHRASE=//p' $REMOTE_DIR/.env | head -1")
+  cat <<EOF
+
+    Backup passphrase:
+
+      ${bold}${pass}${reset}
+
+    ${yellow}Store this in a password manager now.${reset} It lives in .env on the
+    server it protects, so if that machine dies you have the encrypted
+    backups and no way to open them — which is the same as having none.
+
+    To restore by hand:
+      gpg --decrypt health-YYYYmmdd-HHMMSS.sql.gz.gpg | gunzip | psql ...
+
+EOF
+}
+
 cmd_backup_pull() {
   require_host
   # Outside the repo by default: a 54MB dump of health data has no business
@@ -363,13 +418,22 @@ cmd_backup_verify() {
   step "Verifying the newest backup restores"
   # A backup nobody has restored is a hypothesis. This loads the newest dump
   # into a scratch database and counts rows, then drops it.
-  remote "cd $REMOTE_DIR && set -e
-    LATEST=\$(ls -t $BACKUP_DIR_REMOTE/health-*.sql.gz 2>/dev/null | head -1)
+  remote "cd $REMOTE_DIR && set -e -o pipefail
+    LATEST=\$(ls -t $BACKUP_DIR_REMOTE/health-*.sql.gz.gpg $BACKUP_DIR_REMOTE/health-*.sql.gz 2>/dev/null | head -1)
     [ -n \"\$LATEST\" ] || { echo 'no backups found'; exit 1; }
     echo \"restoring \$LATEST into scratch database\"
+    PASS=\$(sed -n 's/^BACKUP_PASSPHRASE=//p' .env 2>/dev/null | head -1)
+    # Encrypted dumps go through gpg first. This is the step that proves the
+    # passphrase in .env still opens the files — the thing you least want to
+    # find out during an actual restore.
+    case \"\$LATEST\" in
+      *.gpg) [ -n \"\$PASS\" ] || { echo 'backup is encrypted but BACKUP_PASSPHRASE is not set'; exit 1; }
+             READ_CMD=\"gpg --batch --quiet --decrypt --pinentry-mode loopback --passphrase-fd 3 \$LATEST 3<<<\\\$PASS | gunzip -c\" ;;
+      *)     READ_CMD=\"gunzip -c \$LATEST\" ;;
+    esac
     docker compose exec -T db psql -U health -d postgres -c 'DROP DATABASE IF EXISTS restore_check;' >/dev/null
     docker compose exec -T db psql -U health -d postgres -c 'CREATE DATABASE restore_check;' >/dev/null
-    gunzip -c \"\$LATEST\" | docker compose exec -T db psql -U health -d restore_check -q >/dev/null 2>&1
+    eval \"\$READ_CMD\" | docker compose exec -T db psql -U health -d restore_check -q >/dev/null 2>&1
     docker compose exec -T db psql -U health -d restore_check -t -c \\
       \"select 'records: '||count(*) from ingest_record;\"
     docker compose exec -T db psql -U health -d restore_check -t -c \\
@@ -523,6 +587,87 @@ EOF
   fi
 }
 
+# --- Alerting ----------------------------------------------------------------
+
+cmd_alerts() {
+  require_host
+
+  case "${1:-show}" in
+    check)
+      compose "exec -T web python manage.py check_freshness --dry-run"
+      return 0
+      ;;
+    test)
+      step "Sending a test alert"
+      # --force ignores the renotify window, which otherwise makes a second
+      # test look like a broken webhook.
+      compose "exec -T web python manage.py check_freshness --force"
+      return 0
+      ;;
+    show)
+      remote "grep -E '^ALERT_' $REMOTE_DIR/.env" 2>/dev/null \
+        || info "no alert webhook configured — nothing is pushed when a signal stops"
+      return 0
+      ;;
+    off)
+      set_env_var "ALERT_WEBHOOK_URL" ""
+      compose "up -d web" >/dev/null 2>&1
+      ok "alerting disabled"
+      return 0
+      ;;
+  esac
+
+  local url="$1" format="${2:-text}"
+  case "$url" in
+    http://*|https://*) ;;
+    *) die "expected a URL, got '$url'
+    ./deploy.sh alerts https://ntfy.example.com/health-sync
+    ./deploy.sh alerts https://hooks.slack.com/... json" ;;
+  esac
+
+  set_env_var "ALERT_WEBHOOK_URL" "$url"
+  set_env_var "ALERT_WEBHOOK_FORMAT" "$format"
+  compose "up -d web" >/dev/null 2>&1
+  ok "alerts will POST to $url ($format)"
+
+  warn "metric names and dates leave this machine when an alert fires"
+  warn "(\"Sleep duration: last recorded 2026-06-27\") — no measurements, but"
+  warn "still health-adjacent. A self-hosted or tailnet-only endpoint is better."
+
+  step "Sending a test alert"
+  compose "exec -T web python manage.py check_freshness --force"
+}
+
+FRESHNESS_CRON="/etc/cron.d/health-freshness"
+
+install_freshness_cron() {
+  step "Freshness check"
+  # 09:00 local: a morning report about last night's sync is actionable before
+  # the day starts. 03:20 would be correct for a backup and useless for this.
+  remote "sudo install -m 644 -o root -g root /dev/stdin $FRESHNESS_CRON <<'CRON'
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+0 9 * * * ubuntu cd $REMOTE_DIR && docker compose exec -T web python manage.py check_freshness >> /var/log/health-freshness.log 2>&1
+# Monday morning. --skip-if-unreachable because the model lives on a laptop and
+# a shut laptop is the normal case, not a fault worth mailing about.
+30 8 * * 1 ubuntu cd $REMOTE_DIR && docker compose exec -T web python manage.py weekly_review --skip-if-unreachable >> /var/log/health-freshness.log 2>&1
+CRON"
+  ok "freshness daily at 09:00, weekly review Mondays at 08:30"
+  info "→ /var/log/health-freshness.log"
+}
+
+# --- Deletion ----------------------------------------------------------------
+
+cmd_purge() {
+  require_host
+  step "Permanent deletion"
+  warn "this deletes every health record, batch, goal and stored question."
+  warn "backups in /var/backups/health are NOT touched — delete those separately"
+  warn "if you mean it, or a restore will bring all of it back."
+  confirm "permanently delete all health data?" || { info "aborted"; exit 0; }
+  ssh -t "$SSH_HOST" "cd $REMOTE_DIR && docker compose exec -T web python manage.py purge_health_data --confirm"
+}
+
 cmd_status() {
   require_host
   step "Containers"
@@ -558,11 +703,14 @@ case "${1:-deploy}" in
   admin)   shift; cmd_admin "$@" ;;
   backup)  cmd_backup ;;
   backup-pull) shift; cmd_backup_pull "$@" ;;
+  backup-key) shift; cmd_backup_key "$@" ;;
   backup-verify) cmd_backup_verify ;;
   rotate-cert) cmd_rotate_cert ;;
   token)   shift; cmd_token "$@" ;;
   pin)     cmd_pin ;;
   llm)     shift; cmd_llm "$@" ;;
+  alerts)  shift; cmd_alerts "$@" ;;
+  purge)   cmd_purge ;;
   status)  cmd_status ;;
   logs)    shift; cmd_logs "$@" ;;
   migrate) cmd_migrate ;;
