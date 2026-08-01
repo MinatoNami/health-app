@@ -16,8 +16,13 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    # No published port. The database is reachable only from the web container;
-    # exposing 5432 on a tailnet host would expose it to the whole tailnet.
+    # Loopback only, and the 127.0.0.1 prefix is the entire point: a bare
+    # "5432:5432" binds 0.0.0.0, which on this host means every machine on the
+    # tailnet can reach the health database directly. Bound this way, the only
+    # route in is an SSH tunnel, which reuses the access control already
+    # governing the host rather than inventing a second one.
+    ports:
+      - "127.0.0.1:5432:5432"
 
   web:
     build: .

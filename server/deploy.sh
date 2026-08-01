@@ -90,8 +90,30 @@ push_code() {
     --exclude '.venv/' \
     --exclude 'deploy/certs/' \
     --exclude '.pytest_cache/' \
+    --exclude 'dashboard/node_modules/' \
+    --exclude 'dashboard/dist/' \
     "$LOCAL_DIR/" "$SSH_HOST:$REMOTE_DIR/"
   ok "code synced"
+}
+
+DASHBOARD_DIR="/var/www/health-dashboard"
+
+build_dashboard() {
+  step "Dashboard"
+  if ! command -v npm >/dev/null; then
+    warn "npm not found locally — keeping whatever dashboard is already deployed"
+    return 0
+  fi
+  ( cd "$LOCAL_DIR/dashboard" \
+      && npm install --silent --no-fund --no-audit \
+      && npm run build --silent ) >/dev/null 2>&1 \
+    || die "dashboard build failed — run 'npm run build' in server/dashboard to see why"
+  ok "built"
+
+  # Owned by the deploy user so rsync needs no sudo; nginx only reads it.
+  remote "sudo mkdir -p $DASHBOARD_DIR && sudo chown -R \$(id -u):\$(id -g) $DASHBOARD_DIR"
+  rsync -az --delete "$LOCAL_DIR/dashboard/dist/" "$SSH_HOST:$DASHBOARD_DIR/"
+  ok "published to $DASHBOARD_DIR"
 }
 
 ensure_env() {
@@ -229,6 +251,7 @@ print_summary() {
   step "Done"
   cat <<EOF
 
+    Dashboard   https://$SERVER_NAME/dashboard/
     Endpoint    https://$SERVER_NAME/v1/health/batches
     Admin       https://$SERVER_NAME/admin/
     Health      https://$SERVER_NAME/healthz
@@ -250,6 +273,7 @@ EOF
 cmd_deploy() {
   preflight
   push_code
+  build_dashboard
   ensure_env
   ensure_cert
   configure_nginx

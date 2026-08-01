@@ -108,6 +108,11 @@ be deleted before the first sync ever shipped it.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
+| GET | `/dashboard/` | session | Vue analytics dashboard |
+| GET | `/v1/analytics/overview` | session/bearer | KPIs + headline charts |
+| GET | `/v1/analytics/metrics` | session/bearer | Metric catalog |
+| GET | `/v1/analytics/series` | session/bearer | Daily series for one metric |
+| GET | `/v1/export/records.csv` | session/bearer | Streaming CSV export |
 | POST | `/v1/health/batches` | Bearer | Ingest an NDJSON batch |
 | GET | `/v1/health/ping` | Bearer | Cheap probe — powers Test Connection |
 | GET | `/v1/health/stats` | Bearer | Per-device counts, top metrics |
@@ -122,6 +127,48 @@ For an admin login:
 ```bash
 ssh alena-tailscale 'cd health-server && docker compose run --rm web python manage.py createsuperuser'
 ```
+
+---
+
+## Dashboard
+
+`https://alena-server.tail03bec9.ts.net/dashboard/` — Vue 3 + Vite, built by
+`./deploy.sh` and served as static files by nginx. Sign in with the same account
+the app uses (`./deploy.sh user <name>`).
+
+Three views: **Overview** (KPI tiles and headline charts), **Explore** (any
+metric, any valid aggregation) and **Export** (pick metrics and a range, see the
+row count, download CSV).
+
+### Don't sum raw samples
+
+iPhone and Apple Watch both write step counts for the same walk, so summing raw
+`quantity` records inflates every cumulative total. On this data that is **~1.9×
+and as much as 3.5×** — one day reads 31,756 steps raw against Apple's 9,008.
+
+HealthKit's statistics queries deduplicate across sources, and the app ships
+those as `kind=statistic` rows. Those win wherever they exist. But the app only
+re-emits a rolling window (`statisticsLookbackDays`, 7 by default), so older days
+have no rollup and can only be estimated from raw samples — those are summed,
+**flagged `may_double_count`, and labelled "≈ estimated"** in the UI rather than
+presented as fact. Raising the lookback in the app's Settings backfills
+authoritative rollups for more days.
+
+Averages, minima and maxima are unaffected; only sums can be inflated this way.
+
+**Sleep is computed separately.** A sleep record's `value` is a category code
+(1 = asleepUnspecified), so averaging it is meaningless — the duration lives in
+`extra.duration_seconds`. Nights are bucketed by wake time, and `inBed`
+intervals are excluded because they overlap the asleep ones.
+
+### Charts
+
+Hand-rolled SVG rather than a chart library, to hold the mark specs exactly:
+2px lines, ≤24px bars with a 4px rounded data-end square at the baseline, 2px
+surface gaps, hairline solid gridlines, selective direct labels (endpoint and
+extreme only), and a crosshair tooltip. Every chart has a **table view**, so no
+value is reachable by colour or hover alone. The categorical palette was checked
+with the dataviz validator in both light and dark modes.
 
 ---
 

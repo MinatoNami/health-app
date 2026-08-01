@@ -5,3 +5,5 @@ staticfiles/
 .venv/
 db.sqlite3
 deploy/certs/
+dashboard/node_modules/
+dashboard/dist/

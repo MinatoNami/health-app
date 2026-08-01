@@ -227,6 +227,7 @@ HealthExporter/
 └── UI/           SwiftUI screens
 
 server/           Django ingest server + deploy script (see server/README.md)
+server/dashboard/ Vue analytics dashboard (charts, CSV export)
 ```
 
 Adding or removing Swift files means regenerating the project:

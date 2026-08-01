@@ -8,3 +8,5 @@ staticfiles/
 # tests/ is deliberately kept in the image: it is a few KB, and running the
 # suite against the real Postgres is the only way to check the ON CONFLICT
 # behaviour that SQLite only approximates.
+dashboard/node_modules/
+dashboard/dist/
