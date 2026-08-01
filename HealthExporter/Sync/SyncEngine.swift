@@ -510,6 +510,21 @@ final class SyncEngine: ObservableObject {
     @Published private(set) var serverStatusError: String?
     @Published private(set) var isLoadingServerStatus = false
 
+    /// Daily series behind the Status tab's charts.
+    @Published private(set) var trends: AnalyticsOverview?
+
+    func refreshTrends() async {
+        guard settings.sink.endpoint != nil, isSignedIn else { return }
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success(let overview) = await sink.fetchOverview() {
+            trends = overview
+        }
+        // Deliberately silent on failure: the charts are a nicety, and the
+        // Server tab already surfaces connection problems properly. Throwing an
+        // error banner onto the main screen for a decorative fetch would train
+        // people to ignore the banner that matters.
+    }
+
     func refreshServerStatus(fresh: Bool = false) async {
         guard settings.sink.endpoint != nil, isSignedIn else {
             serverStatusError = "Sign in first."

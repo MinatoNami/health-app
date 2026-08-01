@@ -103,6 +103,15 @@ struct SinkConfiguration: Codable, Equatable {
         endpoint?.deletingLastPathComponent().appendingPathComponent("stats")
     }
 
+    /// `/v1/analytics/overview` — the daily series behind the phone's charts.
+    var overviewEndpoint: URL? {
+        guard var components = URLComponents(string: baseURL) else { return nil }
+        guard components.scheme?.lowercased() == "https" else { return nil }
+        guard let host = components.host, !host.isEmpty else { return nil }
+        components.path = "/v1/analytics/overview"
+        return components.url
+    }
+
     var isUsable: Bool { enabled && endpoint != nil && !bearerToken.isEmpty }
 }
 
@@ -312,6 +321,50 @@ final class HTTPSink: ExportSink {
             default:
                 let detail = String(data: data.prefix(256), encoding: .utf8) ?? ""
                 return .failure(SinkError.permanent(status: http.statusCode, body: detail))
+            }
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// Daily series for the phone's trend charts, for the last `days` days.
+    func fetchOverview(days: Int = 30) async -> Result<AnalyticsOverview, Error> {
+        guard let base = configuration.overviewEndpoint, !configuration.bearerToken.isEmpty else {
+            return .failure(SinkError.notConfigured)
+        }
+        let today = Date()
+        let from = Calendar.current.date(byAdding: .day, value: -(days - 1), to: today) ?? today
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "from", value: formatter.string(from: from)),
+            URLQueryItem(name: "to", value: formatter.string(from: today)),
+        ]
+        guard let url = components?.url else { return .failure(SinkError.notConfigured) }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(configuration.bearerToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return .failure(SinkError.badResponse("Non-HTTP response"))
+            }
+            switch http.statusCode {
+            case 200...299:
+                do {
+                    return .success(try JSONDecoder().decode(AnalyticsOverview.self, from: data))
+                } catch {
+                    return .failure(SinkError.badResponse("Could not read trends: \(error)"))
+                }
+            case 401, 403:
+                return .failure(SinkError.unauthorized)
+            default:
+                return .failure(SinkError.permanent(status: http.statusCode, body: ""))
             }
         } catch {
             return .failure(error)

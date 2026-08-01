@@ -25,6 +25,11 @@ struct SettingsView: View {
                          + "mostly buys you per-second heart rate data.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("Moving this date **earlier does not fetch older data on its own**. "
+                         + "The cursor has already advanced past those samples, so you also "
+                         + "have to reset it below.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Daily rollups") {
@@ -176,8 +181,14 @@ struct SettingsView: View {
                         showResetConfirmation = true
                     }
                     Text("Clears every anchor. The next sync re-reads all history from "
-                         + "the backfill date, re-emitting records the destination should "
-                         + "upsert by UUID.")
+                         + "the backfill date and re-uploads it — hundreds of megabytes, "
+                         + "and hours of background time.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("It does not duplicate anything: every record carries a stable "
+                         + "id, so the server updates in place rather than inserting again. "
+                         + "Deletions also survive — a re-sent record cannot resurrect one "
+                         + "you removed from Health.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Delete Pending Batches", role: .destructive) {

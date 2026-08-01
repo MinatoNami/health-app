@@ -66,6 +66,47 @@ struct ServerStatus: Codable, Equatable {
     var generatedAt: String?
     var cached: Bool?
 
+    /// One metric's daily series, as returned by `/v1/analytics/overview`.
+    ///
+    /// Decoded from the same endpoint the web dashboard uses rather than
+    /// recomputed locally: the deduplication rules there are subtle enough
+    /// (Apple rollups preferred over raw sums, sleep summed from durations)
+    /// that a second implementation would drift and quietly disagree.
+    struct Series: Codable, Equatable, Identifiable {
+        struct Point: Codable, Equatable, Identifiable {
+            var date: String
+            var value: Double
+            var source: String?
+
+            var id: String { date }
+            /// Day-granularity, so a plain calendar parse is right here — the
+            /// per-sample offsets that matter elsewhere are already applied
+            /// server-side when the day buckets are built.
+            var day: Date {
+                ISO8601DateFormatter.calendarDay.date(from: date + "T00:00:00Z") ?? .distantPast
+            }
+            /// True when this day was summed from raw samples rather than an
+            /// Apple-deduplicated rollup, so it may read high.
+            var isEstimated: Bool { source == "raw_sum" }
+        }
+
+        var metricSlug: String
+        var points: [Point]
+        var unit: String?
+        var cumulative: Bool?
+        var mayDoubleCount: Bool
+
+        var id: String { metricSlug }
+
+        enum CodingKeys: String, CodingKey {
+            case metricSlug = "metric_slug"
+            case points
+            case unit
+            case cumulative
+            case mayDoubleCount = "may_double_count"
+        }
+    }
+
     var lastBatchDate: Date? { lastBatchAt.flatMap(Timestamps.parse) }
     var storedBatches: Int { batches["stored"] ?? 0 }
     var failedBatches: Int { batches["failed"] ?? 0 }
@@ -82,4 +123,32 @@ struct ServerStatus: Codable, Equatable {
         case generatedAt = "generated_at"
         case cached
     }
+}
+
+/// Response of `/v1/analytics/overview` — the same payload the web dashboard
+/// renders, so the two can never tell different stories.
+struct AnalyticsOverview: Codable, Equatable {
+    var from: String
+    var to: String
+    var charts: [ServerStatus.Series]
+
+    /// Headline metrics worth a chart on the phone, in display order. A short
+    /// list on purpose: the phone is for "is this working and roughly what does
+    /// it look like", not for exploration — that is what the dashboard is.
+    static let featured = ["step_count", "heart_rate", "active_energy_burned", "sleep_analysis"]
+
+    func series(_ slug: String) -> ServerStatus.Series? {
+        charts.first { $0.metricSlug == slug }
+    }
+}
+
+extension ISO8601DateFormatter {
+    /// Dedicated instance: these are date-only strings, and reusing the
+    /// fractional-seconds parser on them just fails.
+    static let calendarDay: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
 }
