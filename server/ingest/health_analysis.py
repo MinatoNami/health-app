@@ -888,6 +888,24 @@ def workouts(
 # --------------------------------------------------------------------------
 
 
+def last_recorded(slug: str) -> datetime | None:
+    """Most recent sample of a metric, over all time.
+
+    Distinct from anything windowed: a metric that stopped syncing five weeks
+    ago has no data in the current window and no data in the baseline, so every
+    windowed query says the same unhelpful nothing. The useful fact is *when it
+    stopped*, which is the difference between "you don't track this" and "this
+    broke".
+    """
+    row = (
+        analytics.live_records()
+        .filter(metric_slug=slug)
+        .aggregate(latest=Max("end"), latest_start=Max("start"))
+    )
+    candidates = [value for value in (row["latest"], row["latest_start"]) if value]
+    return max(candidates) if candidates else None
+
+
 def available_metrics() -> list[str]:
     """Metrics this module can analyse *and* the store actually holds.
 
@@ -920,8 +938,32 @@ def snapshot(
     sleep = sleep_summary(as_of=as_of, tz_name=tz_name) if "sleep_analysis" in present else None
     activity = workouts(as_of=as_of, tz_name=tz_name)
 
+    # A metric with nothing in either window has not been recorded lately — it
+    # is a sync problem, not a weak measurement. Kept in `metrics` so the gap
+    # stays visible, but excluded from the overall grade: letting one metric
+    # that stopped uploading five weeks ago drag the whole snapshot to
+    # "insufficient" makes every answer hedge about steps and heart rate that
+    # were recorded perfectly well.
+    stale = []
+    active = []
+    for comparison in comparisons:
+        if comparison["current"]["valid_days"] or comparison["baseline"]["valid_days"]:
+            active.append(comparison)
+            continue
+        seen = last_recorded(comparison["metric_slug"])
+        stale.append(
+            {
+                "metric_slug": comparison["metric_slug"],
+                "label": comparison["label"],
+                "last_recorded_at": seen.isoformat() if seen else None,
+                "days_since": (as_of - seen.astimezone(analytics.zone(tz_name)).date()).days
+                if seen
+                else None,
+            }
+        )
+
     weakest = min(
-        (c["confidence"] for c in comparisons),
+        (c["confidence"] for c in active),
         key=CONFIDENCE_ORDER.index,
         default="insufficient",
     )
@@ -939,6 +981,9 @@ def snapshot(
         "workouts": activity,
         "overall_confidence": weakest,
         "metrics_unavailable": [m for m in (metrics or SNAPSHOT_METRICS) if m not in present],
+        # Recorded at some point, but nothing recent. Almost always a sync that
+        # stopped rather than a habit that changed, and worth saying out loud.
+        "metrics_not_syncing": stale,
         "note": (
             "Windows end yesterday because today is incomplete. Baseline and current "
             "windows do not overlap."

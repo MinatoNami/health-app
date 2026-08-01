@@ -41,6 +41,9 @@ struct InsightsView: View {
                 } else {
                     if let snapshot = engine.snapshot {
                         baselineSection(snapshot)
+                        if let stale = snapshot.metricsNotSyncing, !stale.isEmpty {
+                            staleSection(stale)
+                        }
                         if let sleep = snapshot.sleep, sleep.nightsRecorded > 0 {
                             sleepSection(sleep)
                         }
@@ -98,6 +101,36 @@ struct InsightsView: View {
         } footer: {
             Text("Through \(snapshot.asOf). Today is left out because it is only half over — "
                  + "a partial day against full-day baselines reads as a collapse that is really just the clock.")
+        }
+    }
+
+    /// Metrics that were arriving and stopped.
+    ///
+    /// This is the silent failure the whole app is built around: a revoked
+    /// permission, a watch left in a drawer, or background delivery dying after
+    /// an OS update all look exactly like a quiet week.
+    private func staleSection(_ stale: [HealthSnapshot.Stale]) -> some View {
+        Section {
+            ForEach(stale) { item in
+                LabeledContent {
+                    Text(item.daysSince.map { "\($0)d ago" } ?? "never")
+                        .foregroundStyle(.orange)
+                } label: {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(item.label)
+                        if let last = item.lastRecordedAt {
+                            Text("last recorded \(last.prefix(10))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        } header: {
+            Text("Not syncing")
+        } footer: {
+            Text("A gap is not a zero — a watch that was not worn is not a night without "
+                 + "sleep. Check Health permissions for these types on the Metrics tab.")
         }
     }
 

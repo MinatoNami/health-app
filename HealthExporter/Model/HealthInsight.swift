@@ -88,17 +88,40 @@ struct HealthSnapshot: Codable, Equatable {
         }
     }
 
+    /// A metric that was recorded once and has stopped arriving.
+    ///
+    /// The failure mode this app exists to catch: nothing errors, the numbers
+    /// just quietly stop. A gap is not a zero — a watch that was not worn is
+    /// not a night without sleep.
+    struct Stale: Codable, Equatable, Identifiable {
+        var metricSlug: String
+        var label: String
+        var lastRecordedAt: String?
+        var daysSince: Int?
+
+        var id: String { metricSlug }
+
+        enum CodingKeys: String, CodingKey {
+            case metricSlug = "metric_slug"
+            case label
+            case lastRecordedAt = "last_recorded_at"
+            case daysSince = "days_since"
+        }
+    }
+
     var asOf: String
     var metrics: [Comparison]
     var sleep: Sleep?
     var overallConfidence: String
     var metricsUnavailable: [String]
+    var metricsNotSyncing: [Stale]?
 
     enum CodingKeys: String, CodingKey {
         case asOf = "as_of"
         case metrics, sleep
         case overallConfidence = "overall_confidence"
         case metricsUnavailable = "metrics_unavailable"
+        case metricsNotSyncing = "metrics_not_syncing"
     }
 }
 

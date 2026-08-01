@@ -382,6 +382,39 @@ class AnalysisEndpointTests(AnalysisTestCase):
         self.assertIn("sleep_analysis", body["metrics_unavailable"])
         self.assertEqual(body["as_of"], self.as_of.isoformat())
 
+    def test_a_metric_that_stopped_syncing_does_not_poison_the_whole_grade(self):
+        """Real case: sleep stopped uploading five weeks ago while steps kept
+        arriving. Taking the weakest grade across every metric dragged the whole
+        snapshot to "insufficient", which makes the model hedge about numbers
+        that were recorded perfectly well."""
+        self.fill(7, 10_000)
+        self.fill(28, 9_000, offset=7)
+        # Sleep, healthy but old — outside both windows.
+        old = self.as_of - timedelta(days=45)
+        Record.objects.create(
+            id="sleep-old", device=self.device, batch=self.batch,
+            kind=Record.Kind.SLEEP, metric="HKCategoryTypeIdentifierSleepAnalysis",
+            metric_slug="sleep_analysis", value=1,
+            start=at(old, 23), end=at(old + timedelta(days=1), 7),
+            extra={"is_asleep": True, "duration_seconds": 28_800},
+        )
+
+        body = self.client.get("/v1/analysis/snapshot", headers=self.auth()).json()
+
+        self.assertEqual(body["overall_confidence"], "high")
+        stale = {item["metric_slug"]: item for item in body["metrics_not_syncing"]}
+        self.assertIn("sleep_analysis", stale)
+        # The useful fact is *when it stopped*, not that it is missing.
+        self.assertEqual(stale["sleep_analysis"]["days_since"], 44)
+
+    def test_a_metric_with_data_is_not_called_stale(self):
+        self.fill(7, 10_000)
+        self.fill(28, 9_000, offset=7)
+
+        body = self.client.get("/v1/analysis/snapshot", headers=self.auth()).json()
+
+        self.assertEqual(body["metrics_not_syncing"], [])
+
     def test_trend_rejects_an_unknown_metric(self):
         response = self.client.get("/v1/analysis/trend?metric=nonsense", headers=self.auth())
         self.assertEqual(response.status_code, 400)

@@ -249,6 +249,22 @@ def preflight(question: str, snapshot: dict, context: str = "") -> SafetyVerdict
             f"{hit['guidance']} Mention it factually, without naming a cause.",
         )
 
+    stale = snapshot.get("metrics_not_syncing") or []
+    if stale:
+        names = ", ".join(
+            f"{item['label']} (last recorded {item['last_recorded_at'][:10]})"
+            if item.get("last_recorded_at")
+            else item["label"]
+            for item in stale
+        )
+        verdict.add(
+            "informational",
+            f"No recent data for: {names}.",
+            f"These metrics have stopped arriving: {names}. Say the data is missing and "
+            "when it stopped. Never describe a gap as a zero or as a change in behaviour — "
+            "a watch that was not worn is not a night without sleep.",
+        )
+
     confidence = snapshot.get("overall_confidence", "insufficient")
     if confidence in ("insufficient", "low"):
         verdict.add(

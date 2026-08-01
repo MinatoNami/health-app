@@ -77,7 +77,11 @@ def _condense(snapshot: dict) -> dict:
         "workouts": {
             k: v for k, v in snapshot["workouts"].items() if k not in ("recent", "by_activity")
         },
-        "metrics_without_data": snapshot["metrics_unavailable"],
+        "metrics_never_recorded": snapshot["metrics_unavailable"],
+        # Named separately so the model can say "sleep has not synced since
+        # 27 June" instead of "you slept 0 hours", which is what a bare gap
+        # looks like.
+        "metrics_that_stopped_syncing": snapshot.get("metrics_not_syncing") or [],
     }
     if snapshot.get("sleep"):
         condensed["sleep"] = {

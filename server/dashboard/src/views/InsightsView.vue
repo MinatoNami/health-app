@@ -193,6 +193,22 @@ onMounted(() => {
         />
       </div>
 
+      <!-- A metric that stopped arriving is a sync problem, not a habit change,
+           and it is the failure mode that hides best: nothing errors, the
+           numbers just quietly stop. -->
+      <div v-if="snapshot.metrics_not_syncing?.length" class="card stale">
+        <strong>Not syncing</strong>
+        <p v-for="item in snapshot.metrics_not_syncing" :key="item.metric_slug" class="muted">
+          {{ item.label }} — last recorded
+          {{ item.last_recorded_at ? item.last_recorded_at.slice(0, 10) : 'never' }}<template
+            v-if="item.days_since"> ({{ item.days_since }} days ago)</template>.
+        </p>
+        <p class="muted">
+          A gap is not a zero. Check Health permissions for these types, and that the
+          phone has synced recently.
+        </p>
+      </div>
+
       <p v-if="snapshot.metrics_unavailable.length" class="muted note">
         Not recorded on this phone: {{ snapshot.metrics_unavailable.join(', ') }}.
       </p>
@@ -314,6 +330,10 @@ onMounted(() => {
 .block-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
 .block-head h3 { font-size: 14px; font-weight: 600; margin: 0; }
 .note { margin-top: 10px; }
+
+.stale { margin-top: 14px; box-shadow: inset 0 0 0 1px var(--status-warning); }
+.stale strong { font-size: 13px; }
+.stale p { margin: 4px 0 0; line-height: 1.5; }
 
 /* Wider than the default KPI row: each tile carries a delta, a meter, and a
    caveat line, and squeezing that into 150px produces four-line wraps. */
