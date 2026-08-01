@@ -4,6 +4,7 @@
 #
 #   ./deploy.sh                 build, push, migrate, reload nginx, verify
 #   ./deploy.sh user <name>     create/reset a login the app can sign in with
+#   ./deploy.sh admin <name>    create a Django admin account for /admin/
 #   ./deploy.sh token <label>   mint a bearer token directly (shown once)
 #   ./deploy.sh pin             print the certificate pin for the app
 #   ./deploy.sh rotate-cert     reissue the TLS keypair (changes the pin)
@@ -264,6 +265,15 @@ cmd_token() {
   compose "run --rm web python manage.py issue_token '$1'"
 }
 
+cmd_admin() {
+  [ $# -ge 1 ] || die "usage: ./deploy.sh admin <username>"
+  require_host
+  info "creating a Django admin account for https://$SERVER_NAME/admin/"
+  # Separate from `user`: a phone sign-in should not carry admin rights, so the
+  # account the app authenticates with is deliberately not a superuser.
+  ssh -t "$SSH_HOST" "cd $REMOTE_DIR && docker compose run --rm -it web python manage.py createsuperuser --username '$1'"
+}
+
 cmd_rotate_cert() {
   require_host
   step "Rotating the TLS certificate"
@@ -334,6 +344,7 @@ cmd_destroy() {
 case "${1:-deploy}" in
   deploy)  cmd_deploy ;;
   user)    shift; cmd_user "$@" ;;
+  admin)   shift; cmd_admin "$@" ;;
   rotate-cert) cmd_rotate_cert ;;
   token)   shift; cmd_token "$@" ;;
   pin)     cmd_pin ;;
@@ -342,5 +353,5 @@ case "${1:-deploy}" in
   migrate) cmd_migrate ;;
   shell)   cmd_shell ;;
   destroy) cmd_destroy ;;
-  *)       die "unknown command '$1' (deploy, user, token, pin, status, logs, migrate, shell, destroy)" ;;
+  *)       die "unknown command '$1' (deploy, user, admin, token, pin, rotate-cert, status, logs, migrate, shell, destroy)" ;;
 esac
