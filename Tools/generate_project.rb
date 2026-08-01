@@ -131,6 +131,22 @@ scheme.add_build_target(target)
 scheme.set_launch_target(target)
 scheme.save_as(PROJECT_PATH, APP_NAME, true)
 
+# xcodeproj does not write the implicit workspace, and `rm -rf` above removes
+# the one Xcode created last time. Builds work without it — Xcode synthesises
+# one — but it is committed, so leaving it out makes every regeneration show up
+# as a deletion in git, then reappear the next time anyone opens Xcode.
+workspace_dir = File.join(PROJECT_PATH, 'project.xcworkspace')
+FileUtils.mkdir_p(workspace_dir)
+File.write(File.join(workspace_dir, 'contents.xcworkspacedata'), <<~XML)
+  <?xml version="1.0" encoding="UTF-8"?>
+  <Workspace
+     version = "1.0">
+     <FileRef
+        location = "self:">
+     </FileRef>
+  </Workspace>
+XML
+
 puts "Generated #{PROJECT_PATH}"
 puts "  #{swift_files.count} Swift files across #{grouped.keys.count} groups"
 puts "  Deployment target: iOS 18.0, Swift 5 language mode"
