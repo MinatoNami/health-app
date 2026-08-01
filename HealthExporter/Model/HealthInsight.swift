@@ -125,6 +125,52 @@ struct HealthSnapshot: Codable, Equatable {
     }
 }
 
+/// A few words for the morning notification, and the detail behind them.
+///
+/// Deterministic server-side, which is the whole point: the alert has to be
+/// dependable at 08:00 whether or not the laptop running the model is awake.
+struct DailyBrief: Codable, Equatable {
+    struct Mover: Codable, Equatable, Identifiable {
+        var metricSlug: String
+        var label: String
+        var unit: String
+        var changePct: Double?
+        var current: HealthSnapshot.Window
+
+        var id: String { metricSlug }
+
+        enum CodingKeys: String, CodingKey {
+            case metricSlug = "metric_slug"
+            case label, unit, current
+            case changePct = "change_pct"
+        }
+    }
+
+    var asOf: String
+    var headline: String
+    var detail: String
+    /// Headline and detail already joined. Composed server-side rather than
+    /// here so the phrasing lives in one place — the phone was gluing them with
+    /// ". ", which put a full stop in front of a sentence fragment.
+    var line: String?
+    var movers: [Mover]
+    var notSyncing: [HealthSnapshot.Stale]
+    var worthNotifying: Bool
+
+    /// What the notification actually says. Short enough to read on a lock
+    /// screen without expanding — a brief that has to be unfolded is not one.
+    var notificationBody: String {
+        line ?? (detail.isEmpty ? headline : "\(headline) · \(detail)")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case asOf = "as_of"
+        case headline, detail, line, movers
+        case notSyncing = "not_syncing"
+        case worthNotifying = "worth_notifying"
+    }
+}
+
 /// One generated answer, in the structured shape §12 of the integration notes
 /// asks for. Structured rather than prose so it can be rendered, stored, and
 /// checked — and so the safety layer can read what it says.

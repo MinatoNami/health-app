@@ -266,6 +266,29 @@ def goal_detail(request, goal_id: int):
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
 @throttle_classes([AnalyticsThrottle])
+def daily(request):
+    """A few words for the phone's morning notification.
+
+    No model runs behind this. The alert has to be dependable at 08:00 whether
+    or not a laptop somewhere is awake, and a deterministic sentence about
+    measured numbers is a better morning brief than a generated one that
+    sometimes does not arrive.
+    """
+    tz_name = _tz(request)
+    key = f"ingest:daily-brief:v1:{_as_of(request) or 'auto'}:{tz_name or 'default'}"
+    cached = cache.get(key)
+    if cached is not None and request.query_params.get("fresh") != "1":
+        return Response({**cached, "cached": True})
+
+    payload = health_analysis.daily_brief(as_of=_as_of(request), tz_name=tz_name)
+    cache.set(key, payload, SNAPSHOT_CACHE_SECONDS)
+    return Response({**payload, "cached": False})
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
 def llm_status(request):
     """Where health summaries are processed, and whether that is working.
 

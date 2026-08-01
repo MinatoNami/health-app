@@ -367,6 +367,96 @@ class AnomalyTests(AnalysisTestCase):
         self.assertIn("baseline", found[0]["observation"])
 
 
+class DailyBriefTests(AnalysisTestCase):
+    """The 08:00 notification. Short, true, and silent when there is nothing
+    to say — an alert that fires every morning regardless is one people turn
+    off, and then they miss the day it matters."""
+
+    def test_it_leads_with_what_moved_most(self):
+        self.fill(7, 5_000)
+        self.fill(28, 10_000, offset=7)  # steps halved
+        for i in range(7):
+            self.sample(self.as_of - timedelta(days=i), 56,
+                        slug="resting_heart_rate", aggregation="discrete", unit="count/min")
+        for i in range(7, 35):
+            self.sample(self.as_of - timedelta(days=i), 55,
+                        slug="resting_heart_rate", aggregation="discrete", unit="count/min")
+
+        brief = health_analysis.daily_brief()
+
+        self.assertTrue(brief["worth_notifying"])
+        self.assertIn("Steps down 50%", brief["headline"])
+        # Resting heart rate barely moved, so it does not get top billing.
+        self.assertNotIn("Resting HR", brief["headline"])
+
+    def test_a_quiet_week_is_not_worth_an_alert(self):
+        self.fill(7, 10_000)
+        self.fill(28, 10_050, offset=7)
+
+        brief = health_analysis.daily_brief()
+
+        self.assertFalse(brief["worth_notifying"])
+        self.assertIn("Nothing much moved", brief["headline"])
+
+    def test_a_metric_that_stopped_syncing_always_warrants_one(self):
+        """Silence is the failure this app exists to catch, so it outranks a
+        quiet week."""
+        self.fill(7, 10_000)
+        self.fill(28, 10_050, offset=7)
+        old = self.as_of - timedelta(days=50)
+        Record.objects.create(
+            id="brief-sleep", device=self.device, batch=self.batch,
+            kind=Record.Kind.SLEEP, metric="HKCategoryTypeIdentifierSleepAnalysis",
+            metric_slug="sleep_analysis", value=1,
+            start=at(old, 23), end=at(old + timedelta(days=1), 7),
+            extra={"is_asleep": True, "duration_seconds": 28_800},
+        )
+
+        brief = health_analysis.daily_brief()
+
+        self.assertTrue(brief["worth_notifying"])
+        # Leads, rather than trailing behind "nothing much changed". Burying the
+        # only actionable thing under a reassurance is how it gets missed.
+        self.assertIn("not syncing", brief["headline"])
+        self.assertNotIn("Nothing much moved", brief["line"])
+
+    def test_low_confidence_moves_are_left_out(self):
+        """Two recorded days is not a week, and a notification is the worst
+        place to imply otherwise."""
+        self.fill(2, 4_000)
+        self.fill(28, 10_000, offset=7)
+
+        brief = health_analysis.daily_brief()
+
+        self.assertNotIn("Steps", brief["headline"])
+
+    def test_the_endpoint_stays_short_enough_for_a_lock_screen(self):
+        self.fill(7, 5_000)
+        self.fill(28, 10_000, offset=7)
+
+        body = self.client.get("/v1/insights/daily", headers=self.auth()).json()
+
+        self.assertLess(len(body["line"]), 180, f"too long: {body['line']!r}")
+        self.assertEqual(body["as_of"], self.as_of.isoformat())
+
+    def test_acronyms_survive_the_phrasing(self):
+        """str.capitalize() lowercases everything after the first character,
+        which turned "HRV" into "hrv"."""
+        self.fill(7, 10_000)
+        self.fill(28, 10_050, offset=7)
+        for i in range(7):
+            self.sample(self.as_of - timedelta(days=i), 20,
+                        slug="heart_rate_variability_sdnn", aggregation="discrete", unit="ms")
+        for i in range(7, 35):
+            self.sample(self.as_of - timedelta(days=i), 45 + (i % 3),
+                        slug="heart_rate_variability_sdnn", aggregation="discrete", unit="ms")
+
+        self.assertIn("HRV", health_analysis.daily_brief()["line"])
+
+    def test_daily_requires_auth(self):
+        self.assertIn(self.client.get("/v1/insights/daily").status_code, (401, 403))
+
+
 class TimezoneTests(AnalysisTestCase):
     """Day boundaries under DST and travel.
 

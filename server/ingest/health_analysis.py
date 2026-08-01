@@ -991,6 +991,92 @@ def snapshot(
     }
 
 
+def daily_brief(as_of: date | None = None, tz_name: str | None = None) -> dict:
+    """A few words for a notification, plus the detail behind them.
+
+    Deterministic and fast on purpose. This is what fires at 08:00, and a
+    morning alert that depends on a language model running on a laptop is an
+    alert that silently stops the first time the laptop is shut.
+
+    Ranked by how far each metric has moved relative to its own baseline, so the
+    line says the most interesting true thing rather than the first thing in the
+    list. Anything that stopped syncing outranks all of it: a number that is
+    missing matters more than a number that moved.
+    """
+    snap = snapshot(as_of=as_of, tz_name=tz_name)
+
+    movers = sorted(
+        (
+            m
+            for m in snap["metrics"]
+            if m["significance"] == "notable"
+            and m["confidence"] not in ("insufficient", "low")
+            and m["change_pct"] is not None
+        ),
+        key=lambda m: -abs(m["change_pct"]),
+    )
+
+    def phrase(metric: dict) -> str:
+        pct = metric["change_pct"]
+        label = SHORT_LABELS.get(metric["metric_slug"], metric["label"])
+        # No .capitalize() anywhere near this: it lowercases everything after
+        # the first character, which turns "HRV" into "hrv". The labels are
+        # already cased correctly.
+        return f"{label} {'up' if pct > 0 else 'down'} {abs(pct):.0f}%"
+
+    stale = snap.get("metrics_not_syncing") or []
+    stale_phrases = [
+        f"{SHORT_LABELS.get(s['metric_slug'], s['label'])} not syncing"
+        + (f" ({s['days_since']}d)" if s.get("days_since") else "")
+        for s in stale[:2]
+    ]
+
+    fragments = [phrase(m) for m in movers[:4]]
+    # Staleness leads when nothing moved. "Nothing much changed" as the headline
+    # with "sleep not syncing" trailing behind it buries the only actionable
+    # thing in the message under a reassurance.
+    if fragments:
+        fragments.extend(stale_phrases)
+    else:
+        fragments = stale_phrases or [
+            "Nothing much moved against your baseline"
+            if snap["metrics"]
+            else "No health data yet"
+        ]
+
+    headline = fragments[0]
+    detail = " · ".join(fragments[1:])
+
+    return {
+        "as_of": snap["as_of"],
+        "headline": headline,
+        "detail": detail,
+        # Joined here rather than on the phone, so the phrasing lives in one
+        # place instead of being glued together differently by each client.
+        "line": " · ".join(fragments),
+        "movers": movers[:5],
+        "not_syncing": stale,
+        "overall_confidence": snap["overall_confidence"],
+        # Something is worth saying only when a metric actually moved or broke.
+        # A daily alert that fires with "nothing changed" every day is one people
+        # switch off, and then miss the day it matters.
+        "worth_notifying": bool(movers or stale),
+    }
+
+
+SHORT_LABELS = {
+    "resting_heart_rate": "Resting HR",
+    "heart_rate_variability_sdnn": "HRV",
+    "walking_heart_rate_average": "Walking HR",
+    "apple_exercise_time": "Exercise",
+    "sleep_analysis": "Sleep",
+    "active_energy_burned": "Active energy",
+    "distance_walking_running": "Distance",
+    "step_count": "Steps",
+    "body_mass": "Weight",
+}
+
+
 def compare_periods(
     slug: str,
     period_a_from: date,

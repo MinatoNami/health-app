@@ -436,6 +436,12 @@ final class HTTPSink: ExportSink {
         await fetch(configuration.apiEndpoint("/v1/analysis/snapshot"), as: HealthSnapshot.self)
     }
 
+    /// The morning brief. Small and deterministic, so it can be fetched inside
+    /// the few seconds a background refresh is granted.
+    func fetchDailyBrief() async -> Result<DailyBrief, Error> {
+        await fetch(configuration.apiEndpoint("/v1/insights/daily"), as: DailyBrief.self, timeout: 20)
+    }
+
     func fetchInsightStatus() async -> Result<InsightStatus, Error> {
         await fetch(configuration.apiEndpoint("/v1/insights/status"), as: InsightStatus.self, timeout: 15)
     }

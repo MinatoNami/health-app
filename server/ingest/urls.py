@@ -33,6 +33,7 @@ urlpatterns = [
     path("v1/analysis/goals/<int:goal_id>", insight_views.goal_detail, name="analysis-goal"),
     # LLM-backed explanation of the numbers above.
     path("v1/insights/status", insight_views.llm_status, name="insight-status"),
+    path("v1/insights/daily", insight_views.daily, name="insight-daily"),
     path("v1/insights/ask", insight_views.ask, name="insight-ask"),
     path("v1/insights/weekly", insight_views.weekly_review, name="insight-weekly"),
     path("v1/insights/history", insight_views.insight_history, name="insight-history"),

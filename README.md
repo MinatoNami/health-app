@@ -247,6 +247,32 @@ list changes.
 
 ---
 
+## The morning brief
+
+A notification at 08:00 with one line about what changed — "Steps down 25% ·
+Sleep not syncing (35d)" — that opens the Insights tab on the detail behind it.
+Time and behaviour are in *Settings → Morning brief*.
+
+It is a **local** notification, not a push. A push would let the text be
+composed at the moment it fires, but it needs an APNs key and a push service
+alongside the ingest server; for one phone the only practical difference is
+freshness. iOS will not run the app at 08:00 to write the text, so the brief is
+re-fetched and the alert rewritten on every launch, every foreground, after
+every sync, and from the background refresh task — which now asks to run
+pre-dawn specifically so the morning's copy is usually written overnight.
+
+When that window is not granted the alert still fires, and says which day it
+describes rather than implying it was composed on the spot. Tapping it always
+re-fetches: the alert is a nudge, the detail is live.
+
+It stays quiet on days when nothing moved and nothing broke. An alert that says
+"nothing changed" every morning is one you turn off, and then you miss the day
+it matters. A metric that has *stopped arriving* always warrants one, and leads
+the line — burying that under a reassurance is how five weeks of missing sleep
+data goes unnoticed.
+
+---
+
 ## Insights on the phone
 
 The Insights tab shows the server's analysis — every headline metric over the

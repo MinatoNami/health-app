@@ -176,6 +176,7 @@ struct SettingsView: View {
                 }
 
                 Section("Insights") {
+                    NavigationLink("Morning brief") { DailyBriefSettingsView() }
                     NavigationLink("How insights work") { InsightsAboutView() }
                     if let status = engine.insightStatus {
                         LabeledContent("Processed") {

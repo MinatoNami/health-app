@@ -12,6 +12,7 @@ import SwiftUI
 /// reading on every visit to say something worth saying once.
 struct InsightsView: View {
     @EnvironmentObject private var engine: SyncEngine
+    @EnvironmentObject private var services: AppServices
 
     @State private var question = ""
     @FocusState private var composerFocused: Bool
@@ -47,6 +48,12 @@ struct InsightsView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
+                        // Opened from the 08:00 alert: lead with the thing the
+                        // alert was about, then the numbers behind it.
+                        if services.showBriefOnOpen, let brief = services.dailyBrief.lastBrief {
+                            BriefBubble(brief: brief) { send("Why did that change?") }
+                        }
+
                         if let snapshot = engine.snapshot {
                             SnapshotBubble(snapshot: snapshot)
                         }
@@ -150,6 +157,65 @@ struct InsightsView: View {
 }
 
 // MARK: - Bubbles
+
+/// What the morning alert said, expanded.
+///
+/// The alert is one line on a lock screen; this is the same finding with the
+/// numbers under it and one tap to ask why. That is the "more details" the
+/// notification is promising, and it has to be here the instant the app opens —
+/// so it is the deterministic brief, not something generated on arrival.
+private struct BriefBubble: View {
+    let brief: DailyBrief
+    var onAskWhy: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("Morning brief", systemImage: "sun.horizon")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(brief.headline)
+                .font(.headline)
+
+            if !brief.detail.isEmpty {
+                Text(brief.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            ForEach(brief.movers) { mover in
+                HStack(alignment: .firstTextBaseline) {
+                    Text(mover.label).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if let value = mover.current.value {
+                        Text(value.formatted(.number.precision(.fractionLength(value < 10 ? 1 : 0))))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                    }
+                    if let pct = mover.changePct {
+                        Text("\(pct > 0 ? "+" : "−")\(Int(abs(pct).rounded()))%")
+                            .font(.caption2.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(minWidth: 40, alignment: .trailing)
+                    }
+                }
+            }
+
+            Button("Why did that change?", action: onAskWhy)
+                .font(.caption)
+                .padding(.top, 2)
+
+            Text("Through \(brief.asOf)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16))
+    }
+}
 
 /// The measured week, as the opening turn.
 ///
