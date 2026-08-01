@@ -4,6 +4,8 @@ import { api } from './api.js'
 import OverviewView from './views/OverviewView.vue'
 import ExploreView from './views/ExploreView.vue'
 import ExportView from './views/ExportView.vue'
+import InsightsView from './views/InsightsView.vue'
+import SettingsView from './views/SettingsView.vue'
 
 const user = ref(null)
 const checking = ref(true)
@@ -118,8 +120,10 @@ onMounted(async () => {
       <h1>Health Dashboard</h1>
       <nav class="nav">
         <button :class="{ active: tab === 'overview' }" @click="tab = 'overview'">Overview</button>
+        <button :class="{ active: tab === 'insights' }" @click="tab = 'insights'">Insights</button>
         <button :class="{ active: tab === 'explore' }" @click="tab = 'explore'">Explore</button>
         <button :class="{ active: tab === 'export' }" @click="tab = 'export'">Export</button>
+        <button :class="{ active: tab === 'settings' }" @click="tab = 'settings'">Settings</button>
       </nav>
       <span class="spacer" />
       <span class="muted">{{ user.username }}</span>
@@ -127,8 +131,11 @@ onMounted(async () => {
     </header>
 
     <!-- One filter row, above everything it scopes. Every view re-renders
-         against the same slice rather than carrying its own date control. -->
-    <div class="filterbar">
+         against the same slice rather than carrying its own date control.
+         Hidden on Insights: those windows are fixed at 7 days against the
+         preceding 28, and a date control that silently does nothing is worse
+         than no control at all. -->
+    <div v-if="!['insights', 'settings'].includes(tab)" class="filterbar">
       <label>Range</label>
       <button
         v-for="p in PRESETS" :key="p.days"
@@ -144,6 +151,8 @@ onMounted(async () => {
     <p v-if="error" class="error">{{ error }}</p>
 
     <OverviewView v-if="tab === 'overview'" :data="overview" :refreshing="refreshing" />
+    <InsightsView v-else-if="tab === 'insights'" />
+    <SettingsView v-else-if="tab === 'settings'" />
     <ExploreView v-else-if="tab === 'explore'" :range="range" />
     <ExportView v-else :range="range" />
   </div>

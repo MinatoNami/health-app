@@ -20,7 +20,10 @@ const search = ref('')
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return q ? catalog.value.filter((m) => m.metric_slug.includes(q)) : catalog.value
+  if (!q) return catalog.value
+  return catalog.value.filter(
+    (m) => m.metric_slug.includes(q) || (m.label || '').toLowerCase().includes(q)
+  )
 })
 
 const params = computed(() => ({
@@ -87,7 +90,7 @@ loadCatalog().then(refreshPreview)
       <div class="checks">
         <label v-for="m in filtered" :key="m.metric_slug">
           <input v-model="chosen" type="checkbox" :value="m.metric_slug" />
-          {{ m.metric_slug }}
+          {{ m.label || m.metric_slug }}
           <span class="muted">{{ m.count.toLocaleString() }}</span>
         </label>
       </div>

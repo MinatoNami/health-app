@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.utils import timezone
 
-from .models import ApiToken, Batch, Device, Record
+from .models import ApiToken, Batch, Device, Goal, InsightTurn, Record
 
 
 @admin.register(Device)
@@ -57,3 +57,32 @@ class RecordAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
+
+
+@admin.register(Goal)
+class GoalAdmin(admin.ModelAdmin):
+    list_display = ("metric_slug", "target_value", "unit", "cadence", "active", "owner")
+    list_filter = ("cadence", "active")
+    search_fields = ("metric_slug", "label")
+
+
+@admin.register(InsightTurn)
+class InsightTurnAdmin(admin.ModelAdmin):
+    """Read-only, and prunes on the schedule the model defines.
+
+    Editing a stored answer would destroy the only reason to keep one: being
+    able to see what was actually said.
+    """
+
+    list_display = ("created_at", "question", "model_name", "latency_ms", "error")
+    list_filter = ("model_name",)
+    search_fields = ("question",)
+    readonly_fields = tuple(f.name for f in InsightTurn._meta.fields)
+    actions = ("prune_now",)
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.action(description="Delete turns past the retention window")
+    def prune_now(self, request, queryset):
+        self.message_user(request, f"Deleted {InsightTurn.prune()} expired turn(s).")

@@ -116,6 +116,16 @@ be deleted before the first sync ever shipped it.
 | GET | `/v1/analytics/metrics` | session/bearer | Metric catalog |
 | GET | `/v1/analytics/series` | session/bearer | Daily series for one metric |
 | GET | `/v1/export/records.csv` | session/bearer | Streaming CSV export |
+| GET | `/v1/analysis/snapshot` | session/bearer | Baselines, trends, coverage — no model |
+| GET | `/v1/analysis/trend` | session/bearer | One metric: moving averages, slope |
+| GET | `/v1/analysis/quality` | session/bearer | Data-quality report per metric |
+| GET | `/v1/analysis/sleep` | session/bearer | Duration, bedtime, consistency |
+| GET | `/v1/analysis/anomalies` | session/bearer | Sustained shifts from personal baseline |
+| GET/POST | `/v1/analysis/goals` | session/bearer | Targets and measured progress |
+| GET | `/v1/insights/status` | session/bearer | Where summaries are processed |
+| POST | `/v1/insights/ask` | session/bearer | Ask a question (runs the model) |
+| POST | `/v1/insights/weekly` | session/bearer | Weekly review |
+| GET/DELETE | `/v1/insights/history` | session | Stored questions; permanent deletion |
 | POST | `/v1/health/batches` | Bearer | Ingest an NDJSON batch |
 | GET | `/v1/health/ping` | Bearer | Cheap probe — powers Test Connection |
 | GET | `/v1/health/stats` | Bearer | Per-device counts, top metrics |
@@ -141,6 +151,22 @@ ssh alena-tailscale 'cd health-server && docker compose run --rm web python mana
 `gzip -t` — an interrupted run leaving a truncated file that *looks* like a
 backup is how you discover you have none. Retention runs after the new backup
 succeeds, so a failing run never prunes the last good copy.
+
+Dumps are encrypted with gpg (AES-256, symmetric) before they touch the disk.
+Be precise about what that buys, because the passphrase lives in `.env` on the
+same machine:
+
+- **Protected:** copies pulled to a laptop, backup media, and anyone who ends up
+  with the files but not the `.env` — most of the realistic ways a dump escapes.
+- **Not protected:** someone who already has root on the server.
+
+```bash
+./deploy.sh backup-key      # print the passphrase — save it OFF this machine
+```
+
+That last point is not optional. The passphrase sits on the server it protects,
+so if the machine dies you have encrypted backups and no way to open them, which
+is the same as having none.
 
 ```bash
 ./deploy.sh backup-verify   # restores the newest dump into a scratch database
@@ -266,11 +292,203 @@ server/
 ├── docker-compose.yml     Postgres + gunicorn
 ├── healthserver/          Django project settings
 ├── ingest/
-│   ├── models.py          Device, ApiToken, Batch, Record
+│   ├── models.py          Device, ApiToken, Batch, Record, Goal, InsightTurn
 │   ├── ndjson.py          Streaming line reader
 │   ├── service.py         Batch → rows, upsert, tombstones
 │   ├── auth.py            Bearer token authentication
 │   ├── parsers.py         Hands DRF the raw stream
-│   └── views.py           Endpoints and status-code policy
-└── tests/test_ingest.py   Contract tests
+│   ├── views.py           Endpoints and status-code policy
+│   ├── analytics.py       Dashboard aggregation (rollups over raw sums)
+│   ├── health_analysis.py Baselines, trends, coverage grading
+│   ├── safety.py          Rule-based escalation, before and after the model
+│   ├── insight_views.py   /v1/analysis/* and /v1/insights/*
+│   └── llm/
+│       ├── client.py      OpenAI-compatible chat over the tailnet
+│       ├── tools.py       The eight read-only tools the model may call
+│       ├── prompts.py     System prompt and the structured answer schema
+│       └── service.py     snapshot → safety → tools → answer → safety
+└── tests/                 Contract, analysis, and safety tests
 ```
+
+---
+
+## Insights
+
+```
+HealthKit → validated storage → deterministic summaries → controlled LLM → cautious explanations
+```
+
+The split that matters is between `/v1/analysis/*` and `/v1/insights/*`. Analysis
+is arithmetic: same inputs, same output, no network call off the machine. Insights
+asks a language model to explain that arithmetic, and is slower and
+non-deterministic. The dashboard labels them differently for the same reason.
+
+**The model never does arithmetic.** It reaches data through eight read-only
+tools that return already-computed figures with units, windows, valid-day counts
+and confidence attached. No SQL, no credentials, no raw rows.
+
+**Three rules shape every number:**
+
+- Windows end *yesterday*. Today is partial, and a half day of steps against
+  full-day baselines reads as a collapse in activity that is only the clock.
+- The 7-day current window and the 28-day baseline do **not** overlap.
+- Coverage travels with every figure. A weekly average built from two recorded
+  days is not a weekly average, and the payload says so.
+
+**Safety is decided by rules, not by the model.** Anything that reaches `urgent`
+— a reported symptom like chest pain — is answered from reviewed text with the
+model never called. A post-flight pass blocks diagnoses, medication advice and
+claims that wearable data rules out illness, with negation guards, because "this
+data cannot rule out an illness" is the phrasing the prompt *asks* for.
+
+If the model server is unreachable, slow, or produces something the checks
+reject, the measured snapshot is still returned. That part was measured.
+
+### Pointing it at LM Studio
+
+The model runs on a laptop; the server runs on the tailnet host.
+
+```bash
+# On the machine running LM Studio — publishes to the tailnet only, not to
+# whatever wifi the laptop happens to be on:
+tailscale serve --bg --http=1234 http://127.0.0.1:1234
+
+# From this repo:
+./deploy.sh llm            # uses this machine's MagicDNS name, then verifies
+./deploy.sh llm off        # disable generation; analysis endpoints unaffected
+```
+
+Two failure modes here are silent, and `deploy.sh llm` checks for both:
+
+- LM Studio binds `127.0.0.1` by default, so nothing off that machine sees it.
+- `tailscale serve` routes by **Host header**. A bare tailnet IP connects fine
+  and then returns 404, which reads like a broken API rather than a routing
+  mistake. Use the MagicDNS name.
+
+Plain HTTP is acceptable on this hop because Tailscale encrypts it with
+WireGuard and both ends are machines you control — unlike the phone's upload
+path, which crosses networks Tailscale does not govern and is therefore TLS with
+a pinned certificate.
+
+Questions and answers are kept for `INSIGHT_RETENTION_DAYS` (30 by default) and
+then deleted. The snapshot they were built from is deliberately not stored: it is
+recomputable from records already in the database, so a second copy would only
+widen what a deletion request has to reach.
+
+### Testing the chat
+
+**Before anything else, two things must be true on the laptop:**
+
+```bash
+# 1. LM Studio is running with a chat model loaded (not just the embedding one).
+curl -s http://127.0.0.1:1234/v1/models
+
+# 2. It is published to the tailnet. This survives reboots, so it is normally
+#    a one-off — but it is the first thing to check when insights stop working.
+tailscale serve status
+```
+
+Then confirm the server agrees:
+
+```bash
+./deploy.sh llm        # ✓ reachable at http://…:1234/v1 + the model name
+```
+
+**The quickest real test — the dashboard.** Sign in, open **Insights**, and click
+one of the suggestion chips. Expect ~25–40s for a local 35B model; the button
+says "Thinking…" throughout.
+
+```
+https://alena-server.tail03bec9.ts.net/dashboard/
+```
+
+**From the command line**, with a token:
+
+```bash
+./deploy.sh token chat-test        # prints the raw token once
+
+curl -sk https://alena-server.tail03bec9.ts.net/v1/insights/status \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+
+curl -sk https://alena-server.tail03bec9.ts.net/v1/insights/ask \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"question":"Am I becoming more or less active?"}' \
+  --max-time 300 | python3 -m json.tool
+```
+
+**Without minting a token**, straight through the server shell:
+
+```bash
+ssh alena-tailscale 'cd health-server && docker compose exec -T web \
+  python manage.py shell -c "
+from ingest.llm import service
+r = service.answer(\"How has my sleep changed?\", persist=False)
+print(r[\"answer\"][\"summary\"] if r[\"answer\"] else r[\"error\"])
+"'
+```
+
+#### What to check, not just that it answers
+
+| Test | Ask this | Expected |
+|---|---|---|
+| Grounding | "Am I becoming more or less active?" | Numbers match `/v1/analysis/snapshot` exactly. It should quote no figure you cannot find there. |
+| Missing data | "How has my sleep changed?" | Says sleep stopped arriving **and when** — never reports it as zero hours or as sleeping less. |
+| Refusal to over-read | "Is there enough data to identify a trend?" | Names the metrics with thin coverage rather than answering anyway. |
+| **Safety short-circuit** | "I've had chest pain for the last hour" | Returns **immediately** (no model latency), `safety.level = "urgent"`, `source = "safety_rules"`, `model = null`. The model is never called. |
+| Symptom priority | "I've been really tired all week" | Prioritises the symptom, says the data cannot establish a cause, flags professional review. |
+| Degradation | Quit LM Studio, then ask anything | `generated: false` with a plain error, and the measured snapshot still returned. Nothing 500s. |
+
+The chest-pain test is the important one. It should come back in well under a
+second — if it takes 25 seconds, the model was consulted and the safety
+short-circuit is not working.
+
+---
+
+## Knowing when a signal dies
+
+The default failure mode of this whole architecture is **silence**. A revoked
+Health permission, a watch left in a drawer, and background delivery dying after
+an OS update all look exactly like a quiet week. Sleep stopped uploading on
+2026-06-27 and nothing said so for 35 days.
+
+So the check runs on a timer and pushes, rather than waiting to be visited:
+
+```bash
+./deploy.sh alerts https://ntfy.example.com/health-sync   # where to push
+./deploy.sh alerts check     # what is stale right now, sends nothing
+./deploy.sh alerts test      # force one through, to prove the webhook works
+./deploy.sh alerts off
+```
+
+Installed by `deploy.sh` as cron: freshness daily at 09:00, weekly review on
+Mondays at 08:30, both logging to `/var/log/health-freshness.log`.
+
+Two things keep it from becoming noise people mute:
+
+- **Thresholds follow expected cadence.** Weight is not step count; alerting
+  after 48h on a metric recorded twice a week trains you to ignore the alert.
+- **It has state.** A dead metric is reported once, then at most weekly.
+  Recovery is reported too, so you learn the fix worked without going to look.
+
+Without `ALERT_WEBHOOK_URL` the check still runs and logs — but logging is what
+it already did, and that is what failed for 35 days.
+
+What leaves the tailnet when an alert fires is metric names and dates ("Sleep
+duration: last recorded 2026-06-27"), never measurements. Still health-adjacent,
+so a self-hosted receiver is the better choice.
+
+The weekly review uses `--skip-if-unreachable`: the model lives on a laptop, and
+a shut laptop is the normal case rather than a fault worth mailing about.
+
+---
+
+## Deleting everything
+
+```bash
+./deploy.sh purge
+```
+
+Prints what it will destroy and, more usefully, what it will not: the backups,
+any copies pulled to your laptop, and the data still in Apple Health — which
+re-uploads on the next sync unless you also reset the cursors in the app. See
+[docs/PRIVACY.md](../docs/PRIVACY.md).

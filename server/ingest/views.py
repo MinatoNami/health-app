@@ -16,6 +16,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from . import analytics
 from .auth import BearerTokenAuthentication
 from .models import ApiToken, Batch, Device, Record
 from .ndjson import PayloadTooLarge
@@ -304,6 +305,7 @@ def _build_stats() -> dict:
     metrics = [
         {
             "metric_slug": row["metric_slug"],
+            "label": analytics.display_name(row["metric_slug"]),
             "count": row["count"],
             "latest_sample_at": _iso(row["latest"]),
             "unit": row["unit"],

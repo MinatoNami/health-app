@@ -1,5 +1,7 @@
 import hashlib
+import os
 import secrets
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import models
@@ -202,3 +204,132 @@ class Record(models.Model):
 
     def __str__(self):
         return f"{self.metric_slug}@{self.start:%Y-%m-%d %H:%M}" if self.start else self.id
+
+
+class Goal(models.Model):
+    """A target the person set for themselves.
+
+    Stored server-side rather than on the phone because the insight layer needs
+    them: "am I on track" is unanswerable without knowing what the track is, and
+    progress has to be *counted* rather than inferred by a model.
+    """
+
+    class Cadence(models.TextChoices):
+        DAILY = "daily"
+        WEEKLY = "weekly"
+
+    metric_slug = models.CharField(max_length=128, db_index=True)
+    label = models.CharField(max_length=128, blank=True)
+    target_value = models.FloatField()
+    unit = models.CharField(max_length=32, blank=True)
+    cadence = models.CharField(max_length=16, choices=Cadence.choices, default=Cadence.DAILY)
+    note = models.TextField(blank=True)
+    active = models.BooleanField(default=True)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="health_goals",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("metric_slug",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=["metric_slug", "cadence"], name="unique_goal_per_metric_cadence"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.metric_slug} ≥ {self.target_value} {self.unit}".strip()
+
+
+class AlertState(models.Model):
+    """One open (or closed) alert, so the notifier does not nag.
+
+    Without durable state the nightly freshness check would announce the same
+    dead metric every night for a month, which is how an alert becomes something
+    people filter to a folder they never open. `resolved_at` is what makes
+    recovery reportable: you learn the fix worked without going to look.
+    """
+
+    key = models.CharField(max_length=128, unique=True)
+    label = models.CharField(max_length=128, blank=True)
+    detail = models.TextField(blank=True)
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_sent_at = models.DateTimeField(default=timezone.now)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    # False when the webhook was unreachable. The state is still written, so a
+    # broken notifier cannot cause a re-alert storm once it recovers.
+    notified = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ("-last_sent_at",)
+
+    def __str__(self):
+        return f"{self.key} ({'resolved' if self.resolved_at else 'open'})"
+
+
+class InsightTurn(models.Model):
+    """One question and the answer that came back.
+
+    Kept so an answer can be re-read and audited — a generated health claim that
+    cannot be produced again later is not one anybody can check.
+
+    Deliberately *not* stored: the health snapshot the answer was built from. It
+    is derived from records still in this database and can be recomputed, so a
+    second copy would only widen what a deletion request has to reach. §8 of the
+    integration notes also asks that prompts and responses not be retained
+    indefinitely, which `prune` enforces.
+    """
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="insight_turns",
+        null=True,
+        blank=True,
+    )
+    question = models.TextField(blank=True)
+    answer = models.JSONField(null=True, blank=True)
+    safety = models.JSONField(null=True, blank=True)
+    tool_calls = models.JSONField(null=True, blank=True)
+    model_name = models.CharField(max_length=128, blank=True)
+    latency_ms = models.IntegerField(default=0)
+    error = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    @staticmethod
+    def retention_days() -> int:
+        try:
+            return max(1, int(os.environ.get("INSIGHT_RETENTION_DAYS", "30")))
+        except ValueError:
+            return 30
+
+    @classmethod
+    def prune(cls) -> int:
+        cutoff = timezone.now() - timedelta(days=cls.retention_days())
+        deleted, _ = cls.objects.filter(created_at__lt=cutoff).delete()
+        return deleted
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.pk,
+            "question": self.question,
+            "answer": self.answer,
+            "safety": self.safety,
+            "tool_calls": self.tool_calls,
+            "model_name": self.model_name,
+            "latency_ms": self.latency_ms,
+            "error": self.error,
+            "created_at": self.created_at.isoformat(),
+        }
+
+    def __str__(self):
+        return f"{self.created_at:%Y-%m-%d %H:%M} {self.question[:60]}"

@@ -69,8 +69,29 @@ final class BackgroundSync {
         submit(processing)
 
         let refresh = BGAppRefreshTaskRequest(identifier: BackgroundSync.refreshTaskIdentifier)
-        refresh.earliestBeginDate = Date(timeIntervalSinceNow: interval)
+        // Aimed at the small hours when the morning brief needs writing.
+        //
+        // iOS decides when this actually runs and will not be argued with, but
+        // it does honour "not before". Asking for pre-dawn is the difference
+        // between the 08:00 alert usually describing this morning and usually
+        // describing yesterday evening — a local notification's text has to be
+        // written in advance, so this is the only lever there is.
+        refresh.earliestBeginDate = min(
+            Date(timeIntervalSinceNow: interval),
+            BackgroundSync.nextPreDawn()
+        )
         submit(refresh)
+    }
+
+    /// The next 05:30 local. Early enough to leave iOS a wide window before the
+    /// alert fires, late enough that the day's overnight sleep samples exist.
+    private static func nextPreDawn() -> Date {
+        let calendar = Calendar.current
+        var components = DateComponents()
+        components.hour = 5
+        components.minute = 30
+        return calendar.nextDate(after: Date(), matching: components, matchingPolicy: .nextTime)
+            ?? Date(timeIntervalSinceNow: 3_600)
     }
 
     private func submit(_ request: BGTaskRequest) {
@@ -106,6 +127,10 @@ final class BackgroundSync {
                 await shared.syncEngine.syncDirtyTypes()
                 await shared.syncEngine.deliverPending()
             }
+            // Last, and on both paths: this is the only chance to write the
+            // morning alert's text with anything current in it, and it needs
+            // the upload above to have landed first.
+            await shared.dailyBrief.refresh()
             if finished.claim() { task.setTaskCompleted(success: true) }
         }
 

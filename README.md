@@ -33,7 +33,7 @@ Full design rationale: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 4. **Select your iPhone and Run.** HealthKit returns nothing useful in the
    Simulator, and background delivery doesn't work there at all.
 
-5. **Grant access.** Tap *Request Health Access* on the Status tab. You get
+5. **Grant access.** Tap *Request Health Access* on the Summary tab. You get
    **one** prompt per data type, ever — enable every group you might want on the
    Metrics tab *before* requesting. Afterwards the only way to change your mind is
    Settings → Privacy & Security → Health.
@@ -206,7 +206,7 @@ and picks up on unlock.
 
 Background sync fails quietly by default. Two things to check:
 
-- **Status tab → Stale metrics.** Anything that produced data before but hasn't
+- **Summary tab → Coverage.** Anything that produced data before but hasn't
   in 48 hours. Revoked permissions, background delivery dying after an OS update,
   and expired tokens all look like silence.
 - **Exports tab → View Log.** Persisted across launches, exportable via the
@@ -227,8 +227,13 @@ HealthExporter/
 └── UI/           SwiftUI screens
 
 server/           Django ingest server + deploy script (see server/README.md)
-server/dashboard/ Vue analytics dashboard (charts, CSV export)
+server/dashboard/ Vue analytics dashboard (charts, CSV export, insights)
 ```
+
+The app has five tabs, and five is a ceiling rather than a preference: a sixth
+makes iOS collapse the bar to four plus a "More" list, and what falls into More
+is the *last* two — which on this app meant burying sign-in. Batch files and the
+log moved under Settings → Diagnostics when Insights arrived.
 
 Adding or removing Swift files means regenerating the project:
 
@@ -239,6 +244,52 @@ ruby Tools/generate_project.rb
 
 The generated `.xcodeproj` is committed, so this is only needed when the file
 list changes.
+
+---
+
+## The morning brief
+
+A notification at 08:00 with one line about what changed — "Steps down 25% ·
+Sleep not syncing (35d)" — that opens the Insights tab on the detail behind it.
+Time and behaviour are in *Settings → Morning brief*.
+
+It is a **local** notification, not a push. A push would let the text be
+composed at the moment it fires, but it needs an APNs key and a push service
+alongside the ingest server; for one phone the only practical difference is
+freshness. iOS will not run the app at 08:00 to write the text, so the brief is
+re-fetched and the alert rewritten on every launch, every foreground, after
+every sync, and from the background refresh task — which now asks to run
+pre-dawn specifically so the morning's copy is usually written overnight.
+
+When that window is not granted the alert still fires, and says which day it
+describes rather than implying it was composed on the spot. Tapping it always
+re-fetches: the alert is a nudge, the detail is live.
+
+It stays quiet on days when nothing moved and nothing broke. An alert that says
+"nothing changed" every morning is one you turn off, and then you miss the day
+it matters. A metric that has *stopped arriving* always warrants one, and leads
+the line — burying that under a reassurance is how five weeks of missing sleep
+data goes unnoticed.
+
+---
+
+## Insights on the phone
+
+The Insights tab shows the server's analysis — every headline metric over the
+last 7 days against the user's own preceding 28, with coverage and a confidence
+grade — and lets you ask questions about it.
+
+Nothing is recomputed on the device. Baselines, coverage grading and the
+deduplication rules underneath them are subtle enough that a second
+implementation would drift, and a phone quietly disagreeing with the dashboard
+about the same week is worse than either number alone. See `server/README.md`
+for how the analysis and the model layer work.
+
+The measured comparison is rendered first and the generated explanation second,
+which is also the order they arrive: the snapshot is one fast query, an answer is
+a local model working for tens of seconds. When the model server is asleep — it
+lives on a laptop, so it often is — the screen still carries everything that was
+actually recorded.
 
 ---
 

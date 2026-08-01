@@ -26,7 +26,7 @@ struct CoverageGrid: View {
                                     .strokeBorder(Color.primary, lineWidth: 1.5)
                             }
                         }
-                        .accessibilityLabel("\(entry.slug), \(label(for: entry.state))")
+                        .accessibilityLabel("\(entry.slug.metricDisplayName), \(label(for: entry.state))")
                         .onTapGesture {
                             withAnimation(.easeOut(duration: 0.15)) {
                                 selected = selected?.slug == entry.slug ? nil : entry
@@ -38,7 +38,7 @@ struct CoverageGrid: View {
             if let selected {
                 HStack(spacing: 6) {
                     Circle().fill(color(for: selected.state)).frame(width: 7, height: 7)
-                    Text(selected.slug.replacingOccurrences(of: "_", with: " "))
+                    Text(selected.slug.metricDisplayName)
                         .font(.caption.weight(.medium))
                     Text(label(for: selected.state))
                         .font(.caption)

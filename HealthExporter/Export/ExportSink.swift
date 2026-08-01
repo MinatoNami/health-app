@@ -103,14 +103,20 @@ struct SinkConfiguration: Codable, Equatable {
         endpoint?.deletingLastPathComponent().appendingPathComponent("stats")
     }
 
-    /// `/v1/analytics/overview` — the daily series behind the phone's charts.
-    var overviewEndpoint: URL? {
+    /// Any path on the same host, over the same TLS requirement.
+    ///
+    /// Derived from `baseURL` rather than configured separately so no endpoint
+    /// can ever be pointed somewhere the health data is not already going.
+    func apiEndpoint(_ path: String) -> URL? {
         guard var components = URLComponents(string: baseURL) else { return nil }
         guard components.scheme?.lowercased() == "https" else { return nil }
         guard let host = components.host, !host.isEmpty else { return nil }
-        components.path = "/v1/analytics/overview"
+        components.path = path
         return components.url
     }
+
+    /// `/v1/analytics/overview` — the daily series behind the phone's charts.
+    var overviewEndpoint: URL? { apiEndpoint("/v1/analytics/overview") }
 
     var isUsable: Bool { enabled && endpoint != nil && !bearerToken.isEmpty }
 }
@@ -369,6 +375,107 @@ final class HTTPSink: ExportSink {
         } catch {
             return .failure(error)
         }
+    }
+
+    // MARK: - Insights
+
+    /// Shared plumbing for the analysis endpoints: bearer auth, the pinned
+    /// session, and the same status-code contract as everything else.
+    private func fetch<T: Decodable>(
+        _ url: URL?,
+        as type: T.Type,
+        timeout: TimeInterval = 30,
+        method: String = "GET",
+        body: Data? = nil
+    ) async -> Result<T, Error> {
+        guard let url, !configuration.bearerToken.isEmpty else {
+            return .failure(SinkError.notConfigured)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(configuration.bearerToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = timeout
+        if let body {
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return .failure(SinkError.badResponse("Non-HTTP response"))
+            }
+            switch http.statusCode {
+            case 200...299:
+                do {
+                    return .success(try JSONDecoder().decode(T.self, from: data))
+                } catch {
+                    return .failure(SinkError.badResponse("Could not read the response: \(error)"))
+                }
+            case 401, 403:
+                return .failure(SinkError.unauthorized)
+            case 429:
+                let retry = http.value(forHTTPHeaderField: "Retry-After").map { " Try again in \($0)s." } ?? ""
+                return .failure(SinkError.badResponse("The server is busy.\(retry)"))
+            default:
+                let detail = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                return .failure(SinkError.permanent(
+                    status: http.statusCode,
+                    body: detail?["detail"] as? String ?? ""
+                ))
+            }
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// The deterministic snapshot: every headline metric against its own
+    /// baseline. No model runs behind this, so it is fast and always available.
+    func fetchSnapshot() async -> Result<HealthSnapshot, Error> {
+        await fetch(configuration.apiEndpoint("/v1/analysis/snapshot"), as: HealthSnapshot.self)
+    }
+
+    /// The morning brief. Small and deterministic, so it can be fetched inside
+    /// the few seconds a background refresh is granted.
+    func fetchDailyBrief() async -> Result<DailyBrief, Error> {
+        await fetch(configuration.apiEndpoint("/v1/insights/daily"), as: DailyBrief.self, timeout: 20)
+    }
+
+    func fetchInsightStatus() async -> Result<InsightStatus, Error> {
+        await fetch(configuration.apiEndpoint("/v1/insights/status"), as: InsightStatus.self, timeout: 15)
+    }
+
+    /// Asks a question about the data already on the server.
+    ///
+    /// The long timeout is not slack: a local model works through a tool loop
+    /// and a structured answer in tens of seconds, and a timeout that fires
+    /// mid-answer is indistinguishable from a broken server.
+    func ask(question: String, context: String, remember: Bool) async -> Result<InsightResult, Error> {
+        let body = try? JSONSerialization.data(withJSONObject: [
+            "question": question,
+            "context": context,
+            "remember": remember,
+            "tz": TimeZone.current.identifier,
+        ])
+        return await fetch(
+            configuration.apiEndpoint("/v1/insights/ask"),
+            as: InsightResult.self,
+            timeout: 240,
+            method: "POST",
+            body: body ?? Data("{}".utf8)
+        )
+    }
+
+    func weeklyReview() async -> Result<InsightResult, Error> {
+        let body = try? JSONSerialization.data(withJSONObject: ["tz": TimeZone.current.identifier])
+        return await fetch(
+            configuration.apiEndpoint("/v1/insights/weekly"),
+            as: InsightResult.self,
+            timeout: 240,
+            method: "POST",
+            body: body ?? Data("{}".utf8)
+        )
     }
 
     /// Checks URL, TLS pin, and token in one round trip, without shipping any
