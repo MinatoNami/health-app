@@ -88,13 +88,65 @@ indicate it happened.
 
 ---
 
-## Sending to your own API
+## Sending to the server
 
-Settings tab → *HTTP destination*. Enter an `https://` base URL and a bearer
-token, flip *Upload automatically*. If the URL has no path, `/v1/health/batches`
-is appended.
+There's a Django server in [server/](server/) that implements this contract, and
+a deploy script that puts it on a backend host behind nginx. Start there:
 
-The client sends:
+```bash
+cd server
+./deploy.sh                 # build, push, migrate, verify
+./deploy.sh user lionel     # create a login — prompts for a password
+```
+
+Then on the phone: Settings tab → *Account* → **Sign In**. The URL and
+certificate pin are pre-filled for that server. Signing in exchanges your
+password for a bearer token; flip *Upload automatically* once it succeeds.
+**Test Connection** proves the URL, the TLS pin, and the token in one request
+without sending any health data — worth doing, because from then on failures are
+silent by design.
+
+The token is kept in the **Keychain**, not in `sync-settings.json`
+(`AfterFirstUnlockThisDeviceOnly`, so background uploads work on a locked device
+and the item never syncs to iCloud). **The password is never stored** — it is
+used for the single request that returns the token and then discarded.
+
+*Sign Out* revokes the token on the server as well as clearing it locally;
+dropping only the local copy would leave a working credential in anyone else's
+hands. Each sign-in mints its own token, so revoking one device doesn't sign out
+the others.
+
+### Why the certificate is pinned
+
+The server lives on a Tailscale tailnet. A tailnet hostname can't get a
+publicly trusted certificate unless HTTPS Certificates are enabled for the
+tailnet — and for this one, Tailscale refuses. The alternative, installing a CA
+profile on the phone, would make iOS trust that CA for *every* site it visits.
+
+So the app trusts exactly one certificate, by SHA-256 of its DER encoding.
+`./deploy.sh pin` prints the current value. An empty pin field means normal
+system validation, so pointing the app at a server with a real certificate needs
+no code change.
+
+**Pinning alone is not sufficient on a device.** App Transport Security rejects
+an untrusted certificate during connection setup and fails with
+`NSURLErrorSecureConnectionFailed (-1200)` *before* the `URLSession` delegate is
+consulted — so however correct the pinning code is, it never runs. `Info.plist`
+therefore carries an `NSExceptionDomains` entry for this one host, which hands
+the trust decision to `CertificatePinner` instead. That is stricter than what
+ATS would have accepted, not weaker: an exact certificate match rather than
+"anything a public CA vouches for".
+
+Two traps worth knowing:
+
+- **The Simulator does not enforce this.** The same build connects happily in
+  the Simulator and fails on a phone. Test transport changes on a device.
+- **The exception is keyed to the hostname in `Info.plist`.** Pointing the app
+  at a *different* self-signed host means adding that host there too. A host
+  with a publicly trusted certificate needs no entry — delete the dictionary and
+  clear the pin.
+
+### The contract
 
 ```
 POST /v1/health/batches
@@ -104,13 +156,16 @@ Idempotency-Key: <batch filename>
 X-Schema-Version: 1
 ```
 
-Your endpoint needs to:
+Any other endpoint needs to:
 
 - **Upsert on `id`.** Sample UUIDs are stable across reads, so upserting makes
-  retries free.
+  retries free. Note that `id` is not always a UUID — daily rollups use
+  `stat:<slug>:<yyyy-mm-dd>`.
 - **Return the original result for a duplicate `Idempotency-Key`** (200 or 409).
   The client treats 409 as delivered. Retrying a request that already succeeded
-  is the normal case after a network blip, not an edge case.
+  is the normal case after a network blip, not an edge case. Don't return 409
+  while the batch is still being written — that tells the client to delete its
+  only other copy.
 - **Use 5xx / 429 for "try later"** and 4xx for "never going to work." The client
   retries the former with backoff and parks the latter rather than looping.
 
@@ -164,12 +219,14 @@ Background sync fails quietly by default. Two things to check:
 ```
 HealthExporter/
 ├── App/          Entry point, app delegate, Info.plist, entitlements
-├── Core/         Logging, timestamps, file-backed state store
+├── Core/         Logging, timestamps, file-backed state store, Keychain
 ├── Model/        HealthRecord wire format, JSON-safe value type
 ├── Health/       Metric catalog, unit resolution, authorization, readers
-├── Export/       Normalizers, NDJSON outbox, sink protocol + HTTP sink
+├── Export/       Normalizers, NDJSON outbox, sink protocol + HTTP sink, pinning
 ├── Sync/         Sync engine, observers, background tasks
 └── UI/           SwiftUI screens
+
+server/           Django ingest server + deploy script (see server/README.md)
 ```
 
 Adding or removing Swift files means regenerating the project:

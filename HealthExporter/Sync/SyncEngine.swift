@@ -44,11 +44,33 @@ final class SyncEngine: ObservableObject {
         var lastFullSyncAt: Date?
     }
 
+    /// Result of the last manual Test Connection.
+    enum ConnectionTest: Equatable {
+        case untested
+        case running
+        case succeeded(String)
+        case failed(String)
+    }
+
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lastSummary: String?
     @Published private(set) var pendingBatches: Int = 0
+    @Published private(set) var connectionTest: ConnectionTest = .untested
     @Published var settings: Settings {
         didSet { settingsStore.mutate { $0 = settings } }
+    }
+
+    /// Lives in the Keychain rather than in `settings`, so it is deliberately
+    /// not part of the persisted struct. Exposed here so the settings screen
+    /// has something bindable.
+    var bearerToken: String {
+        get { Keychain.shared.bearerToken }
+        set {
+            objectWillChange.send()
+            Keychain.shared.bearerToken = newValue
+            // A new token invalidates whatever the last test proved.
+            connectionTest = .untested
+        }
     }
 
     private let settingsStore = StateStore<Settings>(filename: "sync-settings.json", fallback: Settings())
@@ -72,6 +94,19 @@ final class SyncEngine: ObservableObject {
         self.reader = HealthReader(healthStore: authorization.healthStore)
         self.settings = settingsStore.value
         self.pendingBatches = Outbox.shared.pendingCount
+        migrateSupersededPin()
+    }
+
+    /// Moves a stored pin forward when the server certificate has been rotated.
+    ///
+    /// The persisted value wins over `defaultPin`, so without this a rotation
+    /// would strand every existing install on a pin that no longer matches —
+    /// visible only as uploads that silently stop.
+    private func migrateSupersededPin() {
+        let stored = CertificatePinner.normalize(settings.sink.pinnedCertificateSHA256)
+        guard SinkConfiguration.supersededPins.contains(stored) else { return }
+        settings.sink.pinnedCertificateSHA256 = SinkConfiguration.defaultPin
+        Log.shared.info("sink", "Updated stored certificate pin after server certificate rotation")
     }
 
     /// Metrics worth a deduplicated daily rollup. Deliberately a short list: the
@@ -389,6 +424,60 @@ final class SyncEngine: ObservableObject {
             }
         }
         pendingBatches = Outbox.shared.pendingCount
+    }
+
+    /// True once a token is held, whether it was pasted in or obtained by
+    /// signing in.
+    var isSignedIn: Bool { !bearerToken.isEmpty }
+
+    /// Trades a username and password for a token. The password is used for the
+    /// single request and never stored.
+    func signIn(username: String, password: String) async {
+        connectionTest = .running
+        let label = await UIDevice.current.name
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.signIn(username: username, password: password, deviceLabel: label) {
+        case .success(let message):
+            objectWillChange.send()
+            connectionTest = .succeeded(message)
+            Log.shared.info("sink", "Signed in: \(message)")
+        case .failure(let error):
+            connectionTest = .failed(error.localizedDescription)
+            Log.shared.error("sink", "Sign-in failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Revokes the token server-side, then clears it locally.
+    func signOut() async {
+        let sink = HTTPSink(configuration: settings.sink)
+        let result = await sink.signOut()
+        objectWillChange.send()
+        connectionTest = .untested
+        // Uploading with no credential would just park every batch on a 401.
+        settings.sink.enabled = false
+        if case .failure(let error) = result {
+            Log.shared.warn("sink", "Signed out locally, but the server was not reachable to revoke the token: \(error.localizedDescription)")
+        } else {
+            Log.shared.info("sink", "Signed out and revoked the token")
+        }
+    }
+
+    /// One round trip to the destination's ping endpoint, carrying no health
+    /// data. Background sync fails quietly — a stale token, a mistyped URL, or
+    /// a certificate that no longer matches the pin all look identical to
+    /// "nothing has happened yet" until someone checks.
+    func testConnection() async {
+        connectionTest = .running
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.probe() {
+        case .success(let message):
+            connectionTest = .succeeded(message)
+            Log.shared.info("sink", "Connection test succeeded: \(message)")
+        case .failure(let error):
+            let detail = error.localizedDescription
+            connectionTest = .failed(detail)
+            Log.shared.error("sink", "Connection test failed: \(detail)")
+        }
     }
 
     // MARK: - Maintenance

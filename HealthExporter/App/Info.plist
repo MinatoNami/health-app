@@ -31,6 +31,47 @@
 	<key>NSHealthShareUsageDescription</key>
 	<string>Health Exporter reads your activity, sleep, vitals, body, and nutrition data so it can be exported to your own server or a file you control. Nothing is sent anywhere you have not configured.</string>
 
+	<!-- App Transport Security exception for the ingest server, and nothing else.
+
+	     The server is a Tailscale host, which cannot hold a publicly trusted
+	     certificate unless HTTPS Certificates are enabled for the tailnet, so it
+	     presents a self-signed one. ATS rejects that during connection setup and
+	     fails with NSURLErrorSecureConnectionFailed (-1200) *before* the
+	     URLSession delegate is ever consulted — so certificate pinning alone is
+	     not enough on a real device, however correct the pinning code is. (The
+	     Simulator does not enforce this, which makes it a poor place to test:
+	     the same build succeeds there and fails on a phone.)
+
+	     This does not weaken the connection. It hands the trust decision to
+	     CertificatePinner, which requires an exact SHA-256 match against one
+	     certificate — strictly narrower than "any certificate a public CA
+	     vouches for", which is what ATS would otherwise accept.
+
+	     Deliberately scoped: one host, NSIncludesSubdomains false, TLS 1.2
+	     minimum. Every other destination keeps full ATS enforcement.
+
+	     NSExceptionAllowsInsecureHTTPLoads is the key that permits an untrusted
+	     certificate; it also permits cleartext to this host, which is why
+	     SinkConfiguration.endpoint independently refuses any scheme but https.
+
+	     If the endpoint ever gets a publicly trusted certificate, delete this
+	     whole dictionary and clear the pin field. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>alena-server.tail03bec9.ts.net</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSExceptionMinimumTLSVersion</key>
+				<string>TLSv1.2</string>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+		</dict>
+	</dict>
+
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
