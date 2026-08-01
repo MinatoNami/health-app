@@ -310,7 +310,19 @@ PATH=/usr/local/bin:/usr/bin:/bin
 20 3 * * * ubuntu /usr/local/bin/health-backup >> /var/log/health-backup.log 2>&1
 CRON
 sudo chmod 644 /etc/cron.d/health-backup"
-  ok "nightly backup installed (03:20, 30-day retention)"
+  # One line a night is slow growth, but nothing was ever going to truncate it.
+  remote "sudo tee /etc/logrotate.d/health-backup >/dev/null <<'ROTATE'
+/var/log/health-backup.log {
+    monthly
+    rotate 6
+    compress
+    missingok
+    notifempty
+    create 0644 ubuntu ubuntu
+}
+ROTATE
+sudo chmod 644 /etc/logrotate.d/health-backup"
+  ok "nightly backup installed (03:20, 30-day retention, rotated log)"
 }
 
 cmd_backup() {

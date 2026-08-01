@@ -203,7 +203,17 @@ final class SyncEngine: ObservableObject {
         let elapsed = Int(Date().timeIntervalSince(started))
         lastSummary = "\(totalEmitted) records in \(elapsed)s" + (failures > 0 ? ", \(failures) failed" : "")
         pendingBatches = Outbox.shared.pendingCount
-        if case .waitingForUnlock = phase {} else { phase = .idle }
+        // Preserve both terminal states rather than flattening to idle. The
+        // read half of a run can finish perfectly while delivery is dead — an
+        // expired token stops the upload circuit breaker, and overwriting that
+        // with "idle" shows a green checkmark over a queue that is going
+        // nowhere, which is worse than not detecting it at all. The next run
+        // sets .syncing on entry, so neither state can linger once work
+        // resumes.
+        switch phase {
+        case .waitingForUnlock, .failed: break
+        default: phase = .idle
+        }
         Log.shared.info("sync", "Finished: \(lastSummary ?? "")")
         Outbox.shared.pruneArchive()
 

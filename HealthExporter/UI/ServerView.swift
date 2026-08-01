@@ -113,25 +113,25 @@ struct ServerView: View {
     }
 
     private func metricsSection(_ status: ServerStatus) -> some View {
+        // Proportional bars rather than a column of counts. Sixty numbers side
+        // by side is a table nobody reads; the useful question is "which
+        // metrics dominate, and is anything unexpectedly quiet" — and relative
+        // length answers that without the reader doing arithmetic. The exact
+        // figure stays one tap away in the dashboard.
         Section("By metric") {
-            ForEach(status.metrics) { metric in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(metric.metricSlug).font(.caption.monospaced())
-                        Spacer()
-                        Text(metric.count.formatted())
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let latest = metric.latestSampleDate {
-                        Text("latest \(latest.formatted(.relative(presentation: .named)))")
-                            .font(.caption2)
-                            .foregroundStyle(metric.isStale ? .orange : .secondary)
-                    }
-                }
+            let maximum = max(1, status.metrics.map(\.count).max() ?? 1)
+            ForEach(status.metrics.prefix(20)) { metric in
+                MetricBar(slug: metric.metricSlug, count: metric.count,
+                          maximum: maximum, isStale: metric.isStale)
+            }
+            if status.metrics.count > 20 {
+                Text("+ \(status.metrics.count - 20) more, on the dashboard")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }
+
 
     private func devicesSection(_ status: ServerStatus) -> some View {
         Section("Devices") {
