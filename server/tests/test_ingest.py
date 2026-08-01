@@ -482,10 +482,50 @@ class ProbeTests(IngestTestCase):
         self.assertEqual(response.json()["token"], "test-iphone")
 
     def test_stats_summarises(self):
+        cache.clear()
         self.post(ndjson(header_line(), quantity()))
         response = self.client.get(
-            "/v1/health/stats", headers={"authorization": f"Bearer {self.raw}"}
+            "/v1/health/stats?fresh=1", headers={"authorization": f"Bearer {self.raw}"}
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["records_total"], 1)
-        self.assertEqual(len(response.json()["devices"]), 1)
+        body = response.json()
+        self.assertEqual(body["records_total"], 1)
+        self.assertEqual(len(body["devices"]), 1)
+        self.assertEqual(body["devices"][0]["record_count"], 1)
+        self.assertEqual(body["metrics"][0]["metric_slug"], "heart_rate")
+        self.assertEqual(body["metrics"][0]["unit"], "count/min")
+        self.assertIsNotNone(body["last_batch_at"])
+
+    def test_stats_excludes_tombstones_from_metrics(self):
+        """A deleted record must not still be counted as live data — that would
+        make the app report sync as healthy after everything was removed."""
+        cache.clear()
+        record = quantity()
+        self.post(ndjson(header_line(), record), key="a.ndjson")
+        self.post(
+            ndjson(header_line(batch_id="b"), {"id": record["id"], "kind": "delete"}),
+            key="b.ndjson",
+        )
+
+        body = self.client.get(
+            "/v1/health/stats?fresh=1", headers={"authorization": f"Bearer {self.raw}"}
+        ).json()
+
+        self.assertEqual(body["records_deleted"], 1)
+        self.assertEqual([m for m in body["metrics"] if m["metric_slug"] == "heart_rate"], [])
+
+    def test_stats_is_cached_between_calls(self):
+        cache.clear()
+        self.post(ndjson(header_line(), quantity()))
+        first = self.client.get(
+            "/v1/health/stats", headers={"authorization": f"Bearer {self.raw}"}
+        ).json()
+        second = self.client.get(
+            "/v1/health/stats", headers={"authorization": f"Bearer {self.raw}"}
+        ).json()
+
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        # Aggregates scan the whole table; pull-to-refresh must not be able to
+        # hammer the database.
+        self.assertEqual(first["generated_at"], second["generated_at"])

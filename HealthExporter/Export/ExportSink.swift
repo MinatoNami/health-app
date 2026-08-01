@@ -99,6 +99,10 @@ struct SinkConfiguration: Codable, Equatable {
     var loginEndpoint: URL? { authEndpoint("login") }
     var logoutEndpoint: URL? { authEndpoint("logout") }
 
+    var statsEndpoint: URL? {
+        endpoint?.deletingLastPathComponent().appendingPathComponent("stats")
+    }
+
     var isUsable: Bool { enabled && endpoint != nil && !bearerToken.isEmpty }
 }
 
@@ -266,6 +270,50 @@ final class HTTPSink: ExportSink {
         } catch {
             // The local token is cleared regardless — a network failure must
             // not leave the phone signed in.
+            return .failure(error)
+        }
+    }
+
+    /// Asks the server what it is holding.
+    ///
+    /// `fresh` bypasses the server's short cache, which is what a deliberate
+    /// pull-to-refresh should do; the cached path is fine for merely opening
+    /// the screen.
+    func fetchStatus(fresh: Bool = false) async -> Result<ServerStatus, Error> {
+        guard let base = configuration.statsEndpoint else {
+            return .failure(SinkError.notConfigured)
+        }
+        guard !configuration.bearerToken.isEmpty else {
+            return .failure(SinkError.notConfigured)
+        }
+
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        if fresh { components?.queryItems = [URLQueryItem(name: "fresh", value: "1")] }
+        guard let url = components?.url else { return .failure(SinkError.notConfigured) }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(configuration.bearerToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return .failure(SinkError.badResponse("Non-HTTP response"))
+            }
+            switch http.statusCode {
+            case 200...299:
+                do {
+                    return .success(try JSONDecoder().decode(ServerStatus.self, from: data))
+                } catch {
+                    return .failure(SinkError.badResponse("Could not read server response: \(error)"))
+                }
+            case 401, 403:
+                return .failure(SinkError.unauthorized)
+            default:
+                let detail = String(data: data.prefix(256), encoding: .utf8) ?? ""
+                return .failure(SinkError.permanent(status: http.statusCode, body: detail))
+            }
+        } catch {
             return .failure(error)
         }
     }

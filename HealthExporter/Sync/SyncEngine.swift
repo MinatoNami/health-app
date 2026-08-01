@@ -462,6 +462,32 @@ final class SyncEngine: ObservableObject {
         }
     }
 
+    /// Last successful reading of what the server holds, for the Server tab.
+    @Published private(set) var serverStatus: ServerStatus?
+    @Published private(set) var serverStatusError: String?
+    @Published private(set) var isLoadingServerStatus = false
+
+    func refreshServerStatus(fresh: Bool = false) async {
+        guard settings.sink.endpoint != nil, isSignedIn else {
+            serverStatusError = "Sign in first."
+            return
+        }
+        isLoadingServerStatus = true
+        defer { isLoadingServerStatus = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.fetchStatus(fresh: fresh) {
+        case .success(let status):
+            serverStatus = status
+            serverStatusError = nil
+        case .failure(let error):
+            // The previous reading is deliberately kept: a failed refresh
+            // should not blank the screen, since stale numbers still say more
+            // than nothing at all.
+            serverStatusError = error.localizedDescription
+        }
+    }
+
     /// One round trip to the destination's ping endpoint, carrying no health
     /// data. Background sync fails quietly — a stale token, a mistyped URL, or
     /// a certificate that no longer matches the pin all look identical to

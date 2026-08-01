@@ -71,8 +71,12 @@ common = {
   'CODE_SIGN_ENTITLEMENTS' => "#{APP_NAME}/App/#{APP_NAME}.entitlements",
   'GENERATE_INFOPLIST_FILE' => 'NO',
   'CODE_SIGN_STYLE' => 'Automatic',
-  # Fill in from Xcode > Signing & Capabilities, or set DEVELOPMENT_TEAM here.
-  'DEVELOPMENT_TEAM' => '',
+  # Set here rather than left blank on purpose. Regenerating overwrites the
+  # whole project, so an empty value silently discards the team Xcode wrote
+  # into it — the next device build then fails with "requires a development
+  # team" and the fix is not obviously related to having added a file.
+  # Override with DEVELOPMENT_TEAM=... when running this script.
+  'DEVELOPMENT_TEAM' => ENV.fetch('DEVELOPMENT_TEAM', 'MNJZZHXWT8'),
   'TARGETED_DEVICE_FAMILY' => '1',
   'SUPPORTED_PLATFORMS' => 'iphoneos iphonesimulator',
   'SDKROOT' => 'iphoneos',

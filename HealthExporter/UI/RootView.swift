@@ -11,6 +11,8 @@ struct RootView: View {
                 .tabItem { Label("Metrics", systemImage: "list.bullet") }
             ExportsView()
                 .tabItem { Label("Exports", systemImage: "square.and.arrow.up") }
+            ServerView()
+                .tabItem { Label("Server", systemImage: "server.rack") }
             SettingsView()
                 .tabItem { Label("Settings", systemImage: "gearshape") }
         }

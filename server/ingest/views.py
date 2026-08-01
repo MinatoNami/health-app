@@ -4,6 +4,7 @@ import logging
 import zlib
 
 from django.contrib.auth import authenticate
+from django.core.cache import cache
 from django.db import DatabaseError
 from django.db.models import Count, Max
 from django.utils import timezone
@@ -265,42 +266,97 @@ def ping(request):
     )
 
 
+STATS_CACHE_KEY = "ingest:stats:v2"
+STATS_CACHE_SECONDS = 60
+
+
+def _iso(value):
+    return value.isoformat() if value else None
+
+
+def _build_stats() -> dict:
+    """Aggregates over the whole store.
+
+    Every query here is a grouped aggregate rather than a per-object loop: with
+    millions of rows, one query per device is the difference between a page that
+    loads and one that times out.
+    """
+    devices = [
+        {
+            "device_id": row["device__device_id"],
+            "label": row["device__label"],
+            "app_version": row["device__last_app_version"],
+            "last_seen_at": _iso(row["device__last_seen_at"]),
+            "record_count": row["count"],
+            "latest_sample_at": _iso(row["latest"]),
+        }
+        for row in Record.objects.filter(device__isnull=False)
+        .values(
+            "device__device_id",
+            "device__label",
+            "device__last_app_version",
+            "device__last_seen_at",
+        )
+        .annotate(count=Count("id"), latest=Max("start"))
+        .order_by("-count")
+    ]
+
+    metrics = [
+        {
+            "metric_slug": row["metric_slug"],
+            "count": row["count"],
+            "latest_sample_at": _iso(row["latest"]),
+            "unit": row["unit"],
+        }
+        for row in Record.objects.filter(deleted_at__isnull=True)
+        .exclude(kind=Record.Kind.DELETE)
+        .values("metric_slug")
+        .annotate(count=Count("id"), latest=Max("start"), unit=Max("unit"))
+        .order_by("-count")[:60]
+    ]
+
+    last_batch = (
+        Batch.objects.filter(status=Batch.Status.STORED).order_by("-completed_at").first()
+    )
+
+    return {
+        "records_total": Record.objects.count(),
+        "records_deleted": Record.objects.filter(deleted_at__isnull=False).count(),
+        "batches": {
+            row["status"]: row["count"]
+            for row in Batch.objects.values("status").annotate(count=Count("id"))
+        },
+        "last_batch_at": _iso(last_batch.completed_at) if last_batch else None,
+        "last_batch_records": last_batch.stored_record_count if last_batch else 0,
+        "devices": devices,
+        "metrics": metrics,
+        "generated_at": timezone.now().isoformat(),
+    }
+
+
 @api_view(["GET"])
 @authentication_classes([BearerTokenAuthentication])
 @permission_classes([IsAuthenticated])
 def stats(request):
-    """Summary for eyeballing whether sync is actually working."""
-    devices = []
-    for device in Device.objects.all():
-        agg = device.records.aggregate(latest=Max("start"), total=Count("id"))
-        devices.append(
-            {
-                "device_id": device.device_id,
-                "label": device.label,
-                "app_version": device.last_app_version,
-                "last_seen_at": device.last_seen_at.isoformat(),
-                "record_count": agg["total"],
-                "latest_sample_at": agg["latest"].isoformat() if agg["latest"] else None,
-            }
-        )
+    """What the server actually holds — powers the app's Server tab.
 
-    batches = Batch.objects.values("status").annotate(count=Count("id"))
-    top_metrics = (
-        Record.objects.filter(deleted_at__isnull=True)
-        .values("metric_slug")
-        .annotate(count=Count("id"))
-        .order_by("-count")[:15]
-    )
+    Cached briefly: the aggregates scan the whole table, and a pull-to-refresh
+    that a user can repeat freely should not be able to load the database. Pass
+    ?fresh=1 to bypass.
+    """
+    if request.query_params.get("fresh") == "1":
+        payload = _build_stats()
+        cache.set(STATS_CACHE_KEY, payload, STATS_CACHE_SECONDS)
+        payload["cached"] = False
+        return Response(payload)
 
-    return Response(
-        {
-            "devices": devices,
-            "batches": {row["status"]: row["count"] for row in batches},
-            "records_total": Record.objects.count(),
-            "records_deleted": Record.objects.filter(deleted_at__isnull=False).count(),
-            "top_metrics": list(top_metrics),
-        }
-    )
+    payload = cache.get(STATS_CACHE_KEY)
+    cached = payload is not None
+    if not cached:
+        payload = _build_stats()
+        cache.set(STATS_CACHE_KEY, payload, STATS_CACHE_SECONDS)
+
+    return Response({**payload, "cached": cached})
 
 
 @api_view(["GET"])
