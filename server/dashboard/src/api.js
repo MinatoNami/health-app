@@ -62,6 +62,24 @@ export const api = {
   series: (params) => request(`/v1/analytics/series?${qs(params)}`),
   exportSummary: (params) => request(`/v1/export/summary?${qs(params)}`),
 
+  // Deterministic analysis. Same inputs, same numbers, no model involved —
+  // which is why these load instantly and the ask below does not.
+  snapshot: (params = {}) => request(`/v1/analysis/snapshot?${qs(params)}`),
+  quality: (params = {}) => request(`/v1/analysis/quality?${qs(params)}`),
+  sleepDetail: (params = {}) => request(`/v1/analysis/sleep?${qs(params)}`),
+  goals: () => request('/v1/analysis/goals'),
+  saveGoal: (body) =>
+    request('/v1/analysis/goals', { method: 'POST', body: JSON.stringify(body) }),
+  deleteGoal: (id) => request(`/v1/analysis/goals/${id}`, { method: 'DELETE' }),
+
+  // Model-backed. Slow by nature: a local model works through this for tens of
+  // seconds, so callers must show that something is happening.
+  insightStatus: () => request('/v1/insights/status'),
+  ask: (body) => request('/v1/insights/ask', { method: 'POST', body: JSON.stringify(body) }),
+  weeklyReview: () => request('/v1/insights/weekly', { method: 'POST', body: '{}' }),
+  insightHistory: () => request('/v1/insights/history'),
+  forgetInsights: () => request('/v1/insights/history', { method: 'DELETE' }),
+
   // Deliberately a URL rather than a fetch: handing it to the browser as a
   // normal download lets it stream to disk. Fetching it would buffer the whole
   // CSV in memory, which for a multi-year export is hundreds of megabytes.

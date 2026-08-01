@@ -229,6 +229,33 @@ class DataQualityTests(AnalysisTestCase):
         self.assertEqual(report["estimated_days"], 20)
         self.assertTrue(any("double-count" in note for note in report["notes"]))
 
+    def test_an_averaged_metric_is_never_called_estimated(self):
+        """Averaging the same readings twice gives the same average, so cross-source
+        overlap cannot inflate a discrete metric. Flagging it anyway put a caveat
+        on every day of heart-rate data that was untrue of all of it — and the
+        model repeated it back as a real limitation."""
+        for i in range(30):
+            day = self.as_of - timedelta(days=i)
+            self.sample(day, 55, slug="resting_heart_rate", aggregation="discrete",
+                        unit="count/min", source_name="Apple Watch")
+            self.sample(day, 56, slug="resting_heart_rate", aggregation="discrete",
+                        unit="count/min", source_name="iPhone")
+
+        report = health_analysis.data_quality("resting_heart_rate")
+
+        self.assertEqual(report["estimated_days"], 0)
+        self.assertFalse(any("estimated" in note for note in report["notes"]))
+        self.assertFalse(any("double-count" in note for note in report["notes"]))
+
+    def test_a_summed_metric_is_still_flagged(self):
+        """The same overlap on step count genuinely does double-count."""
+        for i in range(30):
+            day = self.as_of - timedelta(days=i)
+            self.sample(day, 5_000, source_name="iPhone")
+            self.sample(day, 5_000, source_name="Apple Watch")
+
+        self.assertEqual(health_analysis.data_quality("step_count")["estimated_days"], 30)
+
     def test_gaps_are_measured_not_smoothed_over(self):
         for i in list(range(0, 5)) + list(range(12, 35)):
             self.rollup(self.as_of - timedelta(days=i), 10_000)

@@ -139,6 +139,11 @@ class DayValue:
     # True when the day was summed from raw samples rather than an
     # Apple-deduplicated rollup, so it may read high. Carried all the way to the
     # answer: a trend built mostly from estimates is a weaker claim.
+    #
+    # Only ever set for cumulative metrics. Averaging the same heart-rate
+    # readings twice gives the same average, so "estimated" on a discrete metric
+    # is not a weaker number — it is a false caveat, and one the model will
+    # dutifully repeat back as a limitation that does not exist.
     estimated: bool
 
 
@@ -180,6 +185,12 @@ def day_values(
     else:
         payload = analytics.daily_series(slug, start, end, spec.daily, tz_name=tz_name)
 
+    # Cross-source overlap only inflates a *sum*. `daily_series` marks every day
+    # without an Apple rollup as raw, and for an average metric that is every
+    # day — reporting those as estimates would put a caveat on the majority of
+    # the data that is not true of any of it.
+    inflatable = spec.daily == "sum"
+
     out = []
     for point in payload["points"]:
         if point["value"] is None:
@@ -188,7 +199,7 @@ def day_values(
             DayValue(
                 day=date.fromisoformat(point["date"]),
                 value=float(point["value"]),
-                estimated=point.get("source") == analytics.SOURCE_RAW,
+                estimated=inflatable and point.get("source") == analytics.SOURCE_RAW,
             )
         )
     out.sort(key=lambda d: d.day)
@@ -355,6 +366,11 @@ def compare_to_baseline(
             "to": as_of.isoformat(),
             "valid_days": len(current),
             "window_days": current_days,
+            # Scored against how often the metric is *expected*, not against
+            # every calendar day. Weight measured three times in a week is full
+            # coverage for weight; scoring it 3/7 marks normal behaviour as a
+            # data problem.
+            "coverage": round(_coverage(len(current), current_days, spec.expected_cadence), 2),
         },
         "baseline": {
             "value": _round(baseline_value, spec.decimals),
@@ -362,7 +378,9 @@ def compare_to_baseline(
             "to": baseline_to.isoformat(),
             "valid_days": len(baseline),
             "window_days": baseline_days,
+            "coverage": round(_coverage(len(baseline), baseline_days, spec.expected_cadence), 2),
         },
+        "expected_cadence": spec.expected_cadence,
         "change": _round(delta, spec.decimals),
         "change_pct": round(change_pct, 1) if change_pct is not None else None,
         # "notable" is a statement about this person's own variability, not a
