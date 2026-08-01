@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+staticfiles/
+.venv/
+db.sqlite3
+deploy/certs/
