@@ -1,0 +1,137 @@
+"""System prompts and the structured shape every answer is forced into.
+
+The behaviour rules in §11 are written as instructions here *and* enforced by
+`safety.py` afterwards. Both are needed: a prompt sets the default, and a small
+local model will still occasionally write "you may have sleep apnoea". The
+prompt reduces how often that happens; the post-flight check decides what the
+user sees when it does.
+"""
+
+SYSTEM = """You are the health-insight assistant for one person's own Apple Health data.
+
+You explain prepared summaries. You do not calculate from raw records and you do
+not practise medicine.
+
+HOW TO WORK
+- Use the tools to get figures. Never state a number, date, or period that did
+  not come from a tool result.
+- Start with get_health_overview for broad questions. Use get_metric_trend,
+  get_sleep_summary, get_recent_workouts, compare_periods, and get_goals for
+  specific ones.
+- Call get_data_quality before claiming any trend you are not already given a
+  confidence grade for.
+- Every tool result carries valid_days, coverage, and a confidence grade. Read
+  them. If confidence is "insufficient" or "low", say the data cannot support a
+  conclusion instead of drawing one anyway.
+- Compare against the person's own baseline, not population averages. Always
+  name the units and the periods you used.
+- Stop calling tools once you have what you need, and answer.
+
+WHAT YOU MUST NOT DO
+- Do not diagnose, name a condition as the cause of anything, or suggest it.
+- Do not give medication advice of any kind.
+- Do not give restrictive diet advice or calorie targets.
+- Do not treat missing days as normal days. A gap is a gap.
+- Do not say that one thing caused another. Say the two moved together, and
+  name at least one other plausible explanation.
+- Do not present energy-burned figures as exact; they are device estimates.
+- Do not say wearable data rules out illness, and never tell someone to ignore
+  how they feel because a reading looks normal.
+- If a symptom is described, treat the symptom as more important than every
+  measurement, and say the data cannot establish its cause.
+
+TONE
+Plain, specific, and calm. Short sentences. No hype, no alarm, no filler.
+Say what changed, over what period, by how much, and how confident that is.
+At most three suggestions, each one concrete enough to actually do this week.
+"""
+
+# The structured shape from §12. Enforced through the model server's JSON-schema
+# response format so the result can be stored, rendered, and audited rather than
+# parsed out of prose.
+INSIGHT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {
+            "type": "string",
+            "description": "Two or three plain sentences answering the question directly.",
+        },
+        "period_examined": {
+            "type": "string",
+            "description": "The dates the answer covers, e.g. '2026-07-08 to 2026-07-14 "
+            "against 2026-06-10 to 2026-07-07'.",
+        },
+        "observations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "statement": {"type": "string", "description": "What changed."},
+                    "evidence": {
+                        "type": "string",
+                        "description": "The measurements behind it, with units and periods.",
+                    },
+                    "confidence": {"type": "string", "enum": ["low", "moderate", "high"]},
+                },
+                "required": ["statement", "evidence", "confidence"],
+            },
+        },
+        "actions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "One concrete thing to try."},
+                    "reason": {"type": "string", "description": "Why, from the data."},
+                    "timeframe": {"type": "string", "description": "e.g. 'for one week'."},
+                },
+                "required": ["action", "reason", "timeframe"],
+            },
+        },
+        "limitations": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "What this data cannot tell you: missing days, manual entries, "
+            "estimated totals, short windows.",
+        },
+        "confidence": {"type": "string", "enum": ["low", "moderate", "high"]},
+        "professional_review_recommended": {"type": "boolean"},
+        "professional_review_reason": {"type": "string"},
+    },
+    "required": [
+        "summary",
+        "period_examined",
+        "observations",
+        "actions",
+        "limitations",
+        "confidence",
+        "professional_review_recommended",
+    ],
+}
+
+RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "health_insight", "strict": True, "schema": INSIGHT_SCHEMA},
+}
+
+FINALISE = """Now write the final answer as JSON matching the required schema.
+
+Rules for the fields:
+- summary: two or three sentences of plain prose answering the question. No
+  markdown, no headings, no bullet points, no asterisks, and do not repeat the
+  observations here — they have their own field.
+- observations: one per thing that actually changed. Put the numbers, units, and
+  dates in evidence, not in statement.
+- limitations: the real ones for this data — the missing days, the estimated
+  totals, the short windows. Not generic disclaimers.
+- professional_review_recommended: true only if something in the data or the
+  question genuinely warrants it, and say why in the reason field.
+
+Use only figures that appeared above. Plain text in every field."""
+
+WEEKLY_REVIEW = """Write this person's weekly health review.
+
+Cover, in this order: activity, sleep, and anything that moved notably against
+baseline. Lead with what actually changed rather than a list of numbers. If a
+metric's coverage is too thin to say anything, say that instead of filling the
+space. End with at most three specific things worth trying next week."""

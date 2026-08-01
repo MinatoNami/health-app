@@ -8,6 +8,8 @@
 #   ./deploy.sh token <label>   mint a bearer token directly (shown once)
 #   ./deploy.sh pin             print the certificate pin for the app
 #   ./deploy.sh rotate-cert     reissue the TLS keypair (changes the pin)
+#   ./deploy.sh llm [url]       point the server at your LM Studio and verify it
+#   ./deploy.sh llm off         disable insight generation
 #   ./deploy.sh backup          run a database backup now
 #   ./deploy.sh backup-verify   restore the newest backup into a scratch DB
 #   ./deploy.sh backup-pull     copy backups off the server to this machine
@@ -136,9 +138,18 @@ POSTGRES_USER=health
 POSTGRES_PASSWORD=\$(openssl rand -hex 24)
 POSTGRES_HOST=db
 POSTGRES_PORT=5432
+LLM_ENABLED=1
+INSIGHT_RETENTION_DAYS=30
 EOF
 chmod 600 $REMOTE_DIR/.env"
     ok ".env created"
+  fi
+
+  # Deliberately not written into the generated .env: the right value depends on
+  # which machine is running LM Studio and whether it is published on the
+  # tailnet, and a wrong default here would look configured while failing.
+  if ! remote "grep -q '^LLM_BASE_URL=' $REMOTE_DIR/.env"; then
+    info "no model server configured yet — run ./deploy.sh llm to point at LM Studio"
   fi
 }
 
@@ -414,6 +425,101 @@ cmd_pin() {
   printf "%s\n" "$(cert_pin)"
 }
 
+# --- LLM routing -------------------------------------------------------------
+#
+# The model runs on a laptop; the server runs on the tailnet host. Two things
+# have to be true for the container to reach it, and both fail silently:
+#
+# 1. LM Studio binds 127.0.0.1 by default, so nothing off that machine can see
+#    it. `tailscale serve --bg --http=1234 http://127.0.0.1:1234` publishes it on
+#    the tailnet interface *only* — better than LM Studio's "serve on local
+#    network" toggle, which binds every interface including whatever wifi the
+#    laptop is on.
+# 2. `tailscale serve` routes by Host header, so the MagicDNS name is required.
+#    A bare tailnet IP connects fine and then returns 404, which reads like a
+#    broken API rather than a routing mistake.
+#
+# The link itself is WireGuard-encrypted by Tailscale, which is why plain HTTP
+# is acceptable here and not on the phone's upload path: that one crosses
+# networks Tailscale does not control, and LM Studio cannot terminate TLS.
+
+llm_default_url() {
+  # The laptop this script is being run from, if it is on the tailnet.
+  local name
+  name="$(tailscale status --json 2>/dev/null \
+    | sed -n 's/.*"DNSName": *"\([^"]*\)\.".*/\1/p' | head -1)"
+  [ -n "$name" ] && printf "http://%s:1234/v1" "$name"
+}
+
+set_env_var() {
+  # Replaces the key if present, appends it otherwise. Idempotent, and leaves
+  # every other secret in .env untouched.
+  local key="$1" value="$2"
+  remote "cd $REMOTE_DIR && touch .env && \
+    (grep -q '^${key}=' .env && sed -i 's|^${key}=.*|${key}=${value}|' .env \
+      || echo '${key}=${value}' >> .env) && chmod 600 .env"
+}
+
+cmd_llm() {
+  require_host
+
+  if [ "${1:-}" = "off" ]; then
+    set_env_var "LLM_ENABLED" "0"
+    compose "up -d web" >/dev/null 2>&1
+    ok "insight generation disabled; the deterministic analysis endpoints are unaffected"
+    return 0
+  fi
+
+  local url="${1:-}"
+  if [ -z "$url" ]; then
+    url="$(llm_default_url)"
+    [ -n "$url" ] || die "could not work out this machine's tailnet name; pass the URL explicitly:
+    ./deploy.sh llm http://<your-machine>.<tailnet>.ts.net:1234/v1"
+    info "using this machine's tailnet name: $url"
+  fi
+
+  case "$url" in
+    http://127.0.0.1*|http://localhost*)
+      warn "127.0.0.1 inside the container is the container itself, not your laptop."
+      warn "Use the MagicDNS name of the machine running LM Studio."
+      ;;
+    http://100.*|https://100.*)
+      warn "That is a bare tailnet IP. 'tailscale serve' routes by Host header and"
+      warn "will answer 404 — use the MagicDNS name instead."
+      ;;
+  esac
+
+  step "Checking the model server is reachable from the container"
+  set_env_var "LLM_BASE_URL" "$url"
+  set_env_var "LLM_ENABLED" "1"
+  compose "up -d web" >/dev/null 2>&1
+  sleep 2
+
+  local probe
+  probe=$(remote "cd $REMOTE_DIR && docker compose exec -T web python -c \"
+from ingest.llm import client
+import django, json
+print(json.dumps(client.status()))
+\" 2>/dev/null" || true)
+
+  if printf '%s' "$probe" | grep -q '\"reachable\": true'; then
+    ok "reachable at $url"
+    printf '%s' "$probe" | sed -n 's/.*\"model\": \"\([^\"]*\)\".*/    model: \1/p'
+  else
+    warn "not reachable from the container yet."
+    printf '%s\n' "$probe" | sed 's/^/    /' | head -4
+    cat <<EOF
+
+    On the machine running LM Studio:
+      tailscale serve --bg --http=1234 http://127.0.0.1:1234
+      tailscale serve status          # confirm it is published
+
+    Insights degrade to the measured snapshot until this works, so nothing
+    is broken in the meantime.
+EOF
+  fi
+}
+
 cmd_status() {
   require_host
   step "Containers"
@@ -453,10 +559,11 @@ case "${1:-deploy}" in
   rotate-cert) cmd_rotate_cert ;;
   token)   shift; cmd_token "$@" ;;
   pin)     cmd_pin ;;
+  llm)     shift; cmd_llm "$@" ;;
   status)  cmd_status ;;
   logs)    shift; cmd_logs "$@" ;;
   migrate) cmd_migrate ;;
   shell)   cmd_shell ;;
   destroy) cmd_destroy ;;
-  *)       die "unknown command '$1' (deploy, user, admin, token, pin, rotate-cert, backup, backup-verify, backup-pull, status, logs, migrate, shell, destroy)" ;;
+  *)       die "unknown command '$1' (deploy, user, admin, token, pin, llm, rotate-cert, backup, backup-verify, backup-pull, status, logs, migrate, shell, destroy)" ;;
 esac

@@ -134,6 +134,10 @@ REST_FRAMEWORK = {
         "analytics": env("ANALYTICS_RATE_LIMIT", "240/min"),
         # Tighter: one call can stream hundreds of megabytes.
         "export": env("EXPORT_RATE_LIMIT", "12/min"),
+        # Tighter still. One question occupies the local model for tens of
+        # seconds and the requests queue behind each other, so a retry loop here
+        # is a denial of service against your own GPU rather than a load spike.
+        "insight": env("INSIGHT_RATE_LIMIT", "10/min"),
     },
     # Exactly one proxy (nginx) sits in front, so the client identity is the
     # LAST entry in X-Forwarded-For.
@@ -165,6 +169,25 @@ X_FRAME_OPTIONS = "DENY"
 # The ingest view reads the stream itself; this only guards views that don't.
 DATA_UPLOAD_MAX_MEMORY_SIZE = 16 * 1024 * 1024
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 1_000
+
+# The model that explains health summaries. §8 of
+# docs/healthkit_llm_integration_instructions.md asks for a mode where health
+# data never reaches a third party; here it never leaves the tailnet.
+#
+# The default is loopback, which is right for a workstation and wrong in
+# production: this server has no GPU worth using, LM Studio runs on a laptop,
+# and 127.0.0.1 inside the container is the container. `./deploy.sh llm` sets
+# the real value — the laptop's MagicDNS name, reached over WireGuard.
+#
+# Left as loopback rather than hard-coding a machine name because an endpoint
+# that is merely unreachable degrades to the measured snapshot, whereas one
+# pointing at the wrong host looks configured and is not.
+LLM_BASE_URL = env("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+LLM_ENABLED = env_bool("LLM_ENABLED", True)
+# How long a question and its answer are kept before being deleted. Not
+# unbounded: these are health questions in someone's own words, which is often
+# more sensitive than the measurements they are about.
+INSIGHT_RETENTION_DAYS = int(env("INSIGHT_RETENTION_DAYS", "30"))
 
 LOGGING = {
     "version": 1,
