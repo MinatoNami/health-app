@@ -1,385 +1,256 @@
 <script setup>
-/* Ask My Health.
+/* Ask My Health, as a conversation.
  *
- * The layout puts the measured numbers first and the generated prose second,
- * deliberately. The snapshot is what was recorded; the answer is an explanation
- * of it. If the model is asleep on a laptop somewhere — which it will be — the
- * page is still useful, because the part that was measured is still there.
+ * The previous layout stacked a privacy notice, six tiles, a sleep card, a text
+ * box, an answer and a goals form down one column. Everything was present and
+ * nothing was in a relationship with anything else — the answer appeared below
+ * the question box and pushed the goals form down, which reads as a report that
+ * happens to sit near a form.
  *
- * The snapshot loads immediately and independently of any question, so the
- * screen is never a bare text box waiting on a model that takes half a minute.
+ * A transcript fixes that for free: turns are ordered, the question stays next
+ * to its answer, and follow-ups have somewhere obvious to go. The measured
+ * numbers move beside the conversation, because they are what the answers are
+ * built from and should stay in view while you read one.
+ *
+ * Everything explanatory — how the windows are chosen, where processing
+ * happens, goals, retention — moved to Settings. It is read once; it was
+ * costing a paragraph a day here.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { api } from '../api.js'
-import BaselineTile from '../components/BaselineTile.vue'
-import InsightAnswer from '../components/InsightAnswer.vue'
+import ChatMessage from '../components/ChatMessage.vue'
+import ContextRail from '../components/ContextRail.vue'
 
 const snapshot = ref(null)
 const status = ref(null)
-const goals = ref([])
-const analysable = ref([])
-
+const turns = ref([])
 const question = ref('')
-const context = ref('')
-const remember = ref(true)
-const followUp = ref(false)
 const asking = ref(false)
-const result = ref(null)
 const error = ref('')
-const loading = ref(true)
+const transcript = ref(null)
 
-const newGoal = ref({ metric_slug: '', target_value: '' })
-
-/* Starter questions from §10 phase 3. Present because a blank box invites
- * "how am I doing", which is the one question with no good answer. */
+/* Short on purpose. Full sentences on five chips was a paragraph of its own. */
 const SUGGESTIONS = [
-  'How has my sleep changed this month?',
-  'Am I becoming more or less active?',
-  'Is there enough data to identify a trend?',
-  'What are three realistic goals for next week?',
-  'Which area should I focus on first?',
+  'How is my sleep?',
+  'Am I more active?',
+  'Enough data to see a trend?',
+  'What should I focus on?',
 ]
 
-const qualityBySlug = computed(() =>
-  Object.fromEntries((snapshot.value?.data_quality || []).map((q) => [q.metric_slug, q]))
-)
+const ready = computed(() => status.value?.enabled && status.value?.reachable)
 
-const modelReady = computed(() => status.value?.enabled && status.value?.reachable)
+/* The transcript opens with the measured week rather than an empty panel, so
+ * the screen says something true before any model has run. */
+const opening = computed(() => {
+  if (!snapshot.value) return null
+  const moved = snapshot.value.metrics
+    .filter((m) => m.significance === 'notable' && m.confidence !== 'insufficient')
+    .map((m) => `${m.label.toLowerCase()} ${m.change > 0 ? 'up' : 'down'} ${Math.abs(m.change_pct).toFixed(0)}%`)
+  const stale = snapshot.value.metrics_not_syncing || []
+  const parts = []
+  parts.push(moved.length ? `Against your 28-day baseline: ${moved.join(', ')}.` : 'Nothing moved much against your baseline this week.')
+  if (stale.length) {
+    parts.push(`${stale.map((s) => s.label).join(' and ')} stopped arriving — a gap, not a zero.`)
+  }
+  return parts.join(' ')
+})
 
-async function loadSnapshot() {
-  loading.value = true
+async function scrollDown() {
+  await nextTick()
+  const el = transcript.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+async function load() {
   try {
     snapshot.value = await api.snapshot()
   } catch (e) {
     error.value = e.message
-  } finally {
-    loading.value = false
   }
-}
-
-async function loadStatus() {
   try {
     status.value = await api.insightStatus()
   } catch {
-    status.value = { enabled: false, reachable: false, detail: 'Could not read model status.' }
+    status.value = { enabled: false, reachable: false }
   }
-}
-
-async function loadGoals() {
-  try {
-    const body = await api.goals()
-    goals.value = body.goals
-    analysable.value = body.analysable_metrics
-    if (!newGoal.value.metric_slug && analysable.value.length) {
-      newGoal.value.metric_slug = analysable.value[0].metric_slug
-    }
-  } catch { /* goals are optional furniture */ }
 }
 
 async function ask(text) {
   const asked = (text ?? question.value).trim()
   if (!asked || asking.value) return
-  question.value = asked
-  asking.value = true
+
+  question.value = ''
   error.value = ''
+  turns.value.push({ role: 'user', text: asked })
+  // Any turn after the first is a follow-up: the transcript is visibly a
+  // conversation, so behaving like one is the only consistent option.
+  const isFollowUp = turns.value.some((t) => t.role === 'assistant')
+  turns.value.push({ role: 'pending' })
+  asking.value = true
+  scrollDown()
+
   try {
-    result.value = await api.ask({
-      question: asked,
-      context: context.value,
-      remember: remember.value,
-      // Only once there is something to follow up on.
-      follow_up: followUp.value && Boolean(result.value),
-    })
+    const result = await api.ask({ question: asked, follow_up: isFollowUp })
+    turns.value.splice(-1, 1, { role: 'assistant', result })
   } catch (e) {
+    turns.value.splice(-1, 1)
     error.value = e.message
   } finally {
     asking.value = false
+    scrollDown()
   }
 }
 
 async function weekly() {
   if (asking.value) return
+  turns.value.push({ role: 'user', text: 'Weekly review' })
+  turns.value.push({ role: 'pending' })
   asking.value = true
-  error.value = ''
+  scrollDown()
   try {
-    result.value = await api.weeklyReview()
-    question.value = ''
+    turns.value.splice(-1, 1, { role: 'assistant', result: await api.weeklyReview() })
   } catch (e) {
+    turns.value.splice(-1, 1)
     error.value = e.message
   } finally {
     asking.value = false
+    scrollDown()
   }
 }
 
-async function saveGoal() {
-  const target = Number(newGoal.value.target_value)
-  if (!newGoal.value.metric_slug || !Number.isFinite(target) || target <= 0) return
-  try {
-    await api.saveGoal({ metric_slug: newGoal.value.metric_slug, target_value: target })
-    newGoal.value.target_value = ''
-    await loadGoals()
-  } catch (e) {
-    error.value = e.message
+/* Enter sends, Shift+Enter breaks the line — the convention every chat box
+ * shares, and the one people try first. */
+function onKey(event) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    ask()
   }
 }
 
-async function removeGoal(id) {
-  try {
-    await api.deleteGoal(id)
-    await loadGoals()
-  } catch (e) {
-    error.value = e.message
-  }
-}
-
-async function forget() {
-  if (!window.confirm('Delete every stored question and answer? This cannot be undone.')) return
-  try {
-    await api.forgetInsights()
-    result.value = null
-  } catch (e) {
-    error.value = e.message
-  }
-}
-
-onMounted(() => {
-  loadSnapshot()
-  loadStatus()
-  loadGoals()
-})
+watch(turns, scrollDown, { deep: true })
+onMounted(load)
 </script>
 
 <template>
   <div class="insights">
-    <p v-if="error" class="error">{{ error }}</p>
+    <section class="chat">
+      <div ref="transcript" class="transcript">
+        <!-- margin-top:auto on this wrapper is what makes a short conversation
+             sit against the composer instead of stranded at the top of an empty
+             panel. `justify-content: flex-end` on the scroller itself would do
+             the same until the content overflows, at which point it clips the
+             oldest messages out of reach. -->
+        <div class="messages">
+        <div v-if="opening" class="row">
+          <div class="bubble assistant opening">{{ opening }}</div>
+        </div>
 
-    <!-- Where the data goes, stated before anything is sent. §8 requires the
-         user be told which provider receives it, and "your own laptop over your
-         tailnet" and "a company's API" are different promises. -->
-    <section v-if="status" class="card privacy" :class="{ off: !modelReady }">
-      <div>
-        <strong>{{ modelReady ? 'Insights are processed' : 'Insight generation is unavailable' }}
-          {{ modelReady ? status.destination?.description : '' }}</strong>
-        <p class="muted">
-          <template v-if="modelReady">
-            {{ status.model }} · questions and answers are deleted after
-            {{ status.retention_days }} days · nothing is sent to a third party.
-          </template>
-          <template v-else>
-            {{ status.detail || 'The model server is not reachable.' }}
-            The measured analysis below does not need it.
-          </template>
+        <ChatMessage v-for="(turn, i) in turns" :key="i" :turn="turn" />
+
+        <p v-if="error" class="error">{{ error }}</p>
+
+        <p v-if="!ready && status" class="offline">
+          The model is unreachable, so answers are unavailable. The measured
+          numbers alongside do not need it.
         </p>
-      </div>
-      <button class="linkbtn" @click="forget">Delete stored questions</button>
-    </section>
-
-    <!-- Measured first. -->
-    <section v-if="snapshot" class="block">
-      <div class="block-head">
-        <h3>Last 7 days vs your own 28-day baseline</h3>
-        <span class="muted">
-          through {{ snapshot.as_of }} · today is excluded because it is incomplete
-        </span>
-      </div>
-
-      <div v-if="!snapshot.metrics.length" class="card empty">
-        No analysable metrics have arrived yet. Once the phone uploads steps, sleep,
-        or heart rate, comparisons appear here.
-      </div>
-
-      <div v-else class="tiles">
-        <BaselineTile
-          v-for="metric in snapshot.metrics" :key="metric.metric_slug"
-          :metric="metric"
-          :quality="qualityBySlug[metric.metric_slug]"
-        />
-      </div>
-
-      <!-- A metric that stopped arriving is a sync problem, not a habit change,
-           and it is the failure mode that hides best: nothing errors, the
-           numbers just quietly stop. -->
-      <div v-if="snapshot.metrics_not_syncing?.length" class="card stale">
-        <strong>Not syncing</strong>
-        <p v-for="item in snapshot.metrics_not_syncing" :key="item.metric_slug" class="muted">
-          {{ item.label }} — last recorded
-          {{ item.last_recorded_at ? item.last_recorded_at.slice(0, 10) : 'never' }}<template
-            v-if="item.days_since"> ({{ item.days_since }} days ago)</template>.
-        </p>
-        <p class="muted">
-          A gap is not a zero. Check Health permissions for these types, and that the
-          phone has synced recently.
-        </p>
-      </div>
-
-      <p v-if="snapshot.metrics_unavailable.length" class="muted note">
-        Not recorded on this phone: {{ snapshot.metrics_unavailable.join(', ') }}.
-      </p>
-    </section>
-
-    <section v-if="snapshot?.sleep?.nights_recorded" class="card sleep">
-      <h3>Sleep pattern</h3>
-      <div class="sleep-figures">
-        <div><span class="k">Average</span>{{ snapshot.sleep.average_hours }} h</div>
-        <div><span class="k">Typical bedtime</span>{{ snapshot.sleep.typical_bedtime }}</div>
-        <div><span class="k">Typical wake</span>{{ snapshot.sleep.typical_wake_time }}</div>
-        <div>
-          <span class="k">Schedule</span>{{ snapshot.sleep.consistency }}
-          <em v-if="snapshot.sleep.midpoint_spread_minutes !== null">
-            (±{{ snapshot.sleep.midpoint_spread_minutes }} min)
-          </em>
         </div>
       </div>
-      <p class="muted">
-        {{ snapshot.sleep.nights_recorded }} of {{ snapshot.sleep.window_days }} nights recorded.
-        Consistency is the spread of the sleep midpoint — when you sleep, not how long.
-      </p>
-    </section>
 
-    <!-- Then the explanation. -->
-    <section class="card ask">
-      <h3>Ask about your data</h3>
-      <p class="card-sub">
-        Answers come from the measured summaries above. This is wellness guidance,
-        not medical advice, and it cannot diagnose anything.
-      </p>
+      <div class="composer">
+        <div class="chips">
+          <button
+            v-for="s in SUGGESTIONS" :key="s"
+            class="chip" :disabled="asking || !ready"
+            @click="ask(s)"
+          >{{ s }}</button>
+          <button class="chip" :disabled="asking || !ready" @click="weekly">Weekly review</button>
+        </div>
 
-      <div class="suggestions">
-        <button
-          v-for="s in SUGGESTIONS" :key="s"
-          class="chip" :disabled="asking"
-          @click="ask(s)"
-        >{{ s }}</button>
-      </div>
-
-      <form @submit.prevent="ask()">
-        <textarea
-          v-model="question"
-          rows="2"
-          placeholder="e.g. What might be contributing to my tiredness?"
-          :disabled="asking"
-        />
-        <input
-          v-model="context"
-          type="text"
-          placeholder="Optional context — travel, illness, a new routine…"
-          :disabled="asking"
-        />
-        <div class="ask-actions">
-          <button class="btn" type="submit" :disabled="asking || !question.trim()">
-            {{ asking ? 'Thinking…' : 'Ask' }}
+        <form @submit.prevent="ask()">
+          <textarea
+            v-model="question"
+            rows="1"
+            placeholder="Ask about your health data…"
+            :disabled="asking || !ready"
+            @keydown="onKey"
+          />
+          <button class="send" type="submit" :disabled="asking || !question.trim() || !ready" aria-label="Send">
+            <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true">
+              <path d="M2 10 L18 3 L11 18 L9.5 11.5 Z" fill="currentColor" />
+            </svg>
           </button>
-          <button class="btn secondary" type="button" :disabled="asking" @click="weekly">
-            Weekly review
-          </button>
-          <label class="remember">
-            <input v-model="remember" type="checkbox" />
-            Keep this question
-          </label>
-          <!-- Only offered once there is a previous answer to follow up on;
-               a checkbox that does nothing on the first question is a promise
-               the screen cannot keep. -->
-          <label v-if="result" class="remember">
-            <input v-model="followUp" type="checkbox" />
-            Follow up on the last answer
-          </label>
-        </div>
-      </form>
-
-      <p v-if="asking" class="muted working">
-        Working through the summaries. A local model takes about half a minute.
-      </p>
-    </section>
-
-    <InsightAnswer v-if="result" :result="result" />
-
-    <!-- Goals last: useful, but not the reason anyone opens this tab. -->
-    <section class="card goals">
-      <h3>Goals</h3>
-      <p class="card-sub">Targets the insight layer counts progress against.</p>
-
-      <div v-if="goals.length" class="goal-list">
-        <div v-for="goal in goals" :key="goal.id" class="goal">
-          <div class="goal-text">
-            <strong>{{ goal.label }}</strong>
-            <span class="muted"> ≥ {{ goal.target_value.toLocaleString() }} {{ goal.unit }} {{ goal.cadence }}</span>
-            <div v-if="goal.progress" class="muted">
-              met {{ goal.progress.days_met }}/{{ goal.progress.days_with_data }} recorded days ·
-              streak {{ goal.progress.current_streak_days }} (best {{ goal.progress.longest_streak_days }})
-            </div>
-          </div>
-          <button class="linkbtn" @click="removeGoal(goal.id)">Remove</button>
-        </div>
+        </form>
+        <p class="disclaimer">Wellness guidance from your own data. Not medical advice.</p>
       </div>
-      <p v-else class="muted">No goals set.</p>
-
-      <form class="goal-form" @submit.prevent="saveGoal">
-        <select v-model="newGoal.metric_slug">
-          <option v-for="m in analysable" :key="m.metric_slug" :value="m.metric_slug">
-            {{ m.label }} ({{ m.unit }})
-          </option>
-        </select>
-        <input v-model="newGoal.target_value" type="number" step="any" min="0" placeholder="target" />
-        <button class="btn secondary" type="submit">Set goal</button>
-      </form>
     </section>
 
-    <p v-if="loading" class="muted">Loading your summary…</p>
+    <ContextRail :snapshot="snapshot" />
   </div>
 </template>
 
 <style scoped>
-.insights { display: flex; flex-direction: column; gap: 20px; }
-
-.privacy { display: flex; align-items: flex-start; gap: 16px; }
-.privacy > div { flex: 1; }
-.privacy strong { font-size: 13px; }
-.privacy p { margin: 4px 0 0; line-height: 1.5; }
-.privacy.off { box-shadow: inset 0 0 0 1px var(--status-warning); }
-
-.block-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.block-head h3 { font-size: 14px; font-weight: 600; margin: 0; }
-.note { margin-top: 10px; }
-
-.stale { margin-top: 14px; box-shadow: inset 0 0 0 1px var(--status-warning); }
-.stale strong { font-size: 13px; }
-.stale p { margin: 4px 0 0; line-height: 1.5; }
-
-/* Wider than the default KPI row: each tile carries a delta, a meter, and a
-   caveat line, and squeezing that into 150px produces four-line wraps. */
-.tiles { grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); margin-bottom: 0; }
-
-.sleep h3, .ask h3, .goals h3 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
-.sleep-figures {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 12px; margin: 12px 0;
+/* Conversation leads, context follows. Below 940px the rail drops underneath
+   rather than squeezing — a 200px column of numbers is unreadable. */
+.insights {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 18px;
+  align-items: start;
 }
-.sleep-figures div { font-size: 15px; font-weight: 600; }
-.sleep-figures em { font-size: 11px; font-weight: 400; color: var(--text-muted); font-style: normal; }
-.k { display: block; font-size: 11px; color: var(--text-muted); font-weight: 400; margin-bottom: 2px; }
-
-.suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
-.suggestions .chip { text-align: left; }
-
-textarea, .ask input[type='text'] {
-  width: 100%; font-family: inherit; font-size: 13px; padding: 9px 11px;
-  border: 1px solid var(--border); border-radius: 8px;
-  background: var(--surface-1); color: var(--text-primary); margin-bottom: 8px;
-  resize: vertical;
+@media (max-width: 940px) {
+  .insights { grid-template-columns: 1fr; }
 }
-.ask-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.remember { font-size: 12px; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; }
-.working { margin-top: 10px; }
 
-.goal-list { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
-/* Flex, not grid. Grid auto-placement put the Remove button ahead of the text
-   it belonged to, which read as a button with a stray label beside it. */
-.goal {
-  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
-  padding-bottom: 10px; border-bottom: 1px solid var(--gridline); font-size: 13px;
+.chat {
+  display: flex;
+  flex-direction: column;
+  background: var(--page);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  /* Tall enough that the composer sits at a predictable place rather than
+     wandering up and down as the transcript grows. */
+  height: calc(100vh - 190px);
+  min-height: 420px;
 }
-.goal:last-child { border-bottom: 0; padding-bottom: 0; }
-.goal-text > div { margin-top: 2px; }
-.goal-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.goal-form input { width: 110px; }
+
+.transcript {
+  flex: 1; overflow-y: auto; padding: 18px 18px 6px; scroll-behavior: smooth;
+  display: flex; flex-direction: column;
+}
+.messages { margin-top: auto; }
+@media (prefers-reduced-motion: reduce) { .transcript { scroll-behavior: auto; } }
+
+.row { display: flex; margin-bottom: 14px; }
+.bubble {
+  max-width: 46em; padding: 12px 15px; border-radius: var(--radius-lg);
+  font-size: 14px; line-height: 1.55;
+}
+.bubble.assistant {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-bottom-left-radius: 5px;
+}
+.opening { color: var(--text-secondary); }
+
+.composer { border-top: 1px solid var(--border); background: var(--surface-1); padding: 11px 14px 12px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
+
+form { display: flex; gap: 8px; align-items: flex-end; }
+textarea {
+  flex: 1; font-family: inherit; font-size: 14px; line-height: 1.45;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: 11px;
+  background: var(--page); color: var(--text-primary);
+  resize: none; min-height: 40px; max-height: 140px; field-sizing: content;
+}
+textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.send {
+  display: grid; place-items: center; width: 40px; height: 40px; flex: none;
+  border: 0; border-radius: 11px;
+  background: var(--accent); color: #fff;
+}
+.send:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.disclaimer { margin: 8px 0 0; font-size: 11px; color: var(--text-muted); }
+.offline { font-size: 13px; color: var(--warning-text); }
 </style>

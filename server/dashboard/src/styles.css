@@ -27,12 +27,27 @@
   --series-3: #1baf7a;
   --series-4: #eda100;
 
+  /* Status colours split by job. A colour that works as a *mark* is often
+     illegible as *text*: #fab219 is a perfectly good amber bar and scores
+     1.79:1 against this surface, so setting a caption in it means nobody with
+     ordinary eyesight can read it. The -text variants are the ones that clear
+     4.5:1; the plain ones are for fills, bars and borders only. */
   --status-good: #0ca30c;
   --status-warning: #fab219;
   --status-critical: #d03b3b;
-  --success-text: #006300;
+  --success-text: #006300;   /* 7.35:1 */
+  --warning-text: #7d5200;   /* 6.64:1 — never #fab219 */
+  --critical-text: #d03b3b;  /* 4.68:1 */
+
+  /* One accent carries interaction; everything else is ink. Status colour is
+     reserved for state and stays rare, or the page reads as a traffic light. */
+  --accent: var(--series-1);
+  --accent-soft: rgba(42, 120, 214, 0.09);
+  --bubble-user: #ececea;
+  --bubble-assistant: var(--surface-1);
 
   --radius: 10px;
+  --radius-lg: 14px;
   --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
@@ -51,7 +66,13 @@
     --series-2: #d95926;
     --series-3: #199e70;
     --series-4: #c98500;
-    --success-text: #0ca30c;
+    /* Re-stepped for the dark surface, not inherited: #d03b3b scores 3.62:1
+       here, which is below AA for anything at caption size. */
+    --success-text: #0ca30c;   /* 5.19:1 */
+    --warning-text: #fab219;   /* 9.49:1 — the light-mode amber works here */
+    --critical-text: #ef7a6d;  /* 6.37:1 */
+    --accent-soft: rgba(57, 135, 229, 0.16);
+    --bubble-user: #2a2a28;
   }
 }
 
@@ -70,6 +91,10 @@
   --series-3: #199e70;
   --series-4: #c98500;
   --success-text: #0ca30c;
+  --warning-text: #fab219;
+  --critical-text: #ef7a6d;
+  --accent-soft: rgba(57, 135, 229, 0.16);
+  --bubble-user: #2a2a28;
 }
 
 * { box-sizing: border-box; }

@@ -175,6 +175,24 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Insights") {
+                    NavigationLink("How insights work") { InsightsAboutView() }
+                    if let status = engine.insightStatus {
+                        LabeledContent("Processed") {
+                            Text(status.isReady
+                                 ? (status.destination?.description ?? "locally")
+                                 : "unavailable")
+                                .foregroundStyle(status.isReady ? Color.secondary : Color.orange)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        if status.isReady, let model = status.model {
+                            LabeledContent("Model", value: model)
+                        }
+                        LabeledContent("Questions kept",
+                                       value: "\(status.retentionDays ?? 30) days")
+                    }
+                }
+
                 Section("Diagnostics") {
                     NavigationLink("Batch Files & Log") { ExportsView() }
                     NavigationLink("Diagnostics") { DiagnosticsView() }

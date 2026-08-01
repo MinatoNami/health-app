@@ -1,427 +1,223 @@
 import SwiftUI
 
-/// Ask My Health.
+/// Ask My Health, as a conversation.
 ///
-/// The measured comparison comes first and the generated explanation second,
-/// which is also the order they become available: the snapshot is a single fast
-/// query, an answer is a local model working for half a minute. Arranged this
-/// way the screen is useful immediately and gets better, rather than being a
-/// spinner over a text box.
+/// A transcript with a composer pinned to the bottom, which is what every chat
+/// interface looks like and therefore what nobody has to learn. The measured
+/// week sits at the top as the opening message rather than as a separate block
+/// of cards — same numbers, but they read as the thing the answers are built
+/// from instead of an unrelated dashboard above a text box.
 ///
-/// Nothing here recomputes anything. Every number is the server's, so the phone
-/// and the dashboard cannot tell different stories about the same week.
+/// Explanations live in Settings → Insights. They were costing a paragraph of
+/// reading on every visit to say something worth saying once.
 struct InsightsView: View {
     @EnvironmentObject private var engine: SyncEngine
 
     @State private var question = ""
-    @State private var context = ""
-    @State private var remember = true
-    @FocusState private var questionFocused: Bool
+    @FocusState private var composerFocused: Bool
 
-    /// The questions §10 phase 3 lists. Present because an empty box invites
-    /// "how am I doing", which is the one question with no useful answer.
     private static let suggestions = [
-        "How has my sleep changed this month?",
-        "Am I becoming more or less active?",
-        "Is there enough data to identify a trend?",
-        "Which area should I focus on first?",
+        "How is my sleep?",
+        "Am I more active?",
+        "Enough data to see a trend?",
+        "What should I focus on?",
     ]
 
     var body: some View {
         NavigationStack {
-            List {
+            Group {
                 if !engine.isSignedIn {
-                    Section {
-                        ContentUnavailableView(
-                            "Not signed in",
-                            systemImage: "person.crop.circle.badge.xmark",
-                            description: Text("Sign in on the Settings tab to see your health summary.")
-                        )
-                    }
+                    ContentUnavailableView(
+                        "Not signed in",
+                        systemImage: "person.crop.circle.badge.xmark",
+                        description: Text("Sign in on the Settings tab.")
+                    )
                 } else {
-                    if let snapshot = engine.snapshot {
-                        baselineSection(snapshot)
-                        if let stale = snapshot.metricsNotSyncing, !stale.isEmpty {
-                            staleSection(stale)
-                        }
-                        if let sleep = snapshot.sleep, sleep.nightsRecorded > 0 {
-                            sleepSection(sleep)
-                        }
-                    } else if engine.snapshotError == nil {
-                        Section { ProgressView("Reading your summary…") }
-                    }
-
-                    askSection
-
-                    if let result = engine.insight {
-                        answerSections(result)
-                    }
-
-                    if let error = engine.insightError {
-                        Section {
-                            Label(error, systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-
-                    privacySection
-                }
-
-                if let error = engine.snapshotError {
-                    Section {
-                        Label(error, systemImage: "exclamationmark.triangle")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
+                    conversation
                 }
             }
             .navigationTitle("Insights")
-            .refreshable { await engine.refreshSnapshot() }
-            .task {
-                if engine.snapshot == nil { await engine.refreshSnapshot() }
-            }
+            .navigationBarTitleDisplayMode(.inline)
+            .task { if engine.snapshot == nil { await engine.refreshSnapshot() } }
         }
     }
 
-    // MARK: - Measured
-
-    private func baselineSection(_ snapshot: HealthSnapshot) -> some View {
-        Section {
-            ForEach(snapshot.metrics) { metric in
-                BaselineRow(metric: metric)
-            }
-            if snapshot.metrics.isEmpty {
-                Text("No analysable metrics have arrived yet. Run a sync, and comparisons appear here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("Last 7 days vs your 28-day baseline")
-        } footer: {
-            Text("Through \(snapshot.asOf). Today is left out because it is only half over — "
-                 + "a partial day against full-day baselines reads as a collapse that is really just the clock.")
-        }
-    }
-
-    /// Metrics that were arriving and stopped.
-    ///
-    /// This is the silent failure the whole app is built around: a revoked
-    /// permission, a watch left in a drawer, or background delivery dying after
-    /// an OS update all look exactly like a quiet week.
-    private func staleSection(_ stale: [HealthSnapshot.Stale]) -> some View {
-        Section {
-            ForEach(stale) { item in
-                LabeledContent {
-                    Text(item.daysSince.map { "\($0)d ago" } ?? "never")
-                        .foregroundStyle(.orange)
-                } label: {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(item.label)
-                        if let last = item.lastRecordedAt {
-                            Text("last recorded \(last.prefix(10))")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+    private var conversation: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        if let snapshot = engine.snapshot {
+                            SnapshotBubble(snapshot: snapshot)
                         }
+
+                        if let question = engine.lastQuestion {
+                            UserBubble(text: question)
+                        }
+
+                        if engine.isAsking {
+                            PendingBubble()
+                        } else if let result = engine.insight {
+                            AnswerBubble(result: result)
+                        }
+
+                        if let error = engine.insightError ?? engine.snapshotError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        }
+
+                        Color.clear.frame(height: 1).id(bottomAnchor)
                     }
+                    .padding(16)
                 }
+                .onChange(of: engine.insight) { _, _ in scroll(proxy) }
+                .onChange(of: engine.isAsking) { _, _ in scroll(proxy) }
             }
-        } header: {
-            Text("Not syncing")
-        } footer: {
-            Text("A gap is not a zero — a watch that was not worn is not a night without "
-                 + "sleep. Check Health permissions for these types on the Metrics tab.")
+
+            composer
         }
+        .background(Color(.systemGroupedBackground))
+        .refreshable { await engine.refreshSnapshot() }
     }
 
-    private func sleepSection(_ sleep: HealthSnapshot.Sleep) -> some View {
-        Section("Sleep pattern") {
-            if let hours = sleep.averageHours {
-                LabeledContent("Average", value: String(format: "%.1f h", hours))
-            }
-            if let bedtime = sleep.typicalBedtime {
-                LabeledContent("Typical bedtime", value: bedtime)
-            }
-            if let wake = sleep.typicalWakeTime {
-                LabeledContent("Typical wake", value: wake)
-            }
-            LabeledContent("Schedule", value: sleep.consistency)
-            Text("\(sleep.nightsRecorded) of \(sleep.windowDays) nights recorded. Consistency is the "
-                 + "spread of the sleep midpoint — when you sleep, not how long.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
+    private let bottomAnchor = "bottom"
+
+    private func scroll(_ proxy: ScrollViewProxy) {
+        withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
     }
 
-    // MARK: - Ask
-
-    private var askSection: some View {
-        Section {
-            TextField("What might be contributing to my tiredness?", text: $question, axis: .vertical)
-                .lineLimit(1...4)
-                .focused($questionFocused)
-                .disabled(engine.isAsking)
-
-            TextField("Optional context — travel, illness, a new routine…", text: $context)
-                .font(.callout)
-                .disabled(engine.isAsking)
-
-            Toggle("Keep this question", isOn: $remember)
-                .font(.callout)
-
-            Button {
-                questionFocused = false
-                let asked = question.trimmingCharacters(in: .whitespacesAndNewlines)
-                Task { await engine.ask(asked, context: context, remember: remember) }
-            } label: {
-                if engine.isAsking {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text("Thinking…")
+    private var composer: some View {
+        VStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 7) {
+                    ForEach(Self.suggestions, id: \.self) { suggestion in
+                        Button(suggestion) { send(suggestion) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                     }
-                } else {
-                    Label("Ask", systemImage: "sparkles")
+                    Button("Weekly review") {
+                        composerFocused = false
+                        Task { await engine.requestWeeklyReview() }
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-            }
-            .disabled(engine.isAsking || question.trimmingCharacters(in: .whitespaces).isEmpty)
-
-            Button("Weekly review") {
-                questionFocused = false
-                Task { await engine.requestWeeklyReview() }
+                .padding(.horizontal, 16)
             }
             .disabled(engine.isAsking)
 
-            // Horizontal, not a vertical stack of buttons: four full-width rows
-            // of suggestion would push the answer off the screen entirely.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(Self.suggestions, id: \.self) { suggestion in
-                        Button(suggestion) {
-                            question = suggestion
-                            questionFocused = false
-                            Task { await engine.ask(suggestion, context: context, remember: remember) }
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(engine.isAsking)
-                    }
+            HStack(spacing: 9) {
+                TextField("Ask about your health data…", text: $question, axis: .vertical)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 9)
+                    .background(Color(.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 19))
+                    .focused($composerFocused)
+
+                Button {
+                    send(question)
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 34, height: 34)
+                        .background(Color.accentColor, in: Circle())
+                        .foregroundStyle(.white)
                 }
-                .padding(.vertical, 2)
+                .disabled(engine.isAsking || question.trimmingCharacters(in: .whitespaces).isEmpty)
+                .opacity(engine.isAsking || question.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
             }
-            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 0))
-        } header: {
-            Text("Ask about your data")
-        } footer: {
-            Text("Answers are built from the measured summaries above. This is wellness guidance, "
-                 + "not medical advice, and it cannot diagnose anything."
-                 + (engine.isAsking ? " A local model takes about half a minute." : ""))
+            .padding(.horizontal, 16)
+
+            Text("Wellness guidance from your own data. Not medical advice.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 4)
         }
+        .padding(.top, 10)
+        .background(.bar)
     }
 
-    // MARK: - Answer
-
-    @ViewBuilder
-    private func answerSections(_ result: InsightResult) -> some View {
-        // Decided by rules before the model ran, so it shows whether or not
-        // anything was generated.
-        if result.safety.isElevated {
-            Section {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(result.safety.headline,
-                          systemImage: result.safety.level == "urgent"
-                            ? "exclamationmark.triangle.fill" : "stethoscope")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(result.safety.level == "urgent" ? .red : .orange)
-                    ForEach(result.safety.reasons, id: \.self) { reason in
-                        Text(reason).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-
-        if let error = result.error {
-            Section {
-                Text(error).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-
-        if let answer = result.answer {
-            Section("Summary") {
-                Text(answer.summary).font(.callout)
-                if !answer.periodExamined.isEmpty {
-                    Text(answer.periodExamined).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-
-            if !answer.observations.isEmpty {
-                Section("What the data shows") {
-                    ForEach(answer.observations) { observation in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(observation.statement).font(.callout)
-                            Text(observation.evidence).font(.caption).foregroundStyle(.secondary)
-                            Text("\(observation.confidence) confidence")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-            }
-
-            if !answer.actions.isEmpty {
-                Section("Worth trying") {
-                    ForEach(answer.actions) { action in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Label(action.action, systemImage: "arrow.right.circle")
-                                .font(.callout)
-                            Text(action.reason).font(.caption).foregroundStyle(.secondary)
-                            Text(action.timeframe).font(.caption2).foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-            }
-
-            if !answer.limitations.isEmpty {
-                Section("What this cannot tell you") {
-                    ForEach(answer.limitations, id: \.self) { limitation in
-                        Text(limitation).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            if answer.professionalReviewRecommended {
-                Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Label("A healthcare professional is the right person to ask",
-                              systemImage: "cross.case")
-                            .font(.subheadline.weight(.semibold))
-                        if let reason = answer.professionalReviewReason, !reason.isEmpty {
-                            Text(reason).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        }
-
-        Section {
-            if let model = result.model {
-                Text("\(model.name) · \(String(format: "%.1f", Double(model.latencyMs) / 1000))s · "
-                     + "processed \(model.destination?.description ?? "locally")")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else if result.isRuleBased {
-                Text("Answered from reviewed guidance. No model was consulted.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Button("Clear answer") { engine.clearInsight() }
-                .font(.caption)
-        }
-    }
-
-    // MARK: - Privacy
-
-    @ViewBuilder
-    private var privacySection: some View {
-        if let status = engine.insightStatus {
-            Section {
-                Label(
-                    status.isReady
-                        ? "Processed \(status.destination?.description ?? "on your server")"
-                        : "Insight generation is unavailable",
-                    systemImage: status.isReady ? "lock.shield" : "bolt.slash"
-                )
-                .font(.caption)
-                .foregroundStyle(status.isReady ? Color.secondary : Color.orange)
-
-                if status.isReady {
-                    Text("\(status.model ?? "local model") · questions are deleted after "
-                         + "\(status.retentionDays ?? 30) days · nothing is sent to a third party.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else if let detail = status.detail {
-                    Text("\(detail) The measured summary above does not need it.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
+    private func send(_ text: String) {
+        let asked = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !asked.isEmpty else { return }
+        composerFocused = false
+        question = ""
+        Task { await engine.ask(asked) }
     }
 }
 
-/// One metric against its own baseline: the value, the change, and how much of
-/// the window was actually recorded.
+// MARK: - Bubbles
+
+/// The measured week, as the opening turn.
 ///
-/// The coverage bar is the point. A seven-day average built from two days the
-/// watch was worn is not a weekly average, and a row that showed only the number
-/// would present both as the same claim.
-private struct BaselineRow: View {
-    let metric: HealthSnapshot.Comparison
+/// Deterministic, so it is there before any model runs — and still there when
+/// the model is asleep on a laptop somewhere, which is the normal case.
+private struct SnapshotBubble: View {
+    let snapshot: HealthSnapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(metric.label)
-                    .font(.subheadline.weight(.medium))
-                Spacer()
-                Text(format(metric.current.value))
-                    .font(.title3.weight(.semibold))
-                    .monospacedDigit()
-                + Text(" \(metric.unit)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("This week vs your 28-day baseline")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ForEach(snapshot.metrics) { metric in
+                MetricLine(metric: metric)
             }
 
-            if metric.isUsable, let change = metric.change {
-                HStack(spacing: 6) {
-                    Text(delta(change, pct: metric.changePct))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(tint)
-                    Text("vs \(format(metric.baseline.value)) baseline")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+            if let stale = snapshot.metricsNotSyncing, !stale.isEmpty {
+                Divider()
+                ForEach(stale) { item in
+                    HStack {
+                        Text(item.label).font(.caption)
+                        Spacer()
+                        Text("\(item.daysSince ?? 0)d ago")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
-            } else {
-                Text("Not enough data to compare")
+                Text("Not syncing. A gap is not a zero.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-
-            // Width is coverage and colour is coverage — one variable, so a full
-            // bar can never be painted as though something were missing.
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(.quaternary)
-                    Capsule()
-                        .fill(coverageTint)
-                        .frame(width: max(2, geometry.size.width * coverage))
-                }
-            }
-            .frame(height: 4)
-
-            Text("\(metric.confidence.capitalized) · \(metric.current.validDays)/"
-                 + "\(metric.current.windowDays) days · \(metric.confidenceReason)")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 3)
-        .accessibilityElement(children: .combine)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+/// Label · value · delta on one line. The delta is the only tinted thing —
+/// colouring the coverage bar and the confidence word too turned six metrics
+/// into eighteen coloured elements.
+private struct MetricLine: View {
+    let metric: HealthSnapshot.Comparison
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(Self.short[metric.metricSlug] ?? metric.label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 6)
+            Text(format(metric.current.value))
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+            Text(delta)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .frame(minWidth: 44, alignment: .trailing)
+        }
     }
 
-    private var coverage: Double {
-        metric.current.coverage
-            ?? (metric.current.windowDays > 0
-                ? Double(metric.current.validDays) / Double(metric.current.windowDays)
-                : 0)
-    }
-
-    private var coverageTint: Color {
-        if coverage >= 0.85 { return .green }
-        if coverage >= 0.5 { return .orange }
-        return .red
+    private var delta: String {
+        guard metric.isUsable, let pct = metric.changePct else { return "—" }
+        if abs(pct) < 0.5 { return "±0%" }
+        return "\(pct > 0 ? "+" : "−")\(Int(abs(pct).rounded()))%"
     }
 
     private var tint: Color {
@@ -432,18 +228,144 @@ private struct BaselineRow: View {
         }
     }
 
-    private func delta(_ change: Double, pct: Double?) -> String {
-        let sign = change > 0 ? "+" : change < 0 ? "−" : ""
-        let magnitude = format(abs(change))
-        guard let pct else { return "\(sign)\(magnitude)" }
-        return "\(sign)\(magnitude) (\(sign)\(String(format: "%.1f", abs(pct)))%)"
-    }
-
     private func format(_ value: Double?) -> String {
         guard let value else { return "—" }
         let magnitude = abs(value)
         if magnitude >= 10_000 { return String(format: "%.1fK", value / 1000) }
         if magnitude >= 100 { return value.formatted(.number.precision(.fractionLength(0))) }
-        return value.formatted(.number.precision(.fractionLength(magnitude < 10 ? 2 : 1)))
+        return value.formatted(.number.precision(.fractionLength(magnitude < 10 ? 1 : 0)))
+    }
+
+    /// Standard abbreviations. A phone row is not wide enough for
+    /// "Heart-rate variability" beside a value and a delta.
+    static let short = [
+        "resting_heart_rate": "Resting HR",
+        "heart_rate_variability_sdnn": "HRV",
+        "walking_heart_rate_average": "Walking HR",
+        "apple_exercise_time": "Exercise",
+        "sleep_analysis": "Sleep",
+        "active_energy_burned": "Active energy",
+        "distance_walking_running": "Distance",
+    ]
+}
+
+private struct UserBubble: View {
+    let text: String
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 40)
+            Text(text)
+                .font(.callout)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Color.accentColor.opacity(0.16),
+                            in: RoundedRectangle(cornerRadius: 16))
+        }
+    }
+}
+
+private struct PendingBubble: View {
+    var body: some View {
+        HStack(spacing: 9) {
+            ProgressView()
+            Text("Reading your summaries…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+/// The structured answer, inside one bubble.
+///
+/// Suggestions and limitations are behind a disclosure. They matter, but five
+/// of them under every answer buries the answer itself.
+private struct AnswerBubble: View {
+    let result: InsightResult
+    @State private var showDetail = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if result.safety.isElevated {
+                Label(result.safety.headline,
+                      systemImage: result.safety.level == "urgent"
+                        ? "exclamationmark.triangle.fill" : "stethoscope")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(result.safety.level == "urgent" ? Color.red : Color.orange)
+                ForEach(result.safety.reasons, id: \.self) { reason in
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            if let error = result.error {
+                Text(error).font(.caption).foregroundStyle(.secondary)
+            }
+
+            if let answer = result.answer {
+                Text(answer.summary).font(.callout)
+
+                ForEach(answer.observations) { observation in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("• \(observation.statement)").font(.callout)
+                        Text(observation.evidence)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 12)
+                    }
+                }
+
+                let detailCount = answer.actions.count + answer.limitations.count
+                if detailCount > 0 {
+                    Button(showDetail ? "Less" : "Suggestions and limits (\(detailCount))") {
+                        withAnimation { showDetail.toggle() }
+                    }
+                    .font(.caption)
+                }
+
+                if showDetail {
+                    if !answer.actions.isEmpty {
+                        Text("TRY").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                        ForEach(answer.actions) { action in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("• \(action.action)").font(.callout)
+                                Text("\(action.reason) · \(action.timeframe)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.leading, 12)
+                            }
+                        }
+                    }
+                    if !answer.limitations.isEmpty {
+                        Text("LIMITS").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                        ForEach(answer.limitations, id: \.self) { limitation in
+                            Text("• \(limitation)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                if answer.professionalReviewRecommended {
+                    Text("Worth raising with a healthcare professional.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            if let model = result.model {
+                Text("\(Int(Double(model.latencyMs) / 1000))s · \(model.name)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else if result.isRuleBased {
+                Text("Reviewed guidance — no model was consulted.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 16))
     }
 }

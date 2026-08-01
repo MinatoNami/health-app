@@ -550,6 +550,10 @@ final class SyncEngine: ObservableObject {
     @Published private(set) var insightError: String?
     @Published private(set) var insightStatus: InsightStatus?
     @Published private(set) var isAsking = false
+    /// Kept so the transcript can show the question beside its answer. Set
+    /// before the request rather than after, so the bubble appears immediately
+    /// instead of arriving with the reply half a minute later.
+    @Published private(set) var lastQuestion: String?
 
     func refreshSnapshot() async {
         guard settings.sink.endpoint != nil, isSignedIn else {
@@ -575,6 +579,8 @@ final class SyncEngine: ObservableObject {
         guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
         isAsking = true
         insightError = nil
+        lastQuestion = question
+        insight = nil
         defer { isAsking = false }
 
         let sink = HTTPSink(configuration: settings.sink)
@@ -591,6 +597,8 @@ final class SyncEngine: ObservableObject {
         guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
         isAsking = true
         insightError = nil
+        lastQuestion = "Weekly review"
+        insight = nil
         defer { isAsking = false }
 
         let sink = HTTPSink(configuration: settings.sink)
@@ -605,6 +613,7 @@ final class SyncEngine: ObservableObject {
     func clearInsight() {
         insight = nil
         insightError = nil
+        lastQuestion = nil
     }
 
     func refreshServerStatus(fresh: Bool = false) async {

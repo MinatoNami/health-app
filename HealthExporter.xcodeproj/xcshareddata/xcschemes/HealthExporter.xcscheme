@@ -14,7 +14,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "86B988C353FC26D2B7A386B7"
+               BlueprintIdentifier = "D649DA33C3CC31ED1CB3666E"
                BuildableName = "HealthExporter.app"
                BlueprintName = "HealthExporter"
                ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -30,7 +30,7 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "86B988C353FC26D2B7A386B7"
+            BlueprintIdentifier = "D649DA33C3CC31ED1CB3666E"
             BuildableName = "HealthExporter.app"
             BlueprintName = "HealthExporter"
             ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -53,7 +53,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "86B988C353FC26D2B7A386B7"
+            BlueprintIdentifier = "D649DA33C3CC31ED1CB3666E"
             BuildableName = "HealthExporter.app"
             BlueprintName = "HealthExporter"
             ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -70,7 +70,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "86B988C353FC26D2B7A386B7"
+            BlueprintIdentifier = "D649DA33C3CC31ED1CB3666E"
             BuildableName = "HealthExporter.app"
             BlueprintName = "HealthExporter"
             ReferencedContainer = "container:HealthExporter.xcodeproj">
