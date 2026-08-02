@@ -190,7 +190,11 @@ final class HealthReader {
 /// Ensures a continuation is resumed at most once. HealthKit's handlers are
 /// documented as one-shot for the queries used here, but a double resume is an
 /// immediate crash, so it's cheap insurance.
-private final class ResumeGuard {
+/// `@unchecked` is honest here rather than a silencer: the only mutable state
+/// is `used`, and every read and write of it happens under `lock`. The compiler
+/// cannot see that, but the HealthKit callbacks that capture this are handed to
+/// a `@Sendable` closure and genuinely may arrive on any thread.
+private final class ResumeGuard: @unchecked Sendable {
     private let lock = NSLock()
     private var used = false
 

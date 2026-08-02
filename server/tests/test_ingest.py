@@ -555,3 +555,170 @@ class ProbeTests(IngestTestCase):
         # Aggregates scan the whole table; pull-to-refresh must not be able to
         # hammer the database.
         self.assertEqual(first["generated_at"], second["generated_at"])
+
+
+def statistic(day="2026-07-30", value=8000.0, metric_slug="step_count", **extra):
+    """A daily rollup. Its id is deterministic per metric per day, which is what
+    lets a later run correct an earlier run's total — and what makes delivery
+    order matter."""
+    payload = {
+        "id": f"stat:{metric_slug}:{day}",
+        "kind": "statistic",
+        "metric": "HKQuantityTypeIdentifierStepCount",
+        "metric_slug": metric_slug,
+        "value": value,
+        "unit": "count",
+        "start": f"{day}T00:00:00+08:00",
+        "end": f"{day}T23:59:59+08:00",
+        "tz": "Asia/Singapore",
+        "aggregation": "cumulative",
+        "recorded_at": "2026-07-31T08:20:11+08:00",
+        "schema_version": 1,
+    }
+    payload.update(extra)
+    return payload
+
+
+class WriteOrderingTests(IngestTestCase):
+    """The upsert must be monotonic in `recorded_at`.
+
+    The client drains its outbox newest-first, so an older batch landing after a
+    newer one is ordinary behaviour rather than an edge case. These pin the
+    promise that arrival order cannot corrupt a stored value.
+    """
+
+    def test_older_batch_does_not_overwrite_newer(self):
+        rid = str(uuid.uuid4())
+        self.post(
+            ndjson(header_line(), quantity(record_id=rid, value=150.0,
+                                           recorded_at="2026-07-31T10:00:00+08:00")),
+            key="newer.ndjson",
+        )
+        response = self.post(
+            ndjson(header_line(), quantity(record_id=rid, value=100.0,
+                                           recorded_at="2026-07-31T09:00:00+08:00")),
+            key="older.ndjson",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["records_written"], 0)
+        self.assertEqual(response.json()["stale_skipped"], 1)
+        self.assertEqual(Record.objects.get(id=rid).value, 150.0)
+
+    def test_newer_batch_still_overwrites_older(self):
+        rid = str(uuid.uuid4())
+        self.post(
+            ndjson(header_line(), quantity(record_id=rid, value=100.0,
+                                           recorded_at="2026-07-31T09:00:00+08:00")),
+            key="first.ndjson",
+        )
+        response = self.post(
+            ndjson(header_line(), quantity(record_id=rid, value=150.0,
+                                           recorded_at="2026-07-31T10:00:00+08:00")),
+            key="second.ndjson",
+        )
+
+        self.assertEqual(response.json()["records_written"], 1)
+        self.assertEqual(response.json()["stale_skipped"], 0)
+        self.assertEqual(Record.objects.get(id=rid).value, 150.0)
+
+    def test_corrected_daily_total_survives_a_late_old_batch(self):
+        """The case this guard exists for: a rollup corrected by a later run,
+        then an earlier run's batch finally delivers."""
+        corrected = statistic(value=9500.0, recorded_at="2026-08-01T06:00:00+08:00")
+        original = statistic(value=8000.0, recorded_at="2026-07-31T06:00:00+08:00")
+
+        self.post(ndjson(header_line(), corrected), key="tuesday.ndjson")
+        self.post(ndjson(header_line(), original), key="monday.ndjson")
+
+        self.assertEqual(Record.objects.get(id=corrected["id"]).value, 9500.0)
+
+    def test_equal_timestamp_still_writes_so_a_retry_is_idempotent(self):
+        rid = str(uuid.uuid4())
+        same = {"record_id": rid, "recorded_at": "2026-07-31T09:00:00+08:00"}
+        self.post(ndjson(header_line(), quantity(value=100.0, **same)), key="a.ndjson")
+        response = self.post(
+            ndjson(header_line(), quantity(value=120.0, **same)), key="b.ndjson"
+        )
+
+        self.assertEqual(response.json()["records_written"], 1)
+        self.assertEqual(Record.objects.get(id=rid).value, 120.0)
+
+    def test_record_without_recorded_at_is_written(self):
+        rid = str(uuid.uuid4())
+        self.post(ndjson(header_line(), quantity(record_id=rid, value=100.0)), key="a.ndjson")
+        response = self.post(
+            ndjson(header_line(), quantity(record_id=rid, value=140.0, recorded_at=None)),
+            key="b.ndjson",
+        )
+
+        self.assertEqual(response.json()["records_written"], 1)
+        self.assertEqual(Record.objects.get(id=rid).value, 140.0)
+
+
+class CoverageTests(IngestTestCase):
+    """`/v1/health/coverage` is what the client rewinds its anchors against, so
+    a metric missing from it causes a full re-read of that type. Its contract is
+    therefore stricter than the display-oriented `/stats`."""
+
+    def get(self, **params):
+        query = "".join(f"?{k}={v}" for k, v in params.items())
+        return self.client.get(
+            f"/v1/health/coverage{query}",
+            headers={"authorization": f"Bearer {self.raw}"},
+        )
+
+    def test_requires_authentication(self):
+        self.assertEqual(self.client.get("/v1/health/coverage").status_code, 401)
+
+    def test_reports_count_and_high_water_mark_per_metric(self):
+        cache.clear()
+        self.post(
+            ndjson(
+                header_line(record_count=2),
+                quantity(metric_slug="heart_rate", start="2026-07-30T08:00:00+08:00"),
+                quantity(metric_slug="heart_rate", start="2026-07-31T08:00:00+08:00"),
+            )
+        )
+
+        body = self.get(fresh=1).json()
+
+        self.assertEqual(body["metrics"]["heart_rate"]["count"], 2)
+        self.assertTrue(body["metrics"]["heart_rate"]["latest_sample_at"].startswith("2026-07-31"))
+
+    def test_is_not_capped_at_sixty_metrics(self):
+        """The reason this endpoint exists. /stats slices to 60 for display; a
+        client reconciling against that would rewind every metric beyond it."""
+        cache.clear()
+        records = [
+            quantity(metric_slug=f"metric_{i:03d}") for i in range(75)
+        ]
+        self.post(ndjson(header_line(record_count=len(records)), *records))
+
+        body = self.get(fresh=1).json()
+
+        self.assertEqual(len(body["metrics"]), 75)
+        self.assertIn("metric_074", body["metrics"])
+
+    def test_tombstoned_records_do_not_hold_the_high_water_mark(self):
+        cache.clear()
+        rid = str(uuid.uuid4())
+        self.post(
+            ndjson(header_line(), quantity(record_id=rid, metric_slug="heart_rate")),
+            key="one.ndjson",
+        )
+        self.post(
+            ndjson(header_line(), {"kind": "delete", "id": rid}),
+            key="two.ndjson",
+        )
+
+        body = self.get(fresh=1).json()
+
+        self.assertNotIn("heart_rate", body["metrics"])
+
+    def test_is_cached_between_calls(self):
+        cache.clear()
+        self.post(ndjson(header_line(), quantity()))
+
+        self.assertFalse(self.get().json()["cached"])
+        self.assertTrue(self.get().json()["cached"])

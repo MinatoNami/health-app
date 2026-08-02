@@ -10,6 +10,9 @@ urlpatterns = [
     path("v1/auth/logout", views.logout, name="logout"),
     path("v1/health/ping", views.ping, name="ping"),
     path("v1/health/stats", views.stats, name="stats"),
+    # Per-metric high-water marks. The client reconciles its anchors against
+    # this before a sync; see views.coverage for why it is not part of /stats.
+    path("v1/health/coverage", views.coverage, name="coverage"),
     path("healthz", views.healthz, name="healthz"),
     # Browser session auth for the dashboard.
     path("v1/auth/csrf", session_views.csrf, name="csrf"),

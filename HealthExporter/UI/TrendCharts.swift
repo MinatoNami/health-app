@@ -13,6 +13,13 @@ struct TrendChart: View {
 
     enum Style { case bars, line }
 
+    /// Only the days that actually place on the axis. Everything on this screen
+    /// reads from this rather than `series.points`, so a point the chart cannot
+    /// draw is also not counted in the summary or the headline figure.
+    private var points: [ServerStatus.Series.Point] {
+        series.points.filter { $0.parsedDay != nil }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -25,7 +32,7 @@ struct TrendChart: View {
                         .help("Some days are estimated from raw samples")
                 }
                 Spacer()
-                if let latest = series.points.last {
+                if let latest = points.last {
                     // One number, not a column of them: the current value is
                     // the only figure worth putting on a summary chart.
                     Text(format(latest.value))
@@ -37,7 +44,7 @@ struct TrendChart: View {
                 }
             }
 
-            if series.points.isEmpty {
+            if points.isEmpty {
                 Text("No data in this range")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -58,7 +65,7 @@ struct TrendChart: View {
     // sampling. On a date axis the gaps are visible, which is the truth.
     @ViewBuilder
     private var chart: some View {
-        Chart(series.points) { point in
+        Chart(points) { point in
             switch style {
             case .bars:
                 BarMark(
@@ -97,22 +104,40 @@ struct TrendChart: View {
         .chartPlotStyle { $0.clipped() }
     }
 
+    /// Every path here must return a range that is non-empty and correctly
+    /// ordered. A zero-height domain makes Charts give up on deriving a mark
+    /// dimension ("falling back to a fixed dimension size"), and an inverted one
+    /// traps outright in `ClosedRange`. Both are reachable from ordinary data: a
+    /// metric that reads the same every day is flat, and a metric that is zero
+    /// every day — `sleep_analysis` on a phone that does not track sleep — is
+    /// both flat and zero.
     private var domain: ClosedRange<Double> {
-        let values = series.points.map(\.value)
-        guard let min = values.min(), let max = values.max(), min != max else {
-            return 0...(values.first.map { $0 * 1.2 } ?? 1)
+        let values = points.map(\.value)
+        guard let low = values.min(), let high = values.max() else { return 0...1 }
+
+        if style == .bars {
+            // A bar is read against zero, so the domain has to contain zero
+            // whichever side of it the data falls on.
+            let lower = Swift.min(low, 0)
+            let upper = Swift.max(high * 1.1, 0)
+            return lower < upper ? lower...upper : lower...(lower + 1)
         }
-        if style == .bars { return 0...(max * 1.1) }
-        let pad = (max - min) * 0.15
-        return (min - pad)...(max + pad)
+
+        guard low < high else {
+            // Flat series: no span of its own, so give it a band to sit in.
+            let pad = Swift.max(abs(low) * 0.1, 0.5)
+            return (low - pad)...(low + pad)
+        }
+        let pad = (high - low) * 0.15
+        return (low - pad)...(high + pad)
     }
 
     private var accessibilitySummary: String {
-        let values = series.points.map(\.value)
+        let values = points.map(\.value)
         guard let low = values.min(), let high = values.max(), let latest = values.last else {
             return "\(title): no data"
         }
-        return "\(title) over \(series.points.count) days. "
+        return "\(title) over \(points.count) days. "
             + "Low \(format(low)), high \(format(high)), latest \(format(latest))."
     }
 

@@ -97,6 +97,22 @@ final class AnchorStore {
             .sorted()
     }
 
+    /// Rewinds one type so the next sync re-reads it from the backfill start.
+    ///
+    /// `totalRecords` is zeroed with the anchor: it counts what this device has
+    /// delivered, and leaving it standing after a rewind would double-count the
+    /// same samples on the way back through.
+    func clearAnchor(for typeIdentifier: String) {
+        store.mutate { state in
+            guard var entry = state[typeIdentifier] else { return }
+            entry.anchorData = nil
+            entry.totalRecords = 0
+            entry.lastSampleEnd = nil
+            entry.dirty = true
+            state[typeIdentifier] = entry
+        }
+    }
+
     func resetAll() {
         store.reset()
         Log.shared.warn("anchors", "All anchors cleared; next sync will re-read from the backfill start date")
