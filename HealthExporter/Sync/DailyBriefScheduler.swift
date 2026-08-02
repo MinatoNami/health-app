@@ -23,7 +23,10 @@ import UserNotifications
 @MainActor
 final class DailyBriefScheduler: ObservableObject {
 
-    static let notificationIdentifier = "com.lionelchong.HealthExporter.dailyBrief"
+    /// `nonisolated` because `NotificationRouter` compares against it from a
+    /// delegate callback the system makes off the main actor. It is an
+    /// immutable `String`, so there is nothing for the isolation to protect.
+    nonisolated static let notificationIdentifier = "com.lionelchong.HealthExporter.dailyBrief"
     static let categoryIdentifier = "DAILY_BRIEF"
 
     struct Settings: Codable, Equatable {

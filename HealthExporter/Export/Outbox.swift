@@ -131,12 +131,25 @@ final class Outbox {
 
     // MARK: - Reading
 
+    /// The delivery queue, **oldest first**.
+    ///
+    /// The order is load-bearing, not cosmetic. The server upserts on a stable
+    /// id, and a `stat:<metric>:<day>` rollup is deliberately re-emitted with a
+    /// corrected value on later runs — so whichever batch arrives *last* is the
+    /// one that wins. Draining newest-first therefore lets a stale total
+    /// overwrite a corrected one, which is a silent wrong number rather than a
+    /// visible failure. Delivery order has to be causal order.
+    ///
+    /// This also reads better in the batch list: a queue shown in the order it
+    /// will be sent says more than one shown newest-first.
     func pendingBatches() -> [Batch] {
         batches(in: Paths.outboxDirectory)
     }
 
+    /// Delivered batches, **newest first** — a history for a person to read,
+    /// not a queue, so the most recent belongs at the top.
     func archivedBatches() -> [Batch] {
-        batches(in: Paths.archiveDirectory)
+        Array(batches(in: Paths.archiveDirectory).reversed())
     }
 
     private func batches(in dir: URL?) -> [Batch] {
@@ -157,7 +170,9 @@ final class Outbox {
                     recordCount: Batch.recordCount(from: url)
                 )
             }
-            .sorted { $0.createdAt > $1.createdAt }
+            // Chronological. Callers that want the newest at the top reverse
+            // it; the queue must not, so the default is the safe one.
+            .sorted { $0.createdAt < $1.createdAt }
     }
 
     /// Cheap: a directory listing, no file opens. This is called at the end of

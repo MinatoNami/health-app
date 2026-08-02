@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone as dt_timezone
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -78,6 +78,11 @@ class IngestResult:
     deletes_applied: int = 0
     tombstones_created: int = 0
     skipped: int = 0
+    #: Records refused because the stored row is newer. Counted apart from
+    #: `skipped`, which means unreadable — these were understood and rejected on
+    #: purpose, and a client seeing a non-zero value here is being told its
+    #: delivery ran out of order, not that its data was malformed.
+    stale_skipped: int = 0
     skip_samples: list[str] = field(default_factory=list)
 
     def as_response(self, batch: Batch) -> dict:
@@ -90,6 +95,7 @@ class IngestResult:
             "deletes_applied": self.deletes_applied,
             "tombstones_created": self.tombstones_created,
             "skipped": self.skipped,
+            "stale_skipped": self.stale_skipped,
             "duplicate": False,
         }
 
@@ -258,7 +264,7 @@ def ingest(stream, batch: Batch) -> IngestResult:
         )
 
     with transaction.atomic():
-        result.records_written = _upsert(list(pending.values()))
+        result.records_written, result.stale_skipped = _upsert(list(pending.values()))
         applied, created = _apply_deletes(delete_ids, device, batch)
         result.deletes_applied = applied
         result.tombstones_created = created
@@ -269,20 +275,70 @@ def ingest(stream, batch: Batch) -> IngestResult:
     return result
 
 
-def _upsert(records: list[Record]) -> int:
-    """Insert-or-update on the client's id. Sample UUIDs are stable across
-    reads, so this is what makes a retry free."""
+def _upsert(records: list[Record]) -> tuple[int, int]:
+    """Insert-or-update on the client's id, but never backwards in time.
+
+    Sample UUIDs are stable across reads, so a retry is free. The freshness
+    check is what makes *delivery order* stop mattering, and the client does not
+    guarantee it: the outbox drains newest-first, so after any period offline an
+    older batch routinely lands after a newer one.
+
+    Raw samples are immutable under their UUID and would not care either way.
+    The rollups do: a ``stat:<metric>:<day>`` row is re-emitted with a corrected
+    value on every run — that is the whole point of the 90-day statistics
+    lookback — so without this guard a late-arriving old batch silently reverts
+    a corrected daily total to the stale number it first reported.
+
+    Ordering is on ``recorded_at``, the client's own stamp for when it built the
+    record, rather than on arrival time. Arrival order is precisely the thing
+    that is not trustworthy here.
+
+    Returns ``(written, refused_as_stale)``.
+    """
     written = 0
+    stale = 0
     for start in range(0, len(records), UPSERT_CHUNK):
         chunk = records[start : start + UPSERT_CHUNK]
+
+        query = Record.objects.filter(id__in=[r.id for r in chunk])
+        if connection.features.has_select_for_update:
+            # Hold the rows being compared against for the life of the enclosing
+            # transaction, so two concurrent batches cannot both read the same
+            # "stored" value and both conclude they are newer. SQLite has no row
+            # locks and serialises writers anyway, so the test backend skips it.
+            query = query.select_for_update()
+        stored = dict(query.values_list("id", "recorded_at"))
+
+        fresh = [r for r in chunk if _may_overwrite(r, stored.get(r.id))]
+        stale += len(chunk) - len(fresh)
+        if not fresh:
+            continue
+
         Record.objects.bulk_create(
-            chunk,
+            fresh,
             update_conflicts=True,
             update_fields=UPDATE_FIELDS,
             unique_fields=["id"],
         )
-        written += len(chunk)
-    return written
+        written += len(fresh)
+    return written, stale
+
+
+def _may_overwrite(incoming: Record, stored_recorded_at: datetime | None) -> bool:
+    """Whether `incoming` is at least as new as the row already stored.
+
+    A missing timestamp on either side resolves to "write it". A stored row
+    without ``recorded_at`` predates the field carrying anything and offers no
+    evidence it is newer; an incoming record without one cannot be ordered at
+    all, and dropping it would lose data to defend an invariant it never
+    claimed to take part in.
+
+    ``>=`` rather than ``>`` so a plain retry of the same batch still rewrites
+    its own rows, which keeps a re-send idempotent rather than a partial no-op.
+    """
+    if stored_recorded_at is None or incoming.recorded_at is None:
+        return True
+    return incoming.recorded_at >= stored_recorded_at
 
 
 def _apply_deletes(delete_ids: list[str], device: Device, batch: Batch) -> tuple[int, int]:

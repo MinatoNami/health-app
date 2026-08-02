@@ -270,6 +270,9 @@ def ping(request):
 STATS_CACHE_KEY = "ingest:stats:v2"
 STATS_CACHE_SECONDS = 60
 
+COVERAGE_CACHE_KEY = "ingest:coverage:v1"
+COVERAGE_CACHE_SECONDS = 60
+
 
 def _iso(value):
     return value.isoformat() if value else None
@@ -357,6 +360,64 @@ def stats(request):
     if not cached:
         payload = _build_stats()
         cache.set(STATS_CACHE_KEY, payload, STATS_CACHE_SECONDS)
+
+    return Response({**payload, "cached": cached})
+
+
+def _build_coverage() -> dict:
+    """Per-metric high-water marks for every metric, uncapped.
+
+    Deliberately not served from `_build_stats`: that slices to the top 60
+    metrics for display, and the client reconciles against this. With ~170
+    metrics in the catalogue, "absent from the list" would otherwise mean
+    "absent from the server" for every metric outside the top 60 — and the
+    client's response to a missing metric is to rewind its anchor and re-read
+    the entire history of that type.
+
+    Tombstoned rows are excluded so a deleted sample cannot hold the high-water
+    mark above what the server would actually serve back.
+    """
+    metrics = {
+        row["metric_slug"]: {
+            "count": row["count"],
+            "latest_sample_at": _iso(row["latest_sample"]),
+            "latest_recorded_at": _iso(row["latest_recorded"]),
+        }
+        for row in Record.objects.filter(deleted_at__isnull=True)
+        .exclude(kind=Record.Kind.DELETE)
+        .values("metric_slug")
+        .annotate(
+            count=Count("id"),
+            latest_sample=Max("start"),
+            latest_recorded=Max("recorded_at"),
+        )
+    }
+    return {"metrics": metrics, "generated_at": timezone.now().isoformat()}
+
+
+@api_view(["GET"])
+@authentication_classes([BearerTokenAuthentication])
+@permission_classes([IsAuthenticated])
+def coverage(request):
+    """GET /v1/health/coverage — what the server holds, per metric.
+
+    The client compares this against its own anchors before a sync, so that a
+    server that has silently lost data (a restore from an older backup, a
+    dropped batch) gets it re-sent rather than the gap persisting forever.
+
+    Cached like `stats` for the same reason: one grouped aggregate over the
+    whole table. `?fresh=1` bypasses.
+    """
+    if request.query_params.get("fresh") == "1":
+        payload = _build_coverage()
+        cache.set(COVERAGE_CACHE_KEY, payload, COVERAGE_CACHE_SECONDS)
+        return Response({**payload, "cached": False})
+
+    payload = cache.get(COVERAGE_CACHE_KEY)
+    cached = payload is not None
+    if not cached:
+        payload = _build_coverage()
+        cache.set(COVERAGE_CACHE_KEY, payload, COVERAGE_CACHE_SECONDS)
 
     return Response({**payload, "cached": cached})
 

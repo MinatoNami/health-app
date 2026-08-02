@@ -169,6 +169,7 @@ final class SyncEngine: ObservableObject {
         }
 
         Log.shared.info("sync", "Starting sync (\(reason)) over \(types.count) types")
+        await reconcileWithServer(types: types)
         let started = Date()
         var totalEmitted = 0
         var failures = 0
@@ -404,6 +405,87 @@ final class SyncEngine: ObservableObject {
         return records.count
     }
 
+    // MARK: - Reconciliation
+
+    /// How far the server may lag the local anchors before it counts as a gap.
+    ///
+    /// Not zero, and not tight. `lastSampleEnd` is the end of the newest sample
+    /// this device *read*, while coverage reports the newest the server has
+    /// *stored*, behind a short cache — so a small lag is ordinary. A day is
+    /// comfortably wider than that skew and far narrower than the kind of loss
+    /// worth re-reading two years of history to repair.
+    private static let coverageTolerance: TimeInterval = 24 * 3600
+
+    /// Rewinds anchors for types the server turns out not to have, before the
+    /// drain runs so the repair happens in this same pass.
+    ///
+    /// Anchors are otherwise the only record of what was delivered, and they
+    /// only ever move forward. If the server loses data — restored from an older
+    /// backup, a batch dropped, a table truncated — nothing on the phone
+    /// notices: the anchor has already advanced past the gap, so those samples
+    /// are never read again and the hole is permanent and silent. This is what
+    /// closes that loop.
+    ///
+    /// Compares dates only, never counts. The server's per-metric count mixes
+    /// raw samples with `stat:` rollups while `totalRecords` counts only what
+    /// this device delivered, so the two are not comparable — a count check
+    /// would rewind constantly.
+    func reconcileWithServer(types: [HKSampleType]) async {
+        guard settings.sink.enabled, settings.sink.isUsable, isSignedIn else { return }
+
+        // Spooled-but-undelivered data makes the server legitimately behind.
+        // Reconciling then would rewind an anchor, re-read history that is
+        // already queued, spool more of it, and keep the outbox non-empty —
+        // a loop that never settles.
+        let queued = Outbox.shared.pendingCount
+        guard queued == 0 else {
+            Log.shared.debug("reconcile", "Skipped: \(queued) batch(es) still queued")
+            return
+        }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        guard case .success(let coverage) = await sink.fetchCoverage() else {
+            // A precondition for repair, not for syncing. If the server cannot
+            // answer, this run just proceeds on local anchors as it always did.
+            Log.shared.debug("reconcile", "Coverage unavailable; syncing on local anchors")
+            return
+        }
+
+        var rewound = 0
+        for type in types {
+            let identifier = type.identifier
+            guard let local = AnchorStore.shared.state(for: identifier),
+                  local.totalRecords > 0,
+                  let localEnd = local.lastSampleEnd else { continue }
+
+            let slug = identifier.healthKitSlug
+            let remote = coverage.metrics[slug]
+            let cause: String?
+
+            if remote == nil || remote?.count == 0 {
+                cause = "server holds nothing for it, local delivered \(local.totalRecords)"
+            } else if let remoteEnd = remote?.latestSampleDate,
+                      localEnd.timeIntervalSince(remoteEnd) > SyncEngine.coverageTolerance {
+                cause = "server's newest is \(Timestamps.iso8601(remoteEnd)), "
+                    + "local reached \(Timestamps.iso8601(localEnd))"
+            } else {
+                cause = nil
+            }
+
+            guard let cause else { continue }
+            AnchorStore.shared.clearAnchor(for: identifier)
+            rewound += 1
+            // Loud on purpose: re-reading a type's whole history is expensive
+            // and user-visible, and must never happen without a trace.
+            Log.shared.warn("reconcile", "Rewound \(slug) — \(cause)")
+        }
+
+        if rewound > 0 {
+            Log.shared.warn("reconcile",
+                "\(rewound) type(s) rewound; this run re-reads their history")
+        }
+    }
+
     // MARK: - Delivery
 
     /// Hands pending batches to the configured sink with bounded retries.
@@ -487,7 +569,10 @@ final class SyncEngine: ObservableObject {
     /// single request and never stored.
     func signIn(username: String, password: String) async {
         connectionTest = .running
-        let label = await UIDevice.current.name
+        // No `await`: this method is already on the main actor, which is where
+        // `UIDevice.current` lives, so the hop the compiler would have inserted
+        // is to the actor it is standing on.
+        let label = UIDevice.current.name
         let sink = HTTPSink(configuration: settings.sink)
         switch await sink.signIn(username: username, password: password, deviceLabel: label) {
         case .success(let message):

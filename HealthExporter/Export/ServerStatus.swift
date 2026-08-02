@@ -8,6 +8,38 @@ import Foundation
 /// pin, or background delivery dying after an OS update all look exactly like
 /// "nothing has happened yet". Comparing local state against the server's own
 /// account of itself is the only way to tell those apart from the phone.
+/// Per-metric high-water marks, for reconciling anchors before a sync.
+///
+/// Separate from `ServerStatus` because the two answer different questions and
+/// have different correctness requirements. `ServerStatus` is for a person to
+/// read and is capped at the top 60 metrics; this one has to be complete, since
+/// a metric missing from it is taken as evidence the server lost that type and
+/// triggers a full re-read.
+struct ServerCoverage: Codable, Equatable {
+    struct Metric: Codable, Equatable {
+        var count: Int
+        var latestSampleAt: String?
+        var latestRecordedAt: String?
+
+        var latestSampleDate: Date? { latestSampleAt.flatMap(Timestamps.parse) }
+
+        enum CodingKeys: String, CodingKey {
+            case count
+            case latestSampleAt = "latest_sample_at"
+            case latestRecordedAt = "latest_recorded_at"
+        }
+    }
+
+    /// Keyed by metric slug.
+    var metrics: [String: Metric]
+    var generatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case metrics
+        case generatedAt = "generated_at"
+    }
+}
+
 struct ServerStatus: Codable, Equatable {
     struct Metric: Codable, Equatable, Identifiable {
         var metricSlug: String
@@ -82,9 +114,16 @@ struct ServerStatus: Codable, Equatable {
             /// Day-granularity, so a plain calendar parse is right here — the
             /// per-sample offsets that matter elsewhere are already applied
             /// server-side when the day buckets are built.
-            var day: Date {
-                ISO8601DateFormatter.calendarDay.date(from: date + "T00:00:00Z") ?? .distantPast
+            ///
+            /// Optional rather than falling back to a placeholder date: this
+            /// feeds a chart's x-axis, and one `.distantPast` among current days
+            /// stretches the domain across two millennia, which squeezes the real
+            /// data into an invisible sliver and costs a visible layout hang.
+            /// A day that cannot be placed on the axis is dropped instead.
+            var parsedDay: Date? {
+                ISO8601DateFormatter.calendarDay.date(from: date + "T00:00:00Z")
             }
+            var day: Date { parsedDay ?? .distantPast }
             /// True when this day was summed from raw samples rather than an
             /// Apple-deduplicated rollup, so it may read high.
             var isEstimated: Bool { source == "raw_sum" }

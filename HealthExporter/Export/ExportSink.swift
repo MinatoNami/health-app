@@ -103,6 +103,10 @@ struct SinkConfiguration: Codable, Equatable {
         endpoint?.deletingLastPathComponent().appendingPathComponent("stats")
     }
 
+    var coverageEndpoint: URL? {
+        endpoint?.deletingLastPathComponent().appendingPathComponent("coverage")
+    }
+
     /// Any path on the same host, over the same TLS requirement.
     ///
     /// Derived from `baseURL` rather than configured separately so no endpoint
@@ -321,6 +325,45 @@ final class HTTPSink: ExportSink {
                     return .success(try JSONDecoder().decode(ServerStatus.self, from: data))
                 } catch {
                     return .failure(SinkError.badResponse("Could not read server response: \(error)"))
+                }
+            case 401, 403:
+                return .failure(SinkError.unauthorized)
+            default:
+                let detail = String(data: data.prefix(256), encoding: .utf8) ?? ""
+                return .failure(SinkError.permanent(status: http.statusCode, body: detail))
+            }
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// Per-metric high-water marks, used to reconcile anchors before a sync.
+    ///
+    /// Deliberately takes the server's cached answer rather than passing
+    /// `fresh=1`: this runs on every full sync, and the query behind it is a
+    /// grouped aggregate over the whole table. A cached result can only be a
+    /// minute behind, which is nowhere near the tolerance a rewind requires — so
+    /// the staleness cannot cause a wrong decision, and the cost can.
+    func fetchCoverage() async -> Result<ServerCoverage, Error> {
+        guard let url = configuration.coverageEndpoint, !configuration.bearerToken.isEmpty else {
+            return .failure(SinkError.notConfigured)
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(configuration.bearerToken)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 30
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return .failure(SinkError.badResponse("Non-HTTP response"))
+            }
+            switch http.statusCode {
+            case 200...299:
+                do {
+                    return .success(try JSONDecoder().decode(ServerCoverage.self, from: data))
+                } catch {
+                    return .failure(SinkError.badResponse("Could not read coverage: \(error)"))
                 }
             case 401, 403:
                 return .failure(SinkError.unauthorized)
