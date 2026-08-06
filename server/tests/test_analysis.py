@@ -628,9 +628,12 @@ class AnalysisEndpointTests(AnalysisTestCase):
         self.assertEqual(goal["progress"]["current_streak_days"], 7)
 
     def test_goal_rejects_an_unanalysable_metric(self):
+        """A real HealthKit metric the analysis layer has no spec for. Blood
+        glucose is uploaded and charted, and nothing here knows how to baseline
+        it, so a goal against it would report progress it cannot measure."""
         response = self.client.post(
             "/v1/analysis/goals",
-            data={"metric_slug": "dietary_sugar", "target_value": 10},
+            data={"metric_slug": "blood_glucose", "target_value": 10},
             content_type="application/json",
             headers=self.auth(),
         )

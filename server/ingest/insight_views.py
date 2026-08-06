@@ -28,7 +28,7 @@ from rest_framework.decorators import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from . import health_analysis
+from . import correlations, health_analysis, patterns
 from .analytics_views import AUTH, AnalyticsThrottle, _FixedScopeThrottle
 from .llm import client as llm_client
 from .llm import service as llm_service
@@ -160,8 +160,65 @@ def sleep(request):
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
 @throttle_classes([AnalyticsThrottle])
+def nutrition(request):
+    """What was logged to eat and drink, and what that can support.
+
+    Deterministic, like every other `/v1/analysis` endpoint: the day-counts, the
+    averages over fully logged days, and the comparison against estimated energy
+    burned are all computed here. No model is involved, and none of it is a
+    recommendation about what to eat.
+    """
+    try:
+        days = min(90, max(1, int(request.query_params.get("days") or 14)))
+    except ValueError:
+        return Response({"detail": "days must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(
+        health_analysis.nutrition_summary(days=days, as_of=_as_of(request), tz_name=_tz(request))
+    )
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
 def anomalies(request):
     return Response({"anomalies": health_analysis.anomalies(as_of=_as_of(request), tz_name=_tz(request))})
+
+
+def _window(request, default: int, maximum: int):
+    try:
+        return min(maximum, max(14, int(request.query_params.get("days") or default)))
+    except ValueError:
+        return None
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def correlation_report(request):
+    """Which signals move together, with every pair that was tested.
+
+    Deterministic. The pairs are a fixed list decided in advance, corrected for
+    how many were asked, and reported as associations — this endpoint never
+    claims one metric causes another.
+    """
+    days = _window(request, correlations.DEFAULT_DAYS, correlations.MAX_DAYS)
+    if days is None:
+        return Response({"detail": "days must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(correlations.discover(days=days, as_of=_as_of(request), tz_name=_tz(request)))
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def pattern_report(request):
+    """Weekly rhythms: weekends, and any weekday that stands out."""
+    days = _window(request, patterns.DEFAULT_DAYS, patterns.MAX_DAYS)
+    if days is None:
+        return Response({"detail": "days must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(patterns.discover(days=days, as_of=_as_of(request), tz_name=_tz(request)))
 
 
 # --------------------------------------------------------------------------

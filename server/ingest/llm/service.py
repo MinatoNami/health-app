@@ -87,6 +87,13 @@ def _condense(snapshot: dict) -> dict:
         condensed["sleep"] = {
             k: v for k, v in snapshot["sleep"].items() if k != "nights"
         }
+    if snapshot.get("nutrition"):
+        # The per-day table is dropped like every other per-day array, but the
+        # three day-counts and the limitations stay: without them the averages
+        # read as a full picture of what somebody ate.
+        condensed["nutrition"] = {
+            k: v for k, v in snapshot["nutrition"].items() if k != "days"
+        }
     return condensed
 
 

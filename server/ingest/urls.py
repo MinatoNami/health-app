@@ -31,7 +31,10 @@ urlpatterns = [
     path("v1/analysis/trend", insight_views.trend, name="analysis-trend"),
     path("v1/analysis/quality", insight_views.quality, name="analysis-quality"),
     path("v1/analysis/sleep", insight_views.sleep, name="analysis-sleep"),
+    path("v1/analysis/nutrition", insight_views.nutrition, name="analysis-nutrition"),
     path("v1/analysis/anomalies", insight_views.anomalies, name="analysis-anomalies"),
+    path("v1/analysis/correlations", insight_views.correlation_report, name="analysis-correlations"),
+    path("v1/analysis/patterns", insight_views.pattern_report, name="analysis-patterns"),
     path("v1/analysis/goals", insight_views.goals, name="analysis-goals"),
     path("v1/analysis/goals/<int:goal_id>", insight_views.goal_detail, name="analysis-goal"),
     # LLM-backed explanation of the numbers above.

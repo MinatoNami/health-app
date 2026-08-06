@@ -195,6 +195,39 @@ def check_measurements(snapshot: dict) -> list[dict]:
 # Pre-flight
 # --------------------------------------------------------------------------
 
+# Questions about eating and drinking. Matched loosely on purpose: the cost of a
+# false positive is four extra lines in a prompt, and the cost of a miss is an
+# answer about food written without the rules that make one safe.
+NUTRITION_QUESTION = re.compile(
+    r"\b(eat|eats|eating|eaten|ate|food|foods|diet|dietary|meal|meals|snack|"
+    r"calorie|calories|kcal|macro|macros|protein|carb|carbs|carbohydrate|fat|"
+    r"nutrition|nutritional|nutrient|fibre|fiber|sugar|sodium|salt|hydration|"
+    r"hydrated|drink|drinking|water|caffeine|breakfast|lunch|dinner)\b",
+    re.IGNORECASE,
+)
+
+# Extra rules for any answer that touches nutrition. The first three exist
+# because a food log is the only signal in this system a person writes
+# themselves; the fourth because "am I eating enough" is a clinical question
+# wearing a wellness question's clothes, and a food diary cannot answer it.
+NUTRITION_CONSTRAINTS = [
+    'Nutrition figures are self-reported — what was typed into a food app, not what was '
+    'eaten and not a measurement of it. Write "logged" rather than "ate" or "consumed".',
+    "Never state a number as an amount this person should eat or drink. No calorie "
+    "targets, no macronutrient targets, no intake goals, and no comparison against a "
+    "recommended allowance or a population average, in any units.",
+    "Days with no food log are unknown. Never average them in, never call them light "
+    "days, and never total a window as though every day in it was logged.",
+    "Logged intake minus estimated energy burned is the difference between two estimates, "
+    "one of them a formula. Never call it a deficit or a surplus, and never turn it into a "
+    "rate of weight change. If measured weight is given alongside it, that is the stronger "
+    "evidence and should lead.",
+    "Whether someone is eating enough cannot be established from a food diary. Say what "
+    "was logged and over how many days, compare it only with their own logged baseline "
+    "and their estimated energy burned, and say that judging adequacy needs a dietitian "
+    "or doctor who can weigh what this data does not contain.",
+]
+
 BASE_CONSTRAINTS = [
     "Use only the figures returned by the tools. Never state a measurement, date, or "
     "symptom that did not come from a tool result.",
@@ -247,6 +280,32 @@ def preflight(question: str, snapshot: dict, context: str = "") -> SafetyVerdict
             f"{hit['valid_days']} day(s), {hit['side']} the usual range.",
             f"{hit['label']} is {hit['side']} the usual range ({hit['value']} {hit['unit']}). "
             f"{hit['guidance']} Mention it factually, without naming a cause.",
+        )
+
+    food = snapshot.get("nutrition") or {}
+    if food or NUTRITION_QUESTION.search(f"{question}\n{context}"):
+        for constraint in NUTRITION_CONSTRAINTS:
+            if constraint not in verdict.constraints:
+                verdict.constraints.append(constraint)
+
+    if food and food.get("confidence") in ("insufficient", "low"):
+        verdict.add(
+            "informational",
+            f"Your food log covers {food.get('days_fully_logged', 0)} of the last "
+            f"{food.get('window_days', 0)} days, so anything about intake is partial.",
+            "The food log covers only part of this window. Lead with how many days were "
+            "logged before quoting any average from it, and do not describe intake over "
+            "the whole period.",
+        )
+    elif not food and NUTRITION_QUESTION.search(question or ""):
+        # Asked about food with no food logged. Weight and energy burned are the
+        # nearest things to hand and neither is a record of eating, so say so
+        # rather than letting an answer be assembled out of them.
+        verdict.add(
+            "informational",
+            "No food or drink has been logged, so there is nothing here about what you eat.",
+            "Nothing has been logged about food or drink. Say that plainly and do not infer "
+            "intake from weight, energy burned, or any other metric.",
         )
 
     stale = snapshot.get("metrics_not_syncing") or []
@@ -372,6 +431,26 @@ PROHIBITED = [
     Rule(
         r"\b(?:this (?:proves|shows) that|because of this,? your)\b.{0,40}\bcaus(?:ed|es|ing)\b",
         "presents a correlation as a cause",
+        unless_preceded_by=NEGATION,
+    ),
+    Rule(
+        # Prescribing an intake, as opposed to reporting one. The rule above
+        # catches only the unsafely restrictive end; this catches the ordinary
+        # target, which is still nutritional prescription from a system that
+        # will not name a condition.
+        #
+        # The gate is a prescriptive verb *and* a number *and* a unit food is
+        # measured in. "You logged 2,430 kcal a day" has the last two and must
+        # survive — an answer that cannot quote what was logged is not a safer
+        # answer, just a useless one.
+        rf"\b(?:aim(?:ing)? (?:for|at)|shoot for|a target of|"
+        rf"should (?:eat|consume|drink|get|have|hit|be eating|be getting)|"
+        rf"try to (?:eat|consume|drink|get|hit|reach)|"
+        rf"(?:keep|hold) (?:it|them|your intake|your calories) (?:to|at|under|below)|"
+        rf"(?:increase|raise|cut|reduce|drop) (?:it|them|your intake|your calories) to)"
+        rf"\b[^.]{{0,40}}?\b\d[\d,.]*\s*"
+        rf"(?:kcal|calories|cal|g|grams?|mg|mcg|ml|millilitres?|milliliters?|litres?|liters?)\b",
+        "sets a target for what to eat or drink",
         unless_preceded_by=NEGATION,
     ),
 ]

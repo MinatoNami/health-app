@@ -69,6 +69,13 @@ _METRIC_NAMES = {
     "headphone_audio_exposure": "Headphone Audio Levels",
     "dietary_energy_consumed": "Dietary Energy",
     "dietary_water": "Water",
+    # Only the fats need a line each: dropping the `dietary_` prefix leaves the
+    # words in the wrong order, and Health calls these "Total Fat", not "Fat
+    # Total". Every other nutrient reads correctly once the prefix is gone.
+    "dietary_fat_total": "Total Fat",
+    "dietary_fat_saturated": "Saturated Fat",
+    "dietary_fat_monounsaturated": "Monounsaturated Fat",
+    "dietary_fat_polyunsaturated": "Polyunsaturated Fat",
     "workout": "Workouts",
     "unknown": "Unknown",
 }
@@ -93,6 +100,11 @@ def display_name(slug: str) -> str:
     parts = slug.split("_")
     # "Apple" is branding on the identifier, not part of the measurement's name.
     if len(parts) > 1 and parts[0] == "apple":
+        parts = parts[1:]
+    # Nor is "dietary" a word anyone says. Health lists these as "Protein" and
+    # "Calcium"; the prefix is a HealthKit namespace, and stripping it here is
+    # what keeps forty nutrients out of the table above.
+    if len(parts) > 1 and parts[0] == "dietary":
         parts = parts[1:]
 
     words = []

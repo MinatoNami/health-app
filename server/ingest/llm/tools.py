@@ -17,7 +17,7 @@ Two properties are worth preserving if this list grows:
 
 from datetime import date, timedelta
 
-from .. import health_analysis
+from .. import correlations, health_analysis, patterns
 from ..models import Goal
 
 MAX_WINDOW_DAYS = 365
@@ -88,6 +88,10 @@ def get_health_overview(days: int | None = None, tz_name: str | None = None, **_
     }
     if snapshot.get("sleep"):
         snapshot["sleep"] = {k: v for k, v in snapshot["sleep"].items() if k != "nights"}
+    if snapshot.get("nutrition"):
+        snapshot["nutrition"] = {
+            k: v for k, v in snapshot["nutrition"].items() if k != "days"
+        }
     snapshot["data_quality"] = [
         {
             "metric": q["metric_slug"],
@@ -156,6 +160,21 @@ def get_sleep_summary(days: int | None = None, tz_name: str | None = None, **_) 
     return summary
 
 
+def get_nutrition_summary(days: int | None = None, tz_name: str | None = None, **_) -> dict:
+    """Food and drink as it was logged.
+
+    Kept as its own tool rather than left to `get_metric_trend` on each nutrient
+    because the three day-counts — logged, partially logged, not logged — are the
+    part a model gets wrong on its own. Handed a bare average it will describe a
+    week of forgotten lunches as a week of eating less, which is a claim about
+    somebody's health built entirely out of their record-keeping.
+    """
+    window = _days(days, 14, maximum=90)
+    summary = health_analysis.nutrition_summary(days=window, tz_name=tz_name)
+    summary["days"] = summary["days"][-14:]
+    return summary
+
+
 def get_data_quality(
     metric: str | None = None, days: int | None = None, tz_name: str | None = None, **_
 ) -> dict:
@@ -211,6 +230,40 @@ def goal_progress(goal: Goal, tz_name: str | None = None) -> dict:
         "longest_streak_days": streak["longest_streak_days"],
         "as_of": as_of.isoformat(),
     }
+
+
+def get_correlations(days: int | None = None, tz_name: str | None = None, **_) -> dict:
+    """Which of this person's signals move together.
+
+    Returns the pairs that survived correction first, then every pair that was
+    tested. Both halves matter: handed only the survivors, a model presents them
+    as "the relationships in your data" rather than as one result out of fourteen
+    questions asked.
+    """
+    window = _days(days, correlations.DEFAULT_DAYS, maximum=correlations.MAX_DAYS)
+    result = correlations.discover(days=window, tz_name=tz_name)
+    # The full per-pair list is long and mostly nulls on a short history. The
+    # model gets the findings, the count of what was tested, and the pairs that
+    # were skipped for want of data — not fourteen objects of empty fields.
+    result["all_pairs"] = [
+        {
+            "pair": pair["pair"],
+            "question": pair["question"],
+            "rho": pair["rho"],
+            "strength": pair["strength"],
+            "paired_points": pair["paired_points"],
+            "significant": pair["significant"],
+            "reason": pair.get("reason"),
+        }
+        for pair in result["all_pairs"]
+    ]
+    return result
+
+
+def get_patterns(days: int | None = None, tz_name: str | None = None, **_) -> dict:
+    """Weekly rhythms: weekends, and standout weekdays."""
+    window = _days(days, patterns.DEFAULT_DAYS, maximum=patterns.MAX_DAYS)
+    return patterns.discover(days=window, tz_name=tz_name)
 
 
 def get_anomalies(tz_name: str | None = None, **_) -> dict:
@@ -304,6 +357,25 @@ DEFINITIONS = [
         "fn": get_sleep_summary,
     },
     {
+        "name": "get_nutrition_summary",
+        "description": "Food and drink logged in an app: energy, protein, carbohydrates, fat, "
+        "fibre, sugar, sodium, water, and how logged intake compares with estimated energy "
+        "burned over the same days. Use this for any question about eating, intake, "
+        "macronutrients, or hydration. Counts days with a full log, days with a partial log, "
+        "and days with no log separately — a day with no log is a day nobody wrote down, "
+        "never a day of not eating.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Days to cover, 1–90. Defaults to 14.",
+                }
+            },
+        },
+        "fn": get_nutrition_summary,
+    },
+    {
         "name": "get_recent_workouts",
         "description": "Recorded workouts: how many, how often per week, which activities, "
         "and the most recent sessions.",
@@ -335,6 +407,42 @@ DEFINITIONS = [
         "description": "The person's own targets and measured progress against them.",
         "parameters": {"type": "object", "properties": {}},
         "fn": get_goals,
+    },
+    {
+        "name": "get_correlations",
+        "description": "Which of this person's signals move together — sleep and HRV, "
+        "workouts and next-day recovery, walking and sleep, logged energy and weight. Use "
+        "for any question about whether one thing affects another. Every pair is a "
+        "pre-registered question tested over a long window and corrected for how many were "
+        "asked; each result carries the confounders that could produce it instead. These "
+        "are associations, never causes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Window in days, up to 365. Defaults to 90, and shorter "
+                    "windows rarely find anything.",
+                }
+            },
+        },
+        "fn": get_correlations,
+    },
+    {
+        "name": "get_patterns",
+        "description": "Recurring weekly rhythms: whether weekends differ from weekdays, "
+        "and whether any single weekday stands out, for sleep, steps, exercise, resting "
+        "heart rate, HRV and logged energy. Use for questions about habits and routines.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Window in days, up to 365. Defaults to 90.",
+                }
+            },
+        },
+        "fn": get_patterns,
     },
     {
         "name": "get_anomalies",

@@ -120,7 +120,10 @@ be deleted before the first sync ever shipped it.
 | GET | `/v1/analysis/trend` | session/bearer | One metric: moving averages, slope |
 | GET | `/v1/analysis/quality` | session/bearer | Data-quality report per metric |
 | GET | `/v1/analysis/sleep` | session/bearer | Duration, bedtime, consistency |
+| GET | `/v1/analysis/nutrition` | session/bearer | Logged intake, days logged, energy balance |
 | GET | `/v1/analysis/anomalies` | session/bearer | Sustained shifts from personal baseline |
+| GET | `/v1/analysis/correlations` | session/bearer | Pre-registered pairs, Holm-corrected |
+| GET | `/v1/analysis/patterns` | session/bearer | Weekend and weekday rhythms |
 | GET/POST | `/v1/analysis/goals` | session/bearer | Targets and measured progress |
 | GET | `/v1/insights/status` | session/bearer | Where summaries are processed |
 | POST | `/v1/insights/ask` | session/bearer | Ask a question (runs the model) |
@@ -300,11 +303,14 @@ server/
 │   ├── views.py           Endpoints and status-code policy
 │   ├── analytics.py       Dashboard aggregation (rollups over raw sums)
 │   ├── health_analysis.py Baselines, trends, coverage grading
+│   ├── nutrition.py       Nutrient units, and logged vs unlogged days
+│   ├── correlations.py    Pre-registered pairs, Spearman, Holm correction
+│   ├── patterns.py        Weekend and weekday rhythms
 │   ├── safety.py          Rule-based escalation, before and after the model
 │   ├── insight_views.py   /v1/analysis/* and /v1/insights/*
 │   └── llm/
 │       ├── client.py      OpenAI-compatible chat over the tailnet
-│       ├── tools.py       The eight read-only tools the model may call
+│       ├── tools.py       The read-only tools the model may call
 │       ├── prompts.py     System prompt and the structured answer schema
 │       └── service.py     snapshot → safety → tools → answer → safety
 └── tests/                 Contract, analysis, and safety tests
@@ -323,7 +329,7 @@ is arithmetic: same inputs, same output, no network call off the machine. Insigh
 asks a language model to explain that arithmetic, and is slower and
 non-deterministic. The dashboard labels them differently for the same reason.
 
-**The model never does arithmetic.** It reaches data through eight read-only
+**The model never does arithmetic.** It reaches data through twelve read-only
 tools that return already-computed figures with units, windows, valid-day counts
 and confidence attached. No SQL, no credentials, no raw rows.
 

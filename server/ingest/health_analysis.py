@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta
 
 from django.db.models import Count, Max, Min
 
-from . import analytics
+from . import analytics, nutrition
 from .models import Record
 
 # Confidence grades, weakest first. Ordered so callers can compare.
@@ -68,6 +68,35 @@ class MetricSpec:
     # Days the metric is genuinely expected on. Coverage of a metric recorded
     # twice a week should not be scored against a daily denominator.
     expected_cadence: float = 1.0
+    # Written down by a person rather than measured by a sensor — a food diary,
+    # not a watch. Three things follow, and all three are wrong for a sensor:
+    # a gap means "not recorded", never "none consumed"; HealthKit's
+    # user-entered flag is a tautology rather than a warning; and nobody should
+    # be alerted that they stopped keeping a diary.
+    self_reported: bool = False
+
+
+# Nutrition, derived from the nutrient catalog rather than restated here: the
+# canonical unit for each nutrient is a fact about the nutrient, and keeping a
+# second copy of "vitamin C is reported in mg" is how the two drift apart.
+#
+# `min_baseline_days` is lower than a sensor's. Food logging starts the day
+# somebody installs a food app, so the first month of a diary has a full current
+# window and an empty baseline — and the honest answer to that is a comparison
+# graded thin, not no comparison at all.
+_NUTRITION_SPECS = [
+    MetricSpec(
+        n.slug,
+        n.label,
+        n.unit,
+        "sum",
+        n.direction,
+        decimals=n.decimals,
+        min_baseline_days=5,
+        self_reported=True,
+    )
+    for n in nutrition.headline_nutrients()
+]
 
 
 METRICS: dict[str, MetricSpec] = {
@@ -100,6 +129,7 @@ METRICS: dict[str, MetricSpec] = {
         MetricSpec("distance_walking_running", "Walking + running distance", "km", "sum", "higher_better", decimals=2),
         MetricSpec("heart_rate", "Heart rate", "count/min", "avg", "neutral"),
     ]
+    + _NUTRITION_SPECS
 }
 
 # What a snapshot leads with, in order. Short on purpose: six numbers someone
@@ -182,6 +212,20 @@ def day_values(
 
     if slug == "sleep_analysis":
         payload = analytics.sleep_hours(start, end, tz_name)
+    elif nutrition.is_nutrient(slug):
+        # Nutrients need their own path for two reasons. Their rows do not agree
+        # on a unit — the same nutrient arrives in kg from one HealthKit type and
+        # g from another, so summing that in SQL is a number a thousand times
+        # wrong. And a day whose food log was abandoned halfway is a partial
+        # recording: it is dropped here rather than averaged, for the same reason
+        # today is left out of every window.
+        payload = nutrition.daily_series(
+            slug,
+            start,
+            end,
+            tz_name=tz_name,
+            only_days=nutrition.complete_log_days(start, end, tz_name),
+        )
     else:
         payload = analytics.daily_series(slug, start, end, spec.daily, tz_name=tz_name)
 
@@ -230,9 +274,16 @@ def grade_confidence(
     a number the reader has to trust, while "moderate — 4 of 7 days have data"
     is one they can check.
     """
+    # "4 of 7 days have data" and "4 of 7 days were logged" grade the same and
+    # mean different things. A watch with three missing days is a watch left in a
+    # drawer; a diary with three missing days is three days nobody wrote down,
+    # and the reader can only act on the second if it says so.
+    have = "were logged" if spec.self_reported else "have data"
+
     if len(current) < spec.min_current_days:
         return "insufficient", (
-            f"only {len(current)} day(s) of {spec.label.lower()} in the current window; "
+            f"only {len(current)} day(s) of {spec.label.lower()} "
+            f"{'logged' if spec.self_reported else 'recorded'} in the current window; "
             f"at least {spec.min_current_days} are needed"
         )
     if len(baseline) < spec.min_baseline_days:
@@ -253,19 +304,19 @@ def grade_confidence(
     if coverage < 0.5:
         return "low", (
             f"{len(current)} of {current_days} current days and "
-            f"{len(baseline)} of {baseline_days} baseline days have data"
+            f"{len(baseline)} of {baseline_days} baseline days {have}"
         )
     if coverage < 0.8:
         return "moderate", (
             f"{len(current)} of {current_days} current days and "
-            f"{len(baseline)} of {baseline_days} baseline days have data"
+            f"{len(baseline)} of {baseline_days} baseline days {have}"
         )
     if estimated > 0.5:
         return "moderate", (
             f"{estimated:.0%} of days are summed from raw samples rather than "
             "Apple's deduplicated totals, so they may read high"
         )
-    return "high", f"{len(current)} of {current_days} current days have data"
+    return "high", f"{len(current)} of {current_days} current days {have}"
 
 
 def _robust_spread(values: list[float]) -> float:
@@ -338,7 +389,12 @@ def compare_to_baseline(
     current = [d for d in series if d.day >= current_from]
     baseline = [d for d in series if d.day <= baseline_to]
 
-    manual_fraction = _manual_fraction(slug, baseline_from, as_of, tz_name)
+    # For a food diary, "entered by hand" is not a warning — it is the only way
+    # the data could exist. Applying the sensor rule would pin every nutrient at
+    # "low" for ever and say nothing the reader did not already know.
+    manual_fraction = (
+        0.0 if spec.self_reported else _manual_fraction(slug, baseline_from, as_of, tz_name)
+    )
     grade, reason = grade_confidence(
         spec, current, baseline, current_days, baseline_days, manual_fraction
     )
@@ -616,6 +672,14 @@ def data_quality(
     estimated = sum(1 for d in series if d.estimated)
 
     notes = []
+    if spec.self_reported:
+        # Leads, because it changes how every other number here should be read.
+        notes.append(
+            f"{spec.label} is self-reported: these are the amounts written down in a food "
+            f"app, not measured. Days with no entry mean nothing was logged, which is not "
+            f"the same as nothing consumed, and anything eaten but not logged is missing "
+            f"from every total."
+        )
     if len(sources) > 1 and spec.daily == "sum":
         notes.append(
             f"{len(sources)} sources write this metric. Days without an Apple rollup are "
@@ -626,7 +690,7 @@ def data_quality(
             f"{estimated} of {len(series)} day(s) are estimated from raw samples rather than "
             "Apple's deduplicated daily totals."
         )
-    if manual and total_samples:
+    if manual and total_samples and not spec.self_reported:
         notes.append(
             f"{manual / total_samples:.0%} of samples were entered by hand, not measured by a device."
         )
@@ -638,9 +702,10 @@ def data_quality(
             f"between them ({', '.join(devices)})."
         )
 
+    hand_typed = bool(total_samples) and not spec.self_reported and manual / total_samples > 0.5
     if coverage < 0.3 or len(series) < spec.min_current_days:
         classification = "insufficient"
-    elif coverage < 0.6 or (total_samples and manual / total_samples > 0.5):
+    elif coverage < 0.6 or hand_typed:
         classification = "low"
     elif coverage < 0.85 or estimated > len(series) / 2:
         classification = "moderate"
@@ -697,24 +762,16 @@ def _clock(minutes_since_noon: float) -> str:
     return f"{int(total // 60):02d}:{int(total % 60):02d}"
 
 
-def sleep_summary(
-    days: int = CURRENT_DAYS,
-    as_of: date | None = None,
-    tz_name: str | None = None,
-) -> dict:
-    """Duration, typical bedtime and wake time, and consistency.
+def _sleep_nights(start_day: date, end_day: date, tz_name: str | None) -> dict[date, dict]:
+    """One entry per night, keyed by the morning it ended on.
 
-    Consistency is the spread of the sleep *midpoint*, which is the part of a
-    sleep schedule that actually shifts: someone can sleep seven hours every
-    night and still be all over the place about when.
+    Bucketed by `end`, because a night beginning at 23:40 belongs to the morning
+    it ends — which is what anyone means by "Tuesday's sleep". Shared by the
+    summary and by `bedtime_series`: the bucketing is the part that is easy to get
+    subtly wrong and expensive to get wrong twice.
     """
     tz = analytics.zone(tz_name)
-    as_of = as_of or last_complete_day(tz_name)
-    start_day = as_of - timedelta(days=days - 1)
-    start, end = _bounds(start_day, as_of, tz_name)
-
-    # Bucketed by `end`: a night beginning at 23:40 belongs to the morning it
-    # ends, which is what anyone means by "Tuesday's sleep".
+    start, end = _bounds(start_day, end_day, tz_name)
     rows = (
         analytics.live_records()
         .filter(kind=Record.Kind.SLEEP, end__gte=start, end__lt=end, extra__is_asleep=True)
@@ -739,6 +796,78 @@ def sleep_summary(
         entry["last"] = max(entry["last"], local_end)
         if row["source_name"]:
             entry["sources"].add(row["source_name"])
+    return nights
+
+
+def bedtime_series(
+    days: int, as_of: date | None = None, tz_name: str | None = None
+) -> dict[date, float]:
+    """Bedtime per morning, in minutes since noon.
+
+    Minutes since noon rather than clock time so the numbers stay on one
+    continuous scale across midnight — a series where 23:50 is 1430 and 00:10 is
+    10 would correlate against nothing but its own wrap-around.
+
+    Keyed by the morning, matching how `sleep_analysis` day values are bucketed,
+    so the two line up day for day without a lag.
+    """
+    as_of = as_of or last_complete_day(tz_name)
+    nights = _sleep_nights(as_of - timedelta(days=days - 1), as_of, tz_name)
+    return {night: _minutes_since_noon(entry["first"]) for night, entry in nights.items()}
+
+
+def workout_minutes_series(
+    days: int, as_of: date | None = None, tz_name: str | None = None
+) -> dict[date, float]:
+    """Recorded workout minutes per day, zero-filled across the window.
+
+    Zero-filled on purpose, and it is the opposite of the rule everywhere else
+    here: a day with no workout record really is a day with no workout, because
+    the phone uploads workouts whenever they happen rather than on a schedule.
+    Treating those as missing would compare hard days only against other hard
+    days and find nothing.
+    """
+    as_of = as_of or last_complete_day(tz_name)
+    start_day = as_of - timedelta(days=days - 1)
+    tz = analytics.zone(tz_name)
+    start, end = _bounds(start_day, as_of, tz_name)
+
+    minutes = {
+        start_day + timedelta(days=offset): 0.0 for offset in range((as_of - start_day).days + 1)
+    }
+    rows = (
+        analytics.live_records()
+        .filter(kind=Record.Kind.WORKOUT, start__gte=start, start__lt=end)
+        .values("start", "extra")
+    )
+    for row in rows:
+        if not row["start"]:
+            continue
+        extra = row["extra"] if isinstance(row["extra"], dict) else {}
+        try:
+            seconds = float(extra.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            continue
+        day = row["start"].astimezone(tz).date()
+        if day in minutes:
+            minutes[day] += seconds / 60
+    return minutes
+
+
+def sleep_summary(
+    days: int = CURRENT_DAYS,
+    as_of: date | None = None,
+    tz_name: str | None = None,
+) -> dict:
+    """Duration, typical bedtime and wake time, and consistency.
+
+    Consistency is the spread of the sleep *midpoint*, which is the part of a
+    sleep schedule that actually shifts: someone can sleep seven hours every
+    night and still be all over the place about when.
+    """
+    as_of = as_of or last_complete_day(tz_name)
+    start_day = as_of - timedelta(days=days - 1)
+    nights = _sleep_nights(start_day, as_of, tz_name)
 
     detail = []
     for night in sorted(nights):
@@ -884,6 +1013,321 @@ def workouts(
 
 
 # --------------------------------------------------------------------------
+# Nutrition
+# --------------------------------------------------------------------------
+
+
+def _kcal_by_day(slug: str, start, end, tz_name: str | None) -> dict[date, float]:
+    payload = analytics.daily_series(slug, start, end, "sum", tz_name=tz_name)
+    return {
+        date.fromisoformat(p["date"]): float(p["value"])
+        for p in payload["points"]
+        if p["value"] is not None
+    }
+
+
+def _energy_balance(
+    days_wanted: list[date],
+    intake: dict[date, float],
+    start,
+    end,
+    tz_name: str | None,
+) -> dict:
+    """Logged intake against estimated expenditure, on the same days.
+
+    The same days is the whole trick. Comparing five logged days of intake
+    against a month's average expenditure produces a deficit or a surplus out of
+    a mismatch in the windows, and it is the sort of number that looks like an
+    answer.
+
+    Resting energy is included because leaving it out is not a smaller claim, it
+    is a wrong one: active energy alone is a few hundred kilocalories, so intake
+    would tower over "expenditure" every single day.
+    """
+    active = _kcal_by_day("active_energy_burned", start, end, tz_name)
+    basal = _kcal_by_day("basal_energy_burned", start, end, tz_name)
+
+    # Both halves are required. A day with active energy and no resting figure
+    # would understate expenditure by most of it.
+    usable = [d for d in days_wanted if d in intake and d in active and d in basal]
+
+    # Worth being blunt about, because the difference between two estimates is
+    # the number in this payload most likely to be quoted as though it were
+    # measured. Resting energy is a formula over age, sex, height and weight —
+    # Apple's runs generously — and logged intake is portion sizes somebody eyed.
+    # Subtracting one from the other stacks both errors into a single figure.
+    note = (
+        "Expenditure is HealthKit's estimate of resting plus active energy, not a "
+        "measurement: the resting part is calculated from body metrics rather than "
+        "observed, and it tends to read high. Intake is what was written down, from "
+        "estimated portions. The difference between the two therefore carries both "
+        "errors and is a direction at best. Measured weight over the same period is "
+        "the better evidence about whether intake matches need."
+    )
+    if not usable:
+        return {
+            "days_compared": 0,
+            "intake_kcal_per_day": None,
+            "expenditure_kcal_per_day": None,
+            "difference_kcal_per_day": None,
+            "reason": (
+                "No day in this window has both a full food log and a complete "
+                "energy-burned record, so intake and expenditure cannot be put "
+                "side by side."
+            ),
+            "note": note,
+        }
+
+    intake_mean = statistics.fmean([intake[d] for d in usable])
+    active_mean = statistics.fmean([active[d] for d in usable])
+    basal_mean = statistics.fmean([basal[d] for d in usable])
+    return {
+        "days_compared": len(usable),
+        "from": min(usable).isoformat(),
+        "to": max(usable).isoformat(),
+        "intake_kcal_per_day": round(intake_mean),
+        "expenditure_kcal_per_day": round(active_mean + basal_mean),
+        "active_kcal_per_day_estimated": round(active_mean),
+        "resting_kcal_per_day_estimated": round(basal_mean),
+        "difference_kcal_per_day": round(intake_mean - (active_mean + basal_mean)),
+        "note": note,
+    }
+
+
+def _weight_context(as_of: date, tz_name: str | None) -> dict | None:
+    """Measured weight over the recent past, reported beside the energy figures.
+
+    It is here as the empirical check on the arithmetic above. Intake and
+    expenditure are both estimates, and their difference is quoted in kilocalories
+    as though it settled something; weight is the one number in this comparison
+    that a device actually measured. A weight that has not moved over eight weeks
+    says intake and need are matching, whatever subtracting two estimates
+    suggests.
+    """
+    report = trend("body_mass", days=56, as_of=as_of, tz_name=tz_name)
+    if report["valid_days"] < 4:
+        return None
+    context = {
+        "metric_slug": "body_mass",
+        "unit": report["unit"],
+        "from": report["from"],
+        "to": report["to"],
+        "direction": report["trend_direction"],
+        "kg_per_week": report["slope_per_week"],
+        "fit_quality": report["fit_quality"],
+        "weighings": report["valid_days"],
+        "note": (
+            "Weight is measured rather than calculated, so it is better evidence about "
+            "whether intake matches need than the difference between two estimated "
+            "energy figures. It also moves with hydration, glycogen and food in transit, "
+            "so a single week of it says little."
+        ),
+    }
+    if context["direction"] == "unclear":
+        # A slope with no direction beside it is the worst of both: the number
+        # reads as a finding while the field that would qualify it says nothing.
+        context["direction_reason"] = (
+            f"{report['valid_days']} weighing(s) over {report['window_days']} days is too "
+            "few for this module to call a direction. The fitted slope is given for "
+            "context and is not a trend."
+        )
+    return context
+
+
+def nutrition_summary(
+    days: int = CURRENT_DAYS,
+    as_of: date | None = None,
+    tz_name: str | None = None,
+) -> dict:
+    """What was logged over the window, and what it can and cannot support.
+
+    Three counts do most of the work here, and they are deliberately separate:
+    days with a full log, days with a partial log, and days with nothing logged
+    at all. Collapsed into one "days with data" figure — which is how every other
+    metric in this module is scored — a fortnight containing four abandoned
+    breakfasts reads as a fortnight of barely eating.
+
+    Averages are taken over fully logged days only, and every one of them says
+    how many days it came from.
+    """
+    as_of = as_of or last_complete_day(tz_name)
+    start_day = as_of - timedelta(days=days - 1)
+    start, end = _bounds(start_day, as_of, tz_name)
+
+    # Only nutrients this person has ever logged. Reporting forty nutrients as
+    # "no data" costs forty queries to say nothing.
+    present = set(nutrition.logged_metrics())
+    reported = [n for n in nutrition.headline_nutrients() if n.slug in present]
+
+    # Energy first and unfiltered, because the partial days this drops are
+    # themselves part of the answer: "you logged something on six days and
+    # finished the log on four" is the honest shape of a food diary.
+    values: dict[str, dict[date, float]] = {}
+    entries: dict[date, int] = {}
+    estimated_days = 0
+    unconvertible: list[dict] = []
+
+    energy: dict[date, float] = {}
+    if nutrition.ENERGY in present:
+        payload = nutrition.daily_series(nutrition.ENERGY, start, end, tz_name=tz_name)
+        for point in payload["points"]:
+            day = date.fromisoformat(point["date"])
+            energy[day] = float(point["value"])
+            entries[day] = point.get("entries") or 0
+        estimated_days = payload["estimated_days"]
+        unconvertible.extend(payload.get("unconvertible_samples") or [])
+    values[nutrition.ENERGY] = energy
+
+    # A day is only "fully logged" if its *energy* is plausible for a whole day.
+    # Every other nutrient is then read on those days only: protein from a
+    # half-finished Tuesday is as misleading as the energy figure it came with.
+    complete_set = {day for day, kcal in energy.items() if nutrition.is_complete_log(kcal)}
+
+    for spec in reported:
+        if spec.slug == nutrition.ENERGY:
+            continue
+        payload = nutrition.daily_series(
+            spec.slug, start, end, tz_name=tz_name, only_days=complete_set
+        )
+        values[spec.slug] = {
+            date.fromisoformat(point["date"]): float(point["value"])
+            for point in payload["points"]
+        }
+        unconvertible.extend(payload.get("unconvertible_samples") or [])
+
+    logged = sorted({day for table in values.values() for day in table})
+    complete = [day for day in logged if day in complete_set]
+    partial = [day for day in logged if day not in complete_set]
+
+    def mean_over(table: dict[date, float]) -> tuple[float | None, int]:
+        picked = [table[day] for day in complete if day in table]
+        return (statistics.fmean(picked) if picked else None), len(picked)
+
+    energy_mean, energy_days = mean_over(energy)
+    energy_values = [energy[day] for day in complete if day in energy]
+
+    nutrients = []
+    for spec in reported:
+        average, counted = mean_over(values[spec.slug])
+        row = {
+            "nutrient": spec.slug,
+            "label": spec.label,
+            "unit": spec.unit,
+            "group": spec.group,
+            "average_per_logged_day": _round(average, spec.decimals),
+            "days_counted": counted,
+        }
+        # Share of intake, for the three macros that carry energy. Uses the
+        # ordinary 4/4/9 kcal-per-gram convention, which is an approximation and
+        # is labelled as one — not a recommendation about what the split ought
+        # to be.
+        if spec.kcal_per_gram and average is not None and energy_mean:
+            row["share_of_logged_energy_pct"] = round(
+                average * spec.kcal_per_gram / energy_mean * 100, 1
+            )
+        nutrients.append(row)
+
+    coverage = len(complete) / days if days else 0.0
+    if not logged:
+        confidence = "insufficient"
+        reason = f"nothing was logged in the {days} days to {as_of.isoformat()}"
+    elif len(complete) < 3:
+        confidence = "insufficient"
+        reason = (
+            f"only {len(complete)} day(s) in this window have a full food log; "
+            "at least 3 are needed to average anything"
+        )
+    elif coverage < 0.5:
+        confidence = "low"
+        reason = f"{len(complete)} of {days} days have a full food log"
+    elif coverage < 0.8:
+        confidence = "moderate"
+        reason = f"{len(complete)} of {days} days have a full food log"
+    else:
+        confidence = "high"
+        reason = f"{len(complete)} of {days} days have a full food log"
+
+    limitations = [
+        "These are logged amounts, not measurements. Anything eaten and not written "
+        "down is missing from every total here, and portion sizes in a food app are "
+        "estimates."
+    ]
+    if partial:
+        limitations.append(
+            f"{len(partial)} day(s) had too little logged to be a whole day's eating, so "
+            "they are treated as incomplete logs and left out of the averages. They are "
+            "not evidence of light days."
+        )
+    not_logged = days - len(logged)
+    if not_logged > 0:
+        limitations.append(
+            f"{not_logged} of {days} days have no food log at all. Those days are unknown, "
+            "not days without food."
+        )
+    if estimated_days:
+        limitations.append(
+            f"{estimated_days} day(s) are summed from individual entries rather than Apple's "
+            "deduplicated daily total, so a meal logged twice would be counted twice."
+        )
+    if unconvertible:
+        limitations.append(
+            "Some samples arrived in a unit this server could not convert and were left "
+            "out: " + ", ".join(f"{u['samples']}× {u['unit']}" for u in unconvertible) + "."
+        )
+
+    payload = {
+        "from": start_day.isoformat(),
+        "to": as_of.isoformat(),
+        "window_days": days,
+        "days_logged": len(logged),
+        "days_fully_logged": len(complete),
+        "days_partially_logged": len(partial),
+        "days_not_logged": not_logged,
+        "coverage": round(coverage, 2),
+        "energy": {
+            "unit": "kcal",
+            "average_per_logged_day": _round(energy_mean, 0),
+            "lowest_logged_day": _round(min(energy_values), 0) if energy_values else None,
+            "highest_logged_day": _round(max(energy_values), 0) if energy_values else None,
+            "days_counted": energy_days,
+        },
+        "nutrients": nutrients,
+        "energy_balance": _energy_balance(complete, energy, start, end, tz_name),
+        "weight_context": _weight_context(as_of, tz_name),
+        "days": [
+            {
+                "date": day.isoformat(),
+                "energy_kcal": _round(energy.get(day), 0),
+                "entries": entries.get(day, 0),
+                "complete_log": day in complete_set,
+                "totals": {
+                    spec.slug: _round(values[spec.slug][day], spec.decimals)
+                    for spec in reported
+                    if day in values[spec.slug] and spec.slug != nutrition.ENERGY
+                },
+            }
+            for day in logged
+        ],
+        "sources": nutrition.sources(start, end),
+        "confidence": confidence,
+        "confidence_reason": reason,
+        "limitations": limitations,
+        "note": (
+            "Nutrition is the one signal here nobody's watch records. Missing days mean "
+            "nothing was written down."
+        ),
+    }
+    if nutrition.ENERGY in present:
+        # The person's own recent norm, which is the only comparison this system
+        # makes. It is graded thin while a food log is new, and that grade is the
+        # answer to "is this a lot or a little for me" until there is a baseline.
+        payload["energy_vs_baseline"] = compare_to_baseline(
+            nutrition.ENERGY, as_of=as_of, tz_name=tz_name
+        )
+    return payload
+
+
+# --------------------------------------------------------------------------
 # Snapshot
 # --------------------------------------------------------------------------
 
@@ -938,6 +1382,17 @@ def snapshot(
     sleep = sleep_summary(as_of=as_of, tz_name=tz_name) if "sleep_analysis" in present else None
     activity = workouts(as_of=as_of, tz_name=tz_name)
 
+    # Alongside sleep and workouts rather than inside `metrics`, and that
+    # placement is the whole design. A food log is days old the week somebody
+    # starts one, so as a headline metric its "insufficient" grade would become
+    # the snapshot's overall grade and every answer about steps and heart rate
+    # would arrive hedged about coverage that is perfectly good.
+    food = (
+        nutrition_summary(as_of=as_of, tz_name=tz_name)
+        if nutrition.logged_metrics()
+        else None
+    )
+
     # A metric with nothing in either window has not been recorded lately — it
     # is a sync problem, not a weak measurement. Kept in `metrics` so the gap
     # stays visible, but excluded from the overall grade: letting one metric
@@ -979,6 +1434,7 @@ def snapshot(
         "data_quality": quality,
         "sleep": sleep,
         "workouts": activity,
+        "nutrition": food,
         "overall_confidence": weakest,
         "metrics_unavailable": [m for m in (metrics or SNAPSHOT_METRICS) if m not in present],
         # Recorded at some point, but nothing recent. Almost always a sync that
