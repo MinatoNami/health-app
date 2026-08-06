@@ -11,7 +11,13 @@ import Foundation
 /// NDJSON — one record per line — rather than a JSON array, because it appends
 /// cheaply and streams line-by-line on the far end. A JSON array would force the
 /// server to buffer the whole batch to parse it.
-final class Outbox {
+/// `@unchecked Sendable` because it is called from off the main actor and the
+/// compiler cannot see why that is safe. It is safe for a narrow reason worth
+/// keeping true: this class holds no mutable state. The lock below guards the
+/// file system, and the JSON encoder is created per call rather than shared —
+/// `JSONEncoder` is not safe for concurrent use, so a single stored one would
+/// have been a data race the moment writing moved off the main thread.
+final class Outbox: @unchecked Sendable {
     static let shared = Outbox()
 
     struct Batch: Identifiable, Hashable {
@@ -40,15 +46,20 @@ final class Outbox {
     }
 
     private let lock = NSLock()
-    private let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        // No `.convertToSnakeCase`: that strategy also rewrites *dictionary*
-        // keys, which would mangle HealthKit metadata keys like
-        // `HKWasUserEntered` into `h_k_was_user_entered`. Explicit CodingKeys
-        // handle the snake_casing instead.
-        e.outputFormatting = [.withoutEscapingSlashes]
-        return e
-    }()
+
+    /// Built per write rather than stored. `JSONEncoder` is not safe for
+    /// concurrent use, and writing now happens off the main actor — one shared
+    /// encoder would be a race for the sake of saving an allocation that costs
+    /// nothing next to encoding two thousand records.
+    ///
+    /// No `.convertToSnakeCase`: that strategy also rewrites *dictionary* keys,
+    /// which would mangle HealthKit metadata keys like `HKWasUserEntered` into
+    /// `h_k_was_user_entered`. Explicit CodingKeys handle the snake_casing.
+    private func makeEncoder() -> JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        return encoder
+    }
 
     /// Cap on records per file. Bounded so a single failed upload never blocks a
     /// large backlog, and so memory stays flat during backfill.
@@ -72,10 +83,24 @@ final class Outbox {
 
     /// Writes records to a new batch file, splitting if they exceed the cap.
     /// Returns the files created.
+    ///
+    /// `nonisolated` and `async` on purpose, and the combination is the point:
+    /// called with `await` from the main actor, a nonisolated async function runs
+    /// on the cooperative pool rather than inheriting the caller's actor. So
+    /// encoding a page of two thousand records and writing the file no longer
+    /// happens on the main thread, where it was a hang of exactly its own
+    /// duration — `Task.yield()` between calls cannot break up a single one.
+    ///
+    /// Still awaited rather than fired off. The caller advances its sync anchor
+    /// immediately afterwards, and an anchor that moves past data which is not
+    /// yet on disk turns any failure into silent, undetectable loss.
     @discardableResult
-    func write(_ records: [HealthRecord], windowFrom: Date? = nil, windowTo: Date? = nil) -> [URL] {
+    nonisolated func write(
+        _ records: [HealthRecord], windowFrom: Date? = nil, windowTo: Date? = nil
+    ) async -> [URL] {
         guard !records.isEmpty, let dir = Paths.outboxDirectory else { return [] }
 
+        let encoder = makeEncoder()
         var written: [URL] = []
         for chunk in records.chunked(into: maxRecordsPerBatch) {
             let batchId = UUID().uuidString
@@ -111,22 +136,37 @@ final class Outbox {
                 "batch-\(stamp)-\(batchId.prefix(8))-\(encoded).ndjson"
             )
 
-            lock.lock()
-            do {
-                try payload.write(to: url, options: .atomic)
-                try? FileManager.default.setAttributes(
-                    [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                    ofItemAtPath: url.path
-                )
-                Paths.excludeFromBackup(url)
+            if commit(payload, to: url, records: encoded) {
                 written.append(url)
-                Log.shared.info("outbox", "Wrote \(encoded) records to \(url.lastPathComponent)")
-            } catch {
-                Log.shared.error("outbox", "Failed writing batch: \(error.localizedDescription)")
             }
-            lock.unlock()
         }
         return written
+    }
+
+    /// The locked part, kept in a synchronous frame on purpose.
+    ///
+    /// Taking a lock inside an `async` function is a warning today and an error
+    /// in Swift 6, because the compiler cannot tell whether it is held across a
+    /// suspension — and a lock held across an `await` deadlocks the moment two
+    /// tasks want it. Extracting the critical section means there is no `await`
+    /// it could possibly straddle, which is a stronger guarantee than a comment
+    /// promising the same thing.
+    private func commit(_ payload: Data, to url: URL, records: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            try payload.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: url.path
+            )
+            Paths.excludeFromBackup(url)
+            Log.shared.info("outbox", "Wrote \(records) records to \(url.lastPathComponent)")
+            return true
+        } catch {
+            Log.shared.error("outbox", "Failed writing batch: \(error.localizedDescription)")
+            return false
+        }
     }
 
     // MARK: - Reading

@@ -96,6 +96,42 @@ final class SyncEngine: ObservableObject {
     private var rerunRequested = false
     private var debounceTask: Task<Void, Never>?
 
+    /// When the last progress update was published, for the throttle below.
+    private var lastPhasePublish = DispatchTime.now()
+
+    /// Minimum gap between two *progress* updates.
+    ///
+    /// `phase` is `@Published` on an object seven views observe, and
+    /// `ObservableObject` has no per-property tracking: every assignment
+    /// invalidates all of them, re-evaluating bodies that draw charts and read
+    /// disk-backed state. A full sync assigns it once per type — around 130
+    /// times — and delivery once per batch. Nobody can read 130 updates a
+    /// second, so the UI is given five and the main thread keeps the rest.
+    private static let progressPublishInterval: Double = 0.2
+
+    /// The only way `phase` is set for progress. Terminal states go through it
+    /// too and are never throttled — a swallowed `.idle` leaves a spinner
+    /// turning over a sync that finished, which is worse than a coarse progress
+    /// readout.
+    private func report(_ next: Phase) {
+        guard next != phase else { return }
+
+        let sameKind: Bool
+        switch (phase, next) {
+        case (.syncing, .syncing), (.delivering, .delivering): sameKind = true
+        default: sameKind = false
+        }
+
+        let now = DispatchTime.now()
+        if sameKind {
+            let elapsed = Double(now.uptimeNanoseconds - lastPhasePublish.uptimeNanoseconds)
+                / 1_000_000_000
+            guard elapsed >= Self.progressPublishInterval else { return }
+        }
+        lastPhasePublish = now
+        phase = next
+    }
+
     init(authorization: HealthAuthorization) {
         self.authorization = authorization
         self.reader = HealthReader(healthStore: authorization.healthStore)
@@ -175,9 +211,9 @@ final class SyncEngine: ObservableObject {
         var failures = 0
 
         for (index, type) in types.enumerated() {
-            phase = .syncing(metric: type.identifier.healthKitSlug,
-                             progress: index + 1,
-                             total: types.count)
+            report(.syncing(metric: type.identifier.healthKitSlug,
+                            progress: index + 1,
+                            total: types.count))
             do {
                 totalEmitted += try await drain(type: type)
             } catch let error as HealthReader.ReadError {
@@ -196,7 +232,7 @@ final class SyncEngine: ObservableObject {
         }
 
         totalEmitted += await syncStatistics()
-        totalEmitted += emitCharacteristicsIfNeeded()
+        totalEmitted += await emitCharacteristicsIfNeeded()
 
         await deliverPending()
 
@@ -216,7 +252,11 @@ final class SyncEngine: ObservableObject {
         default: phase = .idle
         }
         Log.shared.info("sync", "Finished: \(lastSummary ?? "")")
-        Outbox.shared.pruneArchive()
+        // Enumerates the archive and deletes from it, on the main actor. The
+        // archive has been measured at 640MB after a first sync.
+        Log.shared.blocking("perf", "Pruning the archive") {
+            Outbox.shared.pruneArchive()
+        }
 
         isSyncing = false
         if rerunRequested {
@@ -290,6 +330,7 @@ final class SyncEngine: ObservableObject {
             var records: [HealthRecord] = []
             records.reserveCapacity(page.added.count)
             var newestEnd: Date?
+            let normalizeStarted = DispatchTime.now().uptimeNanoseconds
 
             for (offset, sample) in page.added.enumerated() {
                 // HealthKit samples are Objective-C objects that pile up in the
@@ -312,6 +353,18 @@ final class SyncEngine: ObservableObject {
                 // keep the UI responsive instead of hanging for seconds at a time.
                 if offset % 200 == 199 { await Task.yield() }
             }
+            // Normalization is yielded every 200 samples, so it should never be a
+            // single long hang — this reports the total in case the yields are not
+            // buying what the comment above claims they do.
+            let normalizeSeconds =
+                Double(DispatchTime.now().uptimeNanoseconds - normalizeStarted) / 1_000_000_000
+            if normalizeSeconds >= 0.5 {
+                Log.shared.warn("perf", String(
+                    format: "Normalized %d samples of %@ in %.2fs on the main actor",
+                    page.added.count, identifier.healthKitSlug, normalizeSeconds
+                ))
+            }
+
             // Tombstones carry no type or date, only a UUID. Emitting them is
             // what keeps the destination from diverging permanently.
             for deleted in page.deleted {
@@ -319,16 +372,18 @@ final class SyncEngine: ObservableObject {
             }
 
             if !records.isEmpty {
-                Outbox.shared.write(records)
+                // Encode and write happen off the main actor now; the await is
+                // what keeps the ordering below honest.
+                await Outbox.shared.write(records)
                 emitted += records.count
             }
 
             // Anchor advances only now that the page is durably on disk. Doing
             // this earlier turns any failure into silent, undetectable data loss.
-            AnchorStore.shared.setAnchor(page.newAnchor,
-                                         for: identifier,
-                                         lastSampleEnd: newestEnd,
-                                         added: records.count)
+            await AnchorStore.shared.setAnchor(page.newAnchor,
+                                               for: identifier,
+                                               lastSampleEnd: newestEnd,
+                                               added: records.count)
             anchor = page.newAnchor
             pages += 1
 
@@ -375,7 +430,7 @@ final class SyncEngine: ObservableObject {
         }
 
         guard !emitted.isEmpty else { return 0 }
-        Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
+        await Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
         Log.shared.info("stats", "Emitted \(emitted.count) daily rollups")
         return emitted.count
     }
@@ -395,12 +450,12 @@ final class SyncEngine: ObservableObject {
 
     /// Static profile data — re-emitted monthly rather than every sync, since it
     /// changes approximately never.
-    private func emitCharacteristicsIfNeeded() -> Int {
+    private func emitCharacteristicsIfNeeded() async -> Int {
         let last = characteristicsStore.value.lastEmittedAt ?? .distantPast
         guard Date().timeIntervalSince(last) > 30 * 86_400 else { return 0 }
         let records = reader.characteristics()
         guard !records.isEmpty else { return 0 }
-        Outbox.shared.write(records)
+        await Outbox.shared.write(records)
         characteristicsStore.mutate { $0.lastEmittedAt = Date() }
         return records.count
     }
@@ -494,7 +549,12 @@ final class SyncEngine: ObservableObject {
             ? HTTPSink(configuration: settings.sink)
             : FileSink()
 
-        let pending = Outbox.shared.pendingBatches()
+        // A directory listing plus a stat() per file. Cheap with ten batches
+        // queued and not obviously cheap with several hundred, which is what a
+        // stalled upload leaves behind.
+        let pending = Log.shared.blocking("perf", "Listing the outbox") {
+            Outbox.shared.pendingBatches()
+        }
         guard !pending.isEmpty else { return }
 
         // FileSink is a no-op: the files stay put for the share sheet, which is
@@ -512,7 +572,7 @@ final class SyncEngine: ObservableObject {
         let authFailureLimit = 3
 
         for (index, batch) in pending.enumerated() {
-            phase = .delivering(remaining: pending.count - index)
+            report(.delivering(remaining: pending.count - index))
             var attempt = 0
             var delay: UInt64 = 2_000_000_000 // 2s
 

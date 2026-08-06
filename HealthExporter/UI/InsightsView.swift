@@ -114,6 +114,12 @@ struct InsightsView: View {
             }
             .disabled(engine.isAsking)
 
+            // Computed once. It was evaluated twice per keystroke — once for
+            // `disabled`, once for `opacity` — on a view that rebuilds on every
+            // character typed.
+            let canSend = !engine.isAsking
+                && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
             HStack(spacing: 9) {
                 TextField("Ask about your health data…", text: $question, axis: .vertical)
                     .lineLimit(1...4)
@@ -133,8 +139,8 @@ struct InsightsView: View {
                         .background(Color.accentColor, in: Circle())
                         .foregroundStyle(.white)
                 }
-                .disabled(engine.isAsking || question.trimmingCharacters(in: .whitespaces).isEmpty)
-                .opacity(engine.isAsking || question.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
+                .disabled(!canSend)
+                .opacity(canSend ? 1 : 0.4)
             }
             .padding(.horizontal, 16)
 

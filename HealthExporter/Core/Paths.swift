@@ -53,7 +53,7 @@ enum Paths {
 /// Deliberately not `UserDefaults`: a plist with weaker data protection is the
 /// wrong home for anything derived from health data, and defaults get synced
 /// and backed up in ways that are awkward to audit.
-final class StateStore<T: Codable> {
+final class StateStore<T: Codable>: @unchecked Sendable {
     private let url: URL?
     private let lock = NSLock()
     private var cached: T?
@@ -78,6 +78,29 @@ final class StateStore<T: Codable> {
     }
 
     func mutate(_ block: (inout T) -> Void) {
+        guard let (snapshot, target) = apply(block) else { return }
+        Self.persist(snapshot, to: target)
+    }
+
+    /// `mutate`, with the file write moved off the caller's thread.
+    ///
+    /// The in-memory update still happens synchronously, so anything that reads
+    /// `value` on the next line sees the new state. Only the encode-and-write is
+    /// deferred — which for the anchor store is the whole file, every type, once
+    /// per page of a sync, and it was running on the main actor.
+    ///
+    /// Awaited rather than detached: callers persist an anchor precisely because
+    /// they are about to rely on it having been persisted.
+    func mutateOffMain(_ block: (inout T) -> Void) async {
+        guard let (snapshot, target) = apply(block) else { return }
+        await Task.detached(priority: .utility) {
+            Self.persist(snapshot, to: target)
+        }.value
+    }
+
+    /// The mutation itself. Returns what needs writing, or nil if there is no
+    /// file backing this store.
+    private func apply(_ block: (inout T) -> Void) -> (T, URL)? {
         lock.lock()
         var current = cached ?? {
             guard let url, let data = try? Data(contentsOf: url),
@@ -90,7 +113,12 @@ final class StateStore<T: Codable> {
         let target = url
         lock.unlock()
 
-        guard let target, let data = try? JSONEncoder().encode(snapshot) else { return }
+        guard let target else { return nil }
+        return (snapshot, target)
+    }
+
+    private static func persist(_ snapshot: T, to target: URL) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
         try? data.write(to: target, options: .atomic)
         Paths.excludeFromBackup(target)
     }

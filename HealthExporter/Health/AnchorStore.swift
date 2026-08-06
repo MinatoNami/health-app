@@ -36,12 +36,16 @@ final class AnchorStore {
         }
     }
 
+    /// `async` because the file write it triggers rewrites every type's state,
+    /// once per page of a sync, and that was happening on the main actor. The
+    /// in-memory update is still synchronous; only the disk write is off-thread,
+    /// and it is awaited — the caller's next action depends on it having landed.
     func setAnchor(_ anchor: HKQueryAnchor?, for typeIdentifier: String,
-                   lastSampleEnd: Date?, added: Int) {
+                   lastSampleEnd: Date?, added: Int) async {
         let data: Data? = anchor.flatMap {
             try? NSKeyedArchiver.archivedData(withRootObject: $0, requiringSecureCoding: true)
         }
-        store.mutate { state in
+        await store.mutateOffMain { state in
             var entry = state[typeIdentifier] ?? TypeState()
             entry.anchorData = data ?? entry.anchorData
             entry.lastSyncedAt = Date()

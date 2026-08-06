@@ -52,10 +52,16 @@ struct StatusView: View {
                 ToolbarItem(placement: .topBarTrailing) { syncButton }
             }
             .task { await load() }
+            // Anchors only move during a sync, so that is the only moment the
+            // coverage line can have changed.
+            .onChange(of: engine.phase.isRunning) { _, running in
+                if !running { refreshCoverageSummary() }
+            }
         }
     }
 
     private func load() async {
+        refreshCoverageSummary()
         if engine.snapshot == nil { await engine.refreshSnapshot() }
         if engine.trends == nil { await engine.refreshTrends() }
     }
@@ -202,14 +208,27 @@ struct StatusView: View {
         .contentShape(Rectangle())
     }
 
-    private var coverageSummary: String {
+    /// Cached rather than computed in `body`.
+    ///
+    /// It reads the anchor store — a lock, a dictionary of ~130 states, and a
+    /// filter over all of them — and `body` re-runs on every published change
+    /// from the sync engine. Recomputing a line that changes once a sync,
+    /// hundreds of times a sync, is the kind of cost that never shows up as a
+    /// single slow frame and is felt on every one of them.
+    @State private var coverageSummary = "—"
+
+    private func refreshCoverageSummary() {
         let states = AnchorStore.shared.all
-        guard !states.isEmpty else { return "Not tracked yet" }
+        guard !states.isEmpty else {
+            coverageSummary = "Not tracked yet"
+            return
+        }
+        let now = Date()
         let fresh = states.values.filter {
             guard let last = $0.lastSampleEnd else { return false }
-            return Date().timeIntervalSince(last) < 24 * 3600
+            return now.timeIntervalSince(last) < 24 * 3600
         }.count
-        return "\(fresh) of \(states.count) fresh"
+        coverageSummary = "\(fresh) of \(states.count) fresh"
     }
 
     private var lastSyncLine: String {
