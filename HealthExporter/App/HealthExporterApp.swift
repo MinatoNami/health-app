@@ -21,6 +21,10 @@ struct HealthExporterApp: App {
                 // until something else happened to refresh them.
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { services.onForeground() }
+                    // The log is debounced, so leaving the foreground is where
+                    // the tail of a session gets lost — and the tail is the part
+                    // that says how it ended.
+                    if phase == .background { Log.shared.flush() }
                 }
         }
     }

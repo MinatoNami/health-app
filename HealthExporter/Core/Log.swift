@@ -126,8 +126,28 @@ final class Log {
     private var lastPersist = Date.distantPast
 
     private func persist(_ snapshot: [Entry]) {
-        guard let fileURL else { return }
         guard Date().timeIntervalSince(lastPersist) > 2 else { return }
+        write(snapshot)
+    }
+
+    /// Writes the buffer now, ignoring the debounce.
+    ///
+    /// The debounce exists so a 5,000-sample sync does not rewrite the file
+    /// 5,000 times, and its cost is the tail: the last few seconds of a session
+    /// are routinely missing from the file, which are exactly the lines that say
+    /// how the session ended. Twice while debugging this app that made a working
+    /// system look broken — a sync with no "Finished" line and deliveries that
+    /// had in fact all been accepted. Called when the app leaves the foreground,
+    /// which is the one moment the tail is guaranteed to matter.
+    func flush() {
+        lock.lock()
+        let snapshot = buffer
+        lock.unlock()
+        write(snapshot)
+    }
+
+    private func write(_ snapshot: [Entry]) {
+        guard let fileURL else { return }
         lastPersist = Date()
         Log.persistQueue.async {
             guard let data = try? JSONEncoder().encode(snapshot.suffix(500).map { $0 }) else { return }

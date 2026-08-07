@@ -376,11 +376,20 @@ def _build_coverage() -> dict:
 
     Tombstoned rows are excluded so a deleted sample cannot hold the high-water
     mark above what the server would actually serve back.
+
+    Both ends of the newest sample are reported, and the second one is not
+    redundant. The client's high-water mark is an *end* date, and for a metric
+    whose samples span a period the two differ by the length of that period —
+    Apple's walking steadiness covers exactly seven days, a low-cardio-fitness
+    event up to eighty. Offering only `latest_sample_at` invited the client to
+    compare its end against this start, decide the server was a week behind, and
+    re-read the type's whole history on every launch for ever.
     """
     metrics = {
         row["metric_slug"]: {
             "count": row["count"],
             "latest_sample_at": _iso(row["latest_sample"]),
+            "latest_sample_end": _iso(row["latest_sample_end"]),
             "latest_recorded_at": _iso(row["latest_recorded"]),
         }
         for row in Record.objects.filter(deleted_at__isnull=True)
@@ -389,6 +398,7 @@ def _build_coverage() -> dict:
         .annotate(
             count=Count("id"),
             latest_sample=Max("start"),
+            latest_sample_end=Max("end"),
             latest_recorded=Max("recorded_at"),
         )
     }

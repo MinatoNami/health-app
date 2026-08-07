@@ -242,7 +242,7 @@ final class SyncEngine: ObservableObject {
         settings.lastFullSyncAt = Date()
         let elapsed = Int(Date().timeIntervalSince(started))
         lastSummary = "\(totalEmitted) records in \(elapsed)s" + (failures > 0 ? ", \(failures) failed" : "")
-        pendingBatches = await Outbox.shared.pendingCountOffMain()
+        refreshCounts()
         // Preserve both terminal states rather than flattening to idle. The
         // read half of a run can finish perfectly while delivery is dead — an
         // expired token stops the upload circuit breaker, and overwriting that
@@ -309,7 +309,7 @@ final class SyncEngine: ObservableObject {
             }
         }
         await deliverPending()
-        pendingBatches = await Outbox.shared.pendingCountOffMain()
+        refreshCounts()
         Log.shared.info("sync", "Flagged drain emitted \(emitted) records")
 
         isSyncing = false
@@ -476,17 +476,28 @@ final class SyncEngine: ObservableObject {
                   local.totalRecords > 0,
                   let localEnd = local.lastSampleEnd else { continue }
 
-            let slug = identifier.healthKitSlug
+            // The slug these records were *uploaded* under, which is not always
+            // the one derived from the identifier.
+            let slug = Normalizer.uploadSlug(for: type)
             let remote = coverage.metrics[slug]
             let cause: String?
 
             if remote == nil || remote?.count == 0 {
                 cause = "server holds nothing for it, local delivered \(local.totalRecords)"
-            } else if let remoteEnd = remote?.latestSampleDate,
+            } else if let remoteEnd = remote?.latestSampleEndDate,
                       localEnd.timeIntervalSince(remoteEnd) > SyncEngine.coverageTolerance {
-                cause = "server's newest is \(Timestamps.iso8601(remoteEnd)), "
+                // Both sides are now describing the same instant. Comparing this
+                // end against the server's newest *start* — which is what the
+                // only available field used to mean — put a metric whose samples
+                // span a week permanently a week behind itself, and rewound its
+                // entire history on every launch.
+                cause = "server's newest ends \(Timestamps.iso8601(remoteEnd)), "
                     + "local reached \(Timestamps.iso8601(localEnd))"
             } else {
+                // A server too old to report the end date gets no date check at
+                // all. The count check above still catches real loss, and a
+                // wrong comparison is worse than a missing one: it re-reads
+                // years of history to fix data that was never missing.
                 cause = nil
             }
 
@@ -521,7 +532,7 @@ final class SyncEngine: ObservableObject {
         // FileSink is a no-op: the files stay put for the share sheet, which is
         // exactly the v1 behaviour. Nothing to deliver, nothing to archive.
         guard !(sink is FileSink) else {
-            pendingBatches = pending.count
+            publishPendingBatches(pending.count)
             return
         }
 
@@ -575,11 +586,11 @@ final class SyncEngine: ObservableObject {
                 Log.shared.error("deliver",
                     "Stopped after \(consecutiveAuthFailures) authentication failures; "
                     + "\(pending.count - index - 1) batch(es) left queued. Sign in again in Settings.")
-                pendingBatches = await Outbox.shared.pendingCountOffMain()
+                refreshCounts()
                 return
             }
         }
-        pendingBatches = await Outbox.shared.pendingCountOffMain()
+        refreshCounts()
     }
 
     /// True once a token is held, whether it was pasted in or obtained by
@@ -816,7 +827,29 @@ final class SyncEngine: ObservableObject {
 
     /// Fire-and-forget: callers are views appearing, and none of them should
     /// wait on a directory listing to draw.
+    ///
+    /// The request token is what makes that safe. Counting the queue moved off
+    /// the main thread, which means a read can still be in flight when delivery
+    /// finishes and publishes zero — and the older read then lands last and puts
+    /// the number back up. That is a queue reported as stuck with an empty
+    /// outbox behind it: uploads working perfectly, and a UI saying otherwise.
     func refreshCounts() {
-        Task { pendingBatches = await Outbox.shared.pendingCountOffMain() }
+        pendingCountRequest += 1
+        let request = pendingCountRequest
+        Task {
+            let count = await Outbox.shared.pendingCountOffMain()
+            // Somebody published a newer figure while this was reading. They
+            // know something this read does not.
+            guard request == pendingCountRequest else { return }
+            pendingBatches = count
+        }
     }
+
+    /// Publishes a count directly, invalidating any read still in flight.
+    private func publishPendingBatches(_ value: Int) {
+        pendingCountRequest += 1
+        pendingBatches = value
+    }
+
+    private var pendingCountRequest = 0
 }
