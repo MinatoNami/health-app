@@ -136,7 +136,10 @@ final class SyncEngine: ObservableObject {
         self.authorization = authorization
         self.reader = HealthReader(healthStore: authorization.healthStore)
         self.settings = settingsStore.value
-        self.pendingBatches = Outbox.shared.pendingCount
+        // Not `Outbox.shared.pendingCount`: that is a directory listing, and an
+        // initialiser on the launch path is the worst place to do one. It is
+        // filled in by `refreshCounts()` a moment later, off the main thread.
+        self.pendingBatches = 0
         migrateSupersededPin()
         migrateStatisticsLookback()
     }
@@ -239,7 +242,7 @@ final class SyncEngine: ObservableObject {
         settings.lastFullSyncAt = Date()
         let elapsed = Int(Date().timeIntervalSince(started))
         lastSummary = "\(totalEmitted) records in \(elapsed)s" + (failures > 0 ? ", \(failures) failed" : "")
-        pendingBatches = Outbox.shared.pendingCount
+        pendingBatches = await Outbox.shared.pendingCountOffMain()
         // Preserve both terminal states rather than flattening to idle. The
         // read half of a run can finish perfectly while delivery is dead — an
         // expired token stops the upload circuit breaker, and overwriting that
@@ -252,11 +255,10 @@ final class SyncEngine: ObservableObject {
         default: phase = .idle
         }
         Log.shared.info("sync", "Finished: \(lastSummary ?? "")")
-        // Enumerates the archive and deletes from it, on the main actor. The
-        // archive has been measured at 640MB after a first sync.
-        Log.shared.blocking("perf", "Pruning the archive") {
-            Outbox.shared.pruneArchive()
-        }
+        // Housekeeping, so nothing waits on it. The archive has been measured
+        // at 640MB after a first sync, and enumerating and deleting that on the
+        // main actor is a stall for work no one is looking at.
+        Task.detached(priority: .background) { await Outbox.shared.pruneArchiveOffMain() }
 
         isSyncing = false
         if rerunRequested {
@@ -307,7 +309,7 @@ final class SyncEngine: ObservableObject {
             }
         }
         await deliverPending()
-        pendingBatches = Outbox.shared.pendingCount
+        pendingBatches = await Outbox.shared.pendingCountOffMain()
         Log.shared.info("sync", "Flagged drain emitted \(emitted) records")
 
         isSyncing = false
@@ -324,66 +326,27 @@ final class SyncEngine: ObservableObject {
         let cutoff = settings.backfillStartDate
 
         while true {
+            // Reading, filtering and normalising all happen on HealthKit's own
+            // queue now; what comes back is plain values. Nothing per-sample
+            // touches the main actor in this loop.
             let page = try await reader.anchoredPage(type: type,
                                                      anchor: anchor,
-                                                     limit: settings.pageSize)
-            var records: [HealthRecord] = []
-            records.reserveCapacity(page.added.count)
-            var newestEnd: Date?
-            let normalizeStarted = DispatchTime.now().uptimeNanoseconds
+                                                     limit: settings.pageSize,
+                                                     cutoff: cutoff)
 
-            for (offset, sample) in page.added.enumerated() {
-                // HealthKit samples are Objective-C objects that pile up in the
-                // autorelease pool. Without draining it per sample, a page of
-                // 2,000 (times hundreds of pages) is a steady climb to a jetsam
-                // kill rather than flat memory use.
-                autoreleasepool {
-                    // Read but don't emit pre-cutoff samples: the anchor still
-                    // advances past them, so history is consumed without paying
-                    // to normalize and ship data the user didn't ask for.
-                    guard sample.endDate >= cutoff else { return }
-                    if let record = Normalizer.record(from: sample) {
-                        records.append(record)
-                        if sample.endDate > (newestEnd ?? .distantPast) {
-                            newestEnd = sample.endDate
-                        }
-                    }
-                }
-                // Normalization runs on the main actor, so yield periodically to
-                // keep the UI responsive instead of hanging for seconds at a time.
-                if offset % 200 == 199 { await Task.yield() }
-            }
-            // Normalization is yielded every 200 samples, so it should never be a
-            // single long hang — this reports the total in case the yields are not
-            // buying what the comment above claims they do.
-            let normalizeSeconds =
-                Double(DispatchTime.now().uptimeNanoseconds - normalizeStarted) / 1_000_000_000
-            if normalizeSeconds >= 0.5 {
-                Log.shared.warn("perf", String(
-                    format: "Normalized %d samples of %@ in %.2fs on the main actor",
-                    page.added.count, identifier.healthKitSlug, normalizeSeconds
-                ))
-            }
-
-            // Tombstones carry no type or date, only a UUID. Emitting them is
-            // what keeps the destination from diverging permanently.
-            for deleted in page.deleted {
-                records.append(HealthRecord.deletion(uuid: deleted.uuid))
-            }
-
-            if !records.isEmpty {
-                // Encode and write happen off the main actor now; the await is
+            if !page.records.isEmpty {
+                // Encode and write happen off the main actor too; the await is
                 // what keeps the ordering below honest.
-                await Outbox.shared.write(records)
-                emitted += records.count
+                await Outbox.shared.write(page.records)
+                emitted += page.records.count
             }
 
             // Anchor advances only now that the page is durably on disk. Doing
             // this earlier turns any failure into silent, undetectable data loss.
             await AnchorStore.shared.setAnchor(page.newAnchor,
                                                for: identifier,
-                                               lastSampleEnd: newestEnd,
-                                               added: records.count)
+                                               lastSampleEnd: page.newestEnd,
+                                               added: page.records.count)
             anchor = page.newAnchor
             pages += 1
 
@@ -492,7 +455,7 @@ final class SyncEngine: ObservableObject {
         // Reconciling then would rewind an anchor, re-read history that is
         // already queued, spool more of it, and keep the outbox non-empty —
         // a loop that never settles.
-        let queued = Outbox.shared.pendingCount
+        let queued = await Outbox.shared.pendingCountOffMain()
         guard queued == 0 else {
             Log.shared.debug("reconcile", "Skipped: \(queued) batch(es) still queued")
             return
@@ -552,9 +515,7 @@ final class SyncEngine: ObservableObject {
         // A directory listing plus a stat() per file. Cheap with ten batches
         // queued and not obviously cheap with several hundred, which is what a
         // stalled upload leaves behind.
-        let pending = Log.shared.blocking("perf", "Listing the outbox") {
-            Outbox.shared.pendingBatches()
-        }
+        let pending = await Outbox.shared.pendingBatchesOffMain()
         guard !pending.isEmpty else { return }
 
         // FileSink is a no-op: the files stay put for the share sheet, which is
@@ -614,11 +575,11 @@ final class SyncEngine: ObservableObject {
                 Log.shared.error("deliver",
                     "Stopped after \(consecutiveAuthFailures) authentication failures; "
                     + "\(pending.count - index - 1) batch(es) left queued. Sign in again in Settings.")
-                pendingBatches = Outbox.shared.pendingCount
+                pendingBatches = await Outbox.shared.pendingCountOffMain()
                 return
             }
         }
-        pendingBatches = Outbox.shared.pendingCount
+        pendingBatches = await Outbox.shared.pendingCountOffMain()
     }
 
     /// True once a token is held, whether it was pasted in or obtained by
@@ -673,6 +634,7 @@ final class SyncEngine: ObservableObject {
         let sink = HTTPSink(configuration: settings.sink)
         if case .success(let overview) = await sink.fetchOverview() {
             trends = overview
+            saveCachedViews()
         }
         // Deliberately silent on failure: the charts are a nicety, and the
         // Server tab already surfaces connection problems properly. Throwing an
@@ -700,6 +662,50 @@ final class SyncEngine: ObservableObject {
     /// instead of arriving with the reply half a minute later.
     @Published private(set) var lastQuestion: String?
 
+    // MARK: - Cached views
+
+    /// The last figures the server gave us, kept on disk.
+    ///
+    /// Everything on the first screen used to come from a network round trip, so
+    /// every launch showed placeholder text until it landed — on a slow
+    /// connection, or none, that was the whole experience of opening the app.
+    /// None of it is secret from the person holding the phone and none of it
+    /// changes minute to minute, so the honest default is to show what was true
+    /// last time immediately, and correct it when the network answers.
+    struct CachedViews: Codable {
+        var snapshot: HealthSnapshot?
+        var trends: AnalyticsOverview?
+        var insightStatus: InsightStatus?
+        var savedAt: Date?
+    }
+
+    private let viewCache = StateStore<CachedViews>(
+        filename: "view-cache.json", fallback: CachedViews()
+    )
+
+    /// When the cached figures were written, so the UI can say how old they are
+    /// rather than presenting them as current.
+    @Published private(set) var cachedAt: Date?
+
+    /// Publishes the cached figures. Anything already fetched this session wins.
+    func restoreCachedViews() async {
+        let store = viewCache
+        let cached = await Task.detached(priority: .userInitiated) { store.value }.value
+        if snapshot == nil { snapshot = cached.snapshot }
+        if trends == nil { trends = cached.trends }
+        if insightStatus == nil { insightStatus = cached.insightStatus }
+        cachedAt = cached.savedAt
+    }
+
+    private func saveCachedViews() {
+        let payload = CachedViews(
+            snapshot: snapshot, trends: trends, insightStatus: insightStatus, savedAt: Date()
+        )
+        cachedAt = payload.savedAt
+        let store = viewCache
+        Task { await store.mutateOffMain { $0 = payload } }
+    }
+
     func refreshSnapshot() async {
         guard settings.sink.endpoint != nil, isSignedIn else {
             snapshotError = "Sign in on the Settings tab to see your summary."
@@ -718,6 +724,7 @@ final class SyncEngine: ObservableObject {
         if case .success(let status) = await sink.fetchInsightStatus() {
             insightStatus = status
         }
+        saveCachedViews()
     }
 
     func ask(_ question: String, context: String = "", remember: Bool = true) async {
@@ -807,7 +814,9 @@ final class SyncEngine: ObservableObject {
         lastSummary = "Anchors cleared"
     }
 
+    /// Fire-and-forget: callers are views appearing, and none of them should
+    /// wait on a directory listing to draw.
     func refreshCounts() {
-        pendingBatches = Outbox.shared.pendingCount
+        Task { pendingBatches = await Outbox.shared.pendingCountOffMain() }
     }
 }

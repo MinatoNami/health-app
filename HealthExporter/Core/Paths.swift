@@ -119,7 +119,11 @@ final class StateStore<T: Codable>: @unchecked Sendable {
 
     private static func persist(_ snapshot: T, to target: URL) {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        try? data.write(to: target, options: .atomic)
+        // Protected at rest, like the spooled batches are. These files hold
+        // health figures — a cached summary, the date of the newest sample per
+        // metric — and the only reason they were not covered before is that the
+        // first one written happened to be a settings struct.
+        try? data.write(to: target, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         Paths.excludeFromBackup(target)
     }
 

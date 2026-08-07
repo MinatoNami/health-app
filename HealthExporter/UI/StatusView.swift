@@ -47,6 +47,13 @@ struct StatusView: View {
                 .padding(.bottom, 28)
             }
             .background(Color(.systemGroupedBackground))
+            // Nothing on this screen takes text input, so it has no reason to
+            // respond to the keyboard — and responding is expensive. Keyboard
+            // avoidance is a scene-wide geometry change, so a keyboard raised on
+            // the Insights tab was re-laying out this screen's charts too, which
+            // is what the "falling back to a fixed dimension size" warning
+            // appearing beside those hangs was telling us.
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .navigationTitle("Summary")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { syncButton }
@@ -231,10 +238,17 @@ struct StatusView: View {
         coverageSummary = "\(fresh) of \(states.count) fresh"
     }
 
+    /// Says which of the two things on this screen is being described.
+    ///
+    /// The figures now come from a cache on launch, so "updated" has to mean the
+    /// figures rather than the sync — otherwise a screen full of yesterday's
+    /// numbers can sit under a line claiming everything happened a minute ago,
+    /// which is the specific dishonesty a cache invites.
     private var lastSyncLine: String {
-        guard let last = engine.settings.lastFullSyncAt else { return "Never synced" }
-        if Date().timeIntervalSince(last) < 90 { return "Updated just now" }
-        return "Updated \(last.formatted(.relative(presentation: .named)))"
+        let reference = engine.cachedAt ?? engine.settings.lastFullSyncAt
+        guard let reference else { return "Never synced" }
+        if Date().timeIntervalSince(reference) < 90 { return "Updated just now" }
+        return "Updated \(reference.formatted(.relative(presentation: .named)))"
     }
 
     private var grantAccessCard: some View {

@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.lionelchong.HealthExporter.sync</string>
+		<string>com.lionelchong.HealthExporter.refresh</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -20,42 +25,12 @@
 	<string>1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-
-	<!-- Read-only exporter, so only the share (read) purpose string is present.
-	     NSHealthUpdateUsageDescription is deliberately omitted: fewer
-	     permissions to justify, and nothing here writes to HealthKit.
-	     A missing share string does not degrade gracefully — the app crashes
-	     when requestAuthorization is called. -->
-	<key>NSHealthShareUsageDescription</key>
-	<string>Health Exporter reads your activity, sleep, vitals, body, and nutrition data so it can be exported to your own server or a file you control. Nothing is sent anywhere you have not configured.</string>
-
-	<!-- App Transport Security exception for the ingest server, and nothing else.
-
-	     The server is a Tailscale host, which cannot hold a publicly trusted
-	     certificate unless HTTPS Certificates are enabled for the tailnet, so it
-	     presents a self-signed one. ATS rejects that during connection setup and
-	     fails with NSURLErrorSecureConnectionFailed (-1200) *before* the
-	     URLSession delegate is ever consulted — so certificate pinning alone is
-	     not enough on a real device, however correct the pinning code is. (The
-	     Simulator does not enforce this, which makes it a poor place to test:
-	     the same build succeeds there and fails on a phone.)
-
-	     This does not weaken the connection. It hands the trust decision to
-	     CertificatePinner, which requires an exact SHA-256 match against one
-	     certificate — strictly narrower than "any certificate a public CA
-	     vouches for", which is what ATS would otherwise accept.
-
-	     Deliberately scoped: one host, NSIncludesSubdomains false, TLS 1.2
-	     minimum. Every other destination keeps full ATS enforcement.
-
-	     NSExceptionAllowsInsecureHTTPLoads is the key that permits an untrusted
-	     certificate; it also permits cleartext to this host, which is why
-	     SinkConfiguration.endpoint independently refuses any scheme but https.
-
-	     If the endpoint ever gets a publicly trusted certificate, delete this
-	     whole dictionary and clear the pin field. -->
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSExceptionDomains</key>
@@ -71,42 +46,30 @@
 			</dict>
 		</dict>
 	</dict>
-
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>fetch</string>
-		<string>processing</string>
-	</array>
-
-	<!-- Must list every identifier passed to BGTaskScheduler, or submit() throws. -->
-	<key>BGTaskSchedulerPermittedIdentifiers</key>
-	<array>
-		<string>com.lionelchong.HealthExporter.sync</string>
-		<string>com.lionelchong.HealthExporter.refresh</string>
-	</array>
-
+	<key>NSHealthShareUsageDescription</key>
+	<string>Health Exporter reads your activity, sleep, vitals, body, and nutrition data so it can be exported to your own server or a file you control. Nothing is sent anywhere you have not configured.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-
-	<!-- Batches are plain files in Documents so they can be retrieved through the
-	     Files app without going via the share sheet. -->
-	<key>UIFileSharingEnabled</key>
-	<true/>
-	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<false/>
-
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 </dict>
 </plist>

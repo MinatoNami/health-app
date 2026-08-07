@@ -5,6 +5,7 @@ import UIKit
 struct HealthExporterApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var services = AppServices.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -14,6 +15,12 @@ struct HealthExporterApp: App {
                 .environmentObject(services.syncEngine)
                 .task {
                     await services.onLaunch()
+                }
+                // `.task` fires once for the lifetime of the view, so without
+                // this an app resumed after two days showed two-day-old figures
+                // until something else happened to refresh them.
+                .onChange(of: scenePhase) { _, phase in
+                    if phase == .active { services.onForeground() }
                 }
         }
     }

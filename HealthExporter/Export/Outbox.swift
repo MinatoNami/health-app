@@ -293,6 +293,26 @@ final class Outbox: @unchecked Sendable {
     }
 
     var pendingCount: Int { fileCount(in: Paths.outboxDirectory) }
+
+    /// The same count, off the caller's thread.
+    ///
+    /// It is a directory listing, which is cheap right up until the queue is a
+    /// few hundred batches deep — which is exactly the situation where the app
+    /// is already struggling and least able to afford it on the main thread.
+    nonisolated func pendingCountOffMain() async -> Int {
+        fileCount(in: Paths.outboxDirectory)
+    }
+
+    /// Listing plus a `stat()` per file, off the caller's thread.
+    nonisolated func pendingBatchesOffMain() async -> [Batch] {
+        batches(in: Paths.outboxDirectory)
+    }
+
+    /// Enumerating and deleting, off the caller's thread. Nothing waits on the
+    /// result — this is housekeeping, and it can finish whenever it finishes.
+    nonisolated func pruneArchiveOffMain() async {
+        pruneArchive()
+    }
 }
 
 extension DateFormatter {

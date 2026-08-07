@@ -150,7 +150,16 @@ struct InsightsView: View {
                 .padding(.bottom, 4)
         }
         .padding(.top, 10)
-        .background(.bar)
+        // An opaque background with a hairline, rather than the `.bar` material.
+        // A material is a live blur of whatever is behind it, recomposited as
+        // that content moves — and the moment it moves most is the keyboard
+        // animating in underneath this exact view. Visually near-identical here,
+        // because the composer sits against a plain grouped background anyway.
+        .background(alignment: .top) {
+            Color(.secondarySystemGroupedBackground)
+                .overlay(alignment: .top) { Divider() }
+                .ignoresSafeArea()
+        }
     }
 
     private func send(_ text: String) {

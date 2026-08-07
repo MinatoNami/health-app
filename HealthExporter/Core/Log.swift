@@ -33,7 +33,24 @@ final class Log {
 
     private init() {
         fileURL = Paths.supportDirectory?.appendingPathComponent("sync.log")
-        buffer = Log.loadPersisted(from: fileURL)
+        // Loaded off the main thread, not in this initialiser.
+        //
+        // `Log.shared` is first touched by the very first line of
+        // `didFinishLaunchingWithOptions`, so decoding up to 500 persisted
+        // entries here happened before the app had drawn anything — to populate
+        // a buffer nothing reads until somebody opens Diagnostics. Entries
+        // written before the load lands are merged, not dropped.
+        let url = fileURL
+        Log.persistQueue.async { [weak self] in
+            let restored = Log.loadPersisted(from: url)
+            guard !restored.isEmpty, let self else { return }
+            self.lock.lock()
+            self.buffer = (restored + self.buffer)
+                .sorted { $0.at < $1.at }
+                .suffix(self.capacity)
+                .map { $0 }
+            self.lock.unlock()
+        }
     }
 
     func debug(_ category: String, _ message: String) { append(.debug, category, message) }
