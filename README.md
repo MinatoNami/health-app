@@ -1,9 +1,20 @@
 # Health Exporter
 
-An iOS app that reads Apple Health data and exports it as NDJSON — to files now,
-to your own HTTP endpoint when you're ready.
+An iOS app that reads Apple Health data and exports it as NDJSON to your own
+server, which computes health analysis from it and can explain that analysis with
+a language model running on your own machine.
 
-Full design rationale: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+## Documentation
+
+| | |
+|---|---|
+| **This file** | The iOS app: running it, the wire format, how syncing works |
+| [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | Startup, caching, and the rules that keep the main thread free |
+| [server/README.md](server/README.md) | The ingest server: deploy, endpoints, backups, the sync contract |
+| [docs/ANALYSIS.md](docs/ANALYSIS.md) | What the server computes — baselines, nutrition, correlations, safety |
+| [docs/LLM-SETUP.md](docs/LLM-SETUP.md) | Pointing the model layer at your machine, and testing it properly |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The original design rationale |
+| [docs/PRIVACY.md](docs/PRIVACY.md) | What is collected, where it goes, how to delete it |
 
 ---
 
@@ -235,6 +246,11 @@ makes iOS collapse the bar to four plus a "More" list, and what falls into More
 is the *last* two — which on this app meant burying sign-in. Batch files and the
 log moved under Settings → Diagnostics when Insights arrived.
 
+What happens between the icon tap and a usable interface — the launch screen, the
+boot view, the cached figures the first screen opens on, and what runs in the
+background behind it — is in [docs/LIFECYCLE.md](docs/LIFECYCLE.md). Read that
+before moving work onto or off the main actor.
+
 Adding or removing Swift files means regenerating the project:
 
 ```bash
@@ -277,13 +293,17 @@ data goes unnoticed.
 
 The Insights tab shows the server's analysis — every headline metric over the
 last 7 days against the user's own preceding 28, with coverage and a confidence
-grade — and lets you ask questions about it.
+grade — and lets you ask questions about it. Behind those questions the model can
+reach nutrition (what was logged, and how far the log covers the window),
+associations between metrics, and weekly rhythms, as well as the headline
+figures — twelve read-only tools in all, each returning numbers that were already
+computed. [docs/ANALYSIS.md](docs/ANALYSIS.md) covers what each one does and what
+it refuses to do.
 
 Nothing is recomputed on the device. Baselines, coverage grading and the
 deduplication rules underneath them are subtle enough that a second
 implementation would drift, and a phone quietly disagreeing with the dashboard
-about the same week is worse than either number alone. See `server/README.md`
-for how the analysis and the model layer work.
+about the same week is worse than either number alone.
 
 The measured comparison is rendered first and the generated explanation second,
 which is also the order they arrive: the snapshot is one fast query, an answer is

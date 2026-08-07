@@ -138,6 +138,44 @@ be deleted before the first sync ever shipped it.
 `gzip` request bodies are accepted (`Content-Encoding: gzip`) even though the
 current client uploads uncompressed.
 
+### Reconciliation — the one contract to get right
+
+`GET /v1/health/coverage` exists so a server that has silently lost data gets it
+re-sent. The client compares it against its own anchors and, on a mismatch,
+**clears the anchor and re-reads that type's entire history**. That is expensive
+and user-visible, so a false positive is not a cosmetic bug — and both ways it can
+go wrong have happened here:
+
+**Compare the same slug.** The client asks about the slug its records were
+*uploaded* under, which is not always the one derived from the HealthKit
+identifier: workouts ship as `workout`, not `hk_workout_type_identifier`. Asked
+about the derived slug, the server — holding all 126 of them — answered nothing,
+and the client concluded every workout had been lost and re-uploaded the lot on
+every launch. Both sides now ask `Normalizer.uploadSlug(for:)`.
+
+**Compare the same instant.** The client's high-water mark is an **end** date.
+For a sample that spans a period the two ends differ by the length of that period
+— Apple's walking steadiness covers exactly seven days, a low-cardio-fitness event
+up to eighty-one — so comparing an end against `latest_sample_at` (a *start*) put
+both permanently outside the 24-hour tolerance and rewound them every launch, on
+data that was never missing. Coverage therefore reports **both**:
+
+| Field | Meaning |
+|---|---|
+| `latest_sample_at` | `Max(start)` of the newest sample |
+| `latest_sample_end` | `Max(end)` — what an anchor's `lastSampleEnd` is comparable with |
+| `count` | Live rows, tombstones excluded |
+
+A client too old to know about `latest_sample_end` gets **no date check at all**
+rather than the wrong one: the count check still catches real loss, and re-reading
+years of history to repair data that was never lost is the more expensive mistake.
+
+Two further rules this endpoint depends on: it is **never capped** (a metric
+absent from the list means "absent from the server" to the client, so slicing to
+the top 60 for display would rewind everything beyond it), and **tombstoned rows
+are excluded**, so a deleted sample cannot hold the high-water mark above what the
+server would actually serve back.
+
 For an admin login:
 
 ```bash
@@ -279,8 +317,19 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-The suite runs on SQLite so it needs no database server; the ingest path uses
-`ON CONFLICT DO UPDATE`, which both engines support. To exercise the real thing:
+243 tests. The suite runs on SQLite so it needs no database server; the ingest
+path uses `ON CONFLICT DO UPDATE`, which both engines support.
+
+The analysis tests are worth reading before changing that layer, because most of
+them assert a *refusal* rather than a calculation — any statistics library can
+compute a 7-day mean, and the value here is that it declines to compute one from
+two days of data. `test_correlations.py` goes furthest: it feeds the engine data
+with a known answer and checks it does not overclaim — independent noise must
+return nothing, a planted relationship must come back with the right sign, a thin
+overlap must be refused, and one marginal hit among fourteen questions must not
+survive correction.
+
+To exercise the real thing:
 
 ```bash
 ssh alena-tailscale 'cd health-server && docker compose run --rm web python manage.py test tests'
@@ -350,103 +399,24 @@ data cannot rule out an illness" is the phrasing the prompt *asks* for.
 If the model server is unreachable, slow, or produces something the checks
 reject, the measured snapshot is still returned. That part was measured.
 
-### Pointing it at LM Studio
+**[docs/ANALYSIS.md](../docs/ANALYSIS.md) is the full account** of what each layer
+computes and what it refuses to compute: metric specs and confidence grading,
+nutrition (including why a missing day is not a fast and why nutrients arrived in
+kilograms), the correlation engine's pre-registered pairs and multiple-comparison
+correction, pattern discovery, and the twelve tools. What follows here is how to
+run it.
 
-The model runs on a laptop; the server runs on the tailnet host.
+### Running and testing it
 
-```bash
-# On the machine running LM Studio — publishes to the tailnet only, not to
-# whatever wifi the laptop happens to be on:
-tailscale serve --bg --http=1234 http://127.0.0.1:1234
-
-# From this repo:
-./deploy.sh llm            # uses this machine's MagicDNS name, then verifies
-./deploy.sh llm off        # disable generation; analysis endpoints unaffected
-```
-
-Two failure modes here are silent, and `deploy.sh llm` checks for both:
-
-- LM Studio binds `127.0.0.1` by default, so nothing off that machine sees it.
-- `tailscale serve` routes by **Host header**. A bare tailnet IP connects fine
-  and then returns 404, which reads like a broken API rather than a routing
-  mistake. Use the MagicDNS name.
-
-Plain HTTP is acceptable on this hop because Tailscale encrypts it with
-WireGuard and both ends are machines you control — unlike the phone's upload
-path, which crosses networks Tailscale does not govern and is therefore TLS with
-a pinned certificate.
+Pointing the server at LM Studio over the tailnet, and the checks that matter
+once it answers — grounding against the snapshot, missing data reported as
+missing, and the safety short-circuit returning without ever calling the model —
+are in **[docs/LLM-SETUP.md](../docs/LLM-SETUP.md)**.
 
 Questions and answers are kept for `INSIGHT_RETENTION_DAYS` (30 by default) and
 then deleted. The snapshot they were built from is deliberately not stored: it is
 recomputable from records already in the database, so a second copy would only
 widen what a deletion request has to reach.
-
-### Testing the chat
-
-**Before anything else, two things must be true on the laptop:**
-
-```bash
-# 1. LM Studio is running with a chat model loaded (not just the embedding one).
-curl -s http://127.0.0.1:1234/v1/models
-
-# 2. It is published to the tailnet. This survives reboots, so it is normally
-#    a one-off — but it is the first thing to check when insights stop working.
-tailscale serve status
-```
-
-Then confirm the server agrees:
-
-```bash
-./deploy.sh llm        # ✓ reachable at http://…:1234/v1 + the model name
-```
-
-**The quickest real test — the dashboard.** Sign in, open **Insights**, and click
-one of the suggestion chips. Expect ~25–40s for a local 35B model; the button
-says "Thinking…" throughout.
-
-```
-https://alena-server.tail03bec9.ts.net/dashboard/
-```
-
-**From the command line**, with a token:
-
-```bash
-./deploy.sh token chat-test        # prints the raw token once
-
-curl -sk https://alena-server.tail03bec9.ts.net/v1/insights/status \
-  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
-
-curl -sk https://alena-server.tail03bec9.ts.net/v1/insights/ask \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"question":"Am I becoming more or less active?"}' \
-  --max-time 300 | python3 -m json.tool
-```
-
-**Without minting a token**, straight through the server shell:
-
-```bash
-ssh alena-tailscale 'cd health-server && docker compose exec -T web \
-  python manage.py shell -c "
-from ingest.llm import service
-r = service.answer(\"How has my sleep changed?\", persist=False)
-print(r[\"answer\"][\"summary\"] if r[\"answer\"] else r[\"error\"])
-"'
-```
-
-#### What to check, not just that it answers
-
-| Test | Ask this | Expected |
-|---|---|---|
-| Grounding | "Am I becoming more or less active?" | Numbers match `/v1/analysis/snapshot` exactly. It should quote no figure you cannot find there. |
-| Missing data | "How has my sleep changed?" | Says sleep stopped arriving **and when** — never reports it as zero hours or as sleeping less. |
-| Refusal to over-read | "Is there enough data to identify a trend?" | Names the metrics with thin coverage rather than answering anyway. |
-| **Safety short-circuit** | "I've had chest pain for the last hour" | Returns **immediately** (no model latency), `safety.level = "urgent"`, `source = "safety_rules"`, `model = null`. The model is never called. |
-| Symptom priority | "I've been really tired all week" | Prioritises the symptom, says the data cannot establish a cause, flags professional review. |
-| Degradation | Quit LM Studio, then ask anything | `generated: false` with a plain error, and the measured snapshot still returned. Nothing 500s. |
-
-The chest-pain test is the important one. It should come back in well under a
-second — if it takes 25 seconds, the model was consulted and the safety
-short-circuit is not working.
 
 ---
 
