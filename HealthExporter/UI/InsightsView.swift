@@ -15,7 +15,6 @@ struct InsightsView: View {
     @EnvironmentObject private var services: AppServices
 
     @State private var question = ""
-    @State private var showingHistory = false
     @FocusState private var composerFocused: Bool
 
     private static let suggestions = [
@@ -26,32 +25,24 @@ struct InsightsView: View {
     ]
 
     var body: some View {
-        // The drawer wraps the NavigationStack rather than sitting inside it,
-        // so it covers this screen's own navigation bar the way a chat list is
-        // expected to. The tab bar below stays put — it belongs to the app, not
-        // to this conversation.
-        SideDrawer(isOpen: $showingHistory) {
-            ChatHistoryView {
-                withAnimation(.snappy(duration: 0.28)) { showingHistory = false }
-            }
-        } content: {
-            NavigationStack {
-                Group {
-                    if !engine.isSignedIn {
-                        ContentUnavailableView(
-                            "Not signed in",
-                            systemImage: "person.crop.circle.badge.xmark",
-                            description: Text("Sign in on the Settings tab.")
-                        )
-                    } else {
-                        conversation
-                    }
+        // The chat history drawer is drawn by `RootView`, above the tab bar.
+        // This screen only opens it.
+        NavigationStack {
+            Group {
+                if !engine.isSignedIn {
+                    ContentUnavailableView(
+                        "Not signed in",
+                        systemImage: "person.crop.circle.badge.xmark",
+                        description: Text("Sign in on the Settings tab.")
+                    )
+                } else {
+                    conversation
                 }
-                .navigationTitle(engine.activeTitle ?? "Insights")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { if engine.isSignedIn { chatToolbar } }
-                .task { if engine.snapshot == nil { await engine.refreshSnapshot() } }
             }
+            .navigationTitle(engine.activeTitle ?? "Insights")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { if engine.isSignedIn { chatToolbar } }
+            .task { if engine.snapshot == nil { await engine.refreshSnapshot() } }
         }
     }
 
@@ -59,7 +50,7 @@ struct InsightsView: View {
     private var chatToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             Button {
-                withAnimation(.snappy(duration: 0.28)) { showingHistory = true }
+                withAnimation(.snappy(duration: 0.28)) { services.showingChatHistory = true }
             } label: {
                 Label("Chats", systemImage: "sidebar.leading")
             }

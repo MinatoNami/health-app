@@ -13,6 +13,26 @@ struct RootView: View {
     @EnvironmentObject private var authorization: HealthAuthorization
 
     var body: some View {
+        // The drawer wraps the tabs rather than living inside one of them. A
+        // `TabView` draws its bar above the selected tab's content, so a drawer
+        // owned by `InsightsView` slid *under* the tab bar — covering the
+        // conversation while leaving the one bright control on screen sitting
+        // over the top of it.
+        SideDrawer(isOpen: $services.showingChatHistory) {
+            ChatHistoryView {
+                withAnimation(.snappy(duration: 0.28)) { services.showingChatHistory = false }
+            }
+        } content: {
+            tabs
+        }
+        // Switching tabs is navigating away from the conversation the drawer
+        // belongs to, so it should not still be hanging over the next screen.
+        .onChange(of: services.selectedTab) { _, _ in
+            services.showingChatHistory = false
+        }
+    }
+
+    private var tabs: some View {
         TabView(selection: $services.selectedTab) {
             StatusView()
                 .tabItem { Label("Summary", systemImage: "heart.text.square") }

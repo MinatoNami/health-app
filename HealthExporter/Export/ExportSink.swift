@@ -112,10 +112,25 @@ struct SinkConfiguration: Codable, Equatable {
     /// Derived from `baseURL` rather than configured separately so no endpoint
     /// can ever be pointed somewhere the health data is not already going.
     func apiEndpoint(_ path: String) -> URL? {
+        apiEndpoint(path, query: [])
+    }
+
+    /// Build a URL against the configured server.
+    ///
+    /// The query goes through `URLQueryItem` rather than being glued onto the
+    /// path, because `URLComponents.path` percent-encodes everything illegal in
+    /// a path — `?` included. Passing `"/v1/chat/sessions?limit=40"` here as a
+    /// single string produced `/v1/chat/sessions%3Flimit=40`, which the server
+    /// read as one long path that matches no route and answered 404. Every
+    /// endpoint before the chat list was query-free, so nothing had ever
+    /// stepped on it.
+    func apiEndpoint(_ path: String, query: [URLQueryItem]) -> URL? {
         guard var components = URLComponents(string: baseURL) else { return nil }
         guard components.scheme?.lowercased() == "https" else { return nil }
         guard let host = components.host, !host.isEmpty else { return nil }
         components.path = path
+        // Empty rather than `[]`: an empty array still yields a trailing "?".
+        components.queryItems = query.isEmpty ? nil : query
         return components.url
     }
 
@@ -567,12 +582,23 @@ final class HTTPSink: ExportSink {
     /// The history list. Titles only — a month of conversations is a lot of
     /// prose, and it does not need to travel every time the list is opened.
     func chatSessions(limit: Int = 40, offset: Int = 0, search: String = "") async -> Result<ChatSessionPage, Error> {
-        var query = "limit=\(limit)&offset=\(offset)&archived=0"
-        if !search.isEmpty,
-           let escaped = search.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            query += "&q=\(escaped)"
+        var query = [
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String(offset)),
+            // Tri-state on the server: absent means "both", so this has to be
+            // sent explicitly to leave archived chats out.
+            URLQueryItem(name: "archived", value: "0"),
+        ]
+        if !search.isEmpty {
+            // No hand-rolled escaping: `URLQueryItem` encodes the value, and a
+            // search containing `&` or `=` would otherwise split into extra
+            // parameters.
+            query.append(URLQueryItem(name: "q", value: search))
         }
-        return await fetch(configuration.apiEndpoint("/v1/chat/sessions?\(query)"), as: ChatSessionPage.self)
+        return await fetch(
+            configuration.apiEndpoint("/v1/chat/sessions", query: query),
+            as: ChatSessionPage.self
+        )
     }
 
     func chatProjects() async -> Result<ChatProjectList, Error> {

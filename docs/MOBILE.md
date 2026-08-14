@@ -122,7 +122,7 @@ piece of server state means adding it there, not fetching from a view.
 
 ---
 
-## Two things that will bite you
+## Three things that will bite you
 
 **Dates.** Django emits six fractional digits and `ISO8601DateFormatter` is only
 dependable for three — and it returns `nil` rather than throwing, so the failure
@@ -130,6 +130,12 @@ surfaces as a decode error on an unrelated field. `ServerDate` in
 `ChatHistory.swift` tries the formatter, then strips the fractional part and
 retries. Everything older in `HealthInsight.swift` decodes dates as strings and
 is unaffected.
+
+**Query strings.** `apiEndpoint` takes them as `[URLQueryItem]`, not glued onto
+the path. `URLComponents.path` percent-encodes everything illegal in a path —
+`?` included — so passing `"/v1/chat/sessions?limit=40"` as one string yields
+`/v1/chat/sessions%3Flimit=40` and a 404. Every endpoint before the chat list
+was query-free, so nothing had ever stepped on it.
 
 **New files need Xcode project entries.** The project uses explicit file
 references, not synchronised folders, so a new `.swift` file needs four entries

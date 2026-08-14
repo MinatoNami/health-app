@@ -136,6 +136,14 @@ final class AppServices: ObservableObject {
     /// notification tap can change it — the tap arrives at the app delegate,
     /// long before any view is in a position to react.
     @Published var selectedTab: Tab = .status
+    /// Whether the chat history drawer is out.
+    ///
+    /// Here rather than inside `InsightsView` because the drawer has to cover
+    /// the tab bar, and the tab bar is drawn by the `TabView` *above* whatever
+    /// a tab's own view puts on screen. Owned at the root, it slides over
+    /// everything; owned in the tab, it slid underneath the one control that
+    /// stayed bright.
+    @Published var showingChatHistory = false
     /// Set when Insights was opened from the morning alert, so it can lead with
     /// the brief rather than the general screen.
     @Published var showBriefOnOpen = false

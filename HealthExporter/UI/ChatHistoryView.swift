@@ -174,7 +174,14 @@ struct ChatHistoryView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        // Without this a `Button` inside a `List` tints its entire label with
+        // the accent colour, so every chat title read as a link. The row is
+        // still tappable across its full width — that is what the content shape
+        // above is for.
+        .buttonStyle(.plain)
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) {
                 Task { await engine.deleteChat(chat.id) }
