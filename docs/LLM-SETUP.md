@@ -160,7 +160,8 @@ curl -sk 'https://alena-server.tail03bec9.ts.net/v1/chat/messages?limit=20' \
 Filters: `session`, `project` (id or `none`), `since`/`until` (ISO timestamps —
 percent-encode the `+` or it arrives as a space; the endpoint restores it either
 way), `generated=1` for the turns a model actually answered, `generated=0` for
-the ones that failed, and `q` for a substring of the question. Rows come oldest
+the ones that failed, `rated=0` for the ones you have not judged yet,
+`rating=up`/`rating=down` for a verdict, and `q` for a substring of the question. Rows come oldest
 first so a loop can read forward from the last `created_at` it saw, and `total`
 is counted before paging. `retention_days` is in every response, because a
 caller that assumes it is reading the whole history will quietly take the last

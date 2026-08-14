@@ -62,7 +62,7 @@ both display where processing happens, and say "an external service at
 
 Not your records. The model receives a **prepared summary**: per-metric averages
 over the last 7 days and the preceding 28, with units, valid-day counts and
-confidence — plus whatever it fetches through eight read-only tools that return
+confidence — plus whatever it fetches through twelve read-only tools that return
 the same kind of computed figures.
 
 It has no database credentials, no SQL, and no access to individual samples.
@@ -97,6 +97,7 @@ been deleted.
 | Questions and generated answers | `INSIGHT_RETENTION_DAYS`, 30 by default, then deleted |
 | Chats and their titles | As above — a chat is deleted once retention has emptied it |
 | Conversation summaries (compaction) | Cleared once the questions they were written from have expired |
+| Your ratings and notes on answers | Stored on the answer, so they expire with it |
 | Project names and standing context | Until you delete the project. It is text you wrote, not health data |
 | The snapshot an answer was built from | **Never stored** — recomputed on demand |
 | Database backups | 30 days, encrypted with AES-256 |

@@ -98,10 +98,16 @@ class InsightTurnAdmin(admin.ModelAdmin):
     able to see what was actually said.
     """
 
-    list_display = ("created_at", "session", "question", "model_name", "latency_ms", "error")
-    list_filter = ("model_name",)
-    search_fields = ("question",)
-    readonly_fields = tuple(f.name for f in InsightTurn._meta.fields)
+    list_display = (
+        "created_at", "session", "question", "model_name", "latency_ms", "rating", "error",
+    )
+    list_filter = ("model_name", "rating")
+    search_fields = ("question", "note")
+    # Everything except the feedback, which is the one field a person sets by
+    # hand rather than a record of what happened.
+    readonly_fields = tuple(
+        f.name for f in InsightTurn._meta.fields if f.name not in ("rating", "note")
+    )
     actions = ("prune_now",)
 
     def has_add_permission(self, request):

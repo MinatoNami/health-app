@@ -108,6 +108,19 @@ export const api = {
   compactChatSession: (id) =>
     request(`/v1/chat/sessions/${id}/compact`, { method: 'POST', body: '{}' }),
 
+  // What you thought of one answer. `rating` is 1, -1, or null to clear; the
+  // note is the half worth having, because "used the wrong sleep window" is
+  // something you can act on and a bare thumbs-down is not.
+  rateMessage: (turnId, body) =>
+    request(`/v1/chat/messages/${turnId}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // A URL rather than a fetch, for the same reason the CSV export is: handing
+  // it to the browser as a normal download lets it name and save the file.
+  chatExportUrl: (id, format = 'md') => `/v1/chat/sessions/${id}/export.${format}`,
+
   // Flat across every conversation, oldest first, with the safety verdict, the
   // tools that ran and the model that answered attached to each turn. This is
   // the one to read from a script when scoring answers.

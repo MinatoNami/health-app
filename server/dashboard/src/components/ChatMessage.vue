@@ -17,7 +17,35 @@ const props = defineProps({
   turn: { type: Object, required: true },
 })
 
+const emit = defineEmits(['rate'])
+
 const showDetail = ref(false)
+const noteOpen = ref(false)
+const draft = ref('')
+
+/* Only a stored turn can be rated — a rating needs a row to live on, and the
+ * turn id only exists once the answer has been persisted. Questions asked with
+ * "don't remember this" therefore have no thumbs, which is correct: there is
+ * nothing to attach an opinion to. */
+const turnId = computed(() => props.turn.result?.turn_id ?? null)
+const rating = computed(() => props.turn.result?.rating ?? null)
+const note = computed(() => props.turn.result?.note || '')
+
+function rate(value) {
+  // A second press on the same thumb clears it. People mis-tap, and a rating
+  // you cannot take back is one nobody trusts enough to give.
+  emit('rate', turnId.value, { rating: rating.value === value ? null : value })
+}
+
+function openNote() {
+  draft.value = note.value
+  noteOpen.value = true
+}
+
+function saveNote() {
+  emit('rate', turnId.value, { note: draft.value })
+  noteOpen.value = false
+}
 
 const answer = computed(() => props.turn.result?.answer)
 const safety = computed(() => props.turn.result?.safety || {})
@@ -97,15 +125,59 @@ const detailCount = computed(
         </p>
       </template>
 
-      <p class="meta">
-        <template v-if="model">
-          {{ (model.latency_ms / 1000).toFixed(0) }}s · {{ model.name }}
-        </template>
-        <template v-else-if="turn.result?.source === 'safety_rules'">
-          Reviewed guidance — no model was consulted.
-        </template>
-        <template v-else-if="turn.result">No model ran.</template>
-      </p>
+      <div class="footer">
+        <p class="meta">
+          <template v-if="model">
+            {{ (model.latency_ms / 1000).toFixed(0) }}s · {{ model.name }}
+          </template>
+          <template v-else-if="turn.result?.source === 'safety_rules'">
+            Reviewed guidance — no model was consulted.
+          </template>
+          <template v-else-if="turn.result">No model ran.</template>
+        </p>
+
+        <!-- Rating sits with the answer, not in a survey afterwards. The
+             judgement is worth most while the answer is still on screen and
+             you can still see what it got wrong. -->
+        <div v-if="turnId" class="rate">
+          <button
+            class="thumb" :class="{ on: rating === 1 }"
+            :aria-pressed="rating === 1" title="Useful"
+            @click="rate(1)"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M5 14V7l3.5-5c.9 0 1.5.7 1.3 1.6L9.2 6H13c.8 0 1.3.8 1.1 1.5l-1.4 5c-.2.6-.7 1.5-1.5 1.5H5ZM2 7h2v7H2Z"
+                    fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button
+            class="thumb" :class="{ on: rating === -1 }"
+            :aria-pressed="rating === -1" title="Not useful"
+            @click="rate(-1)"
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path d="M11 2v7l-3.5 5c-.9 0-1.5-.7-1.3-1.6L6.8 10H3c-.8 0-1.3-.8-1.1-1.5l1.4-5C3.5 2.9 4 2 4.8 2H11Zm3 0h-2v7h2Z"
+                    fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button class="linkbtn notebtn" @click="openNote">
+            {{ note ? 'Edit note' : 'Note' }}
+          </button>
+        </div>
+      </div>
+
+      <p v-if="note && !noteOpen" class="yournote">{{ note }}</p>
+
+      <div v-if="noteOpen" class="noteedit">
+        <textarea
+          v-model="draft" rows="2" maxlength="2000"
+          placeholder="What was wrong or right about this answer?"
+        />
+        <div class="noteactions">
+          <button class="linkbtn" @click="noteOpen = false">Cancel</button>
+          <button class="linkbtn" @click="saveNote">Save</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -173,7 +245,39 @@ const detailCount = computed(
 }
 .review span { display: block; color: var(--text-secondary); }
 
-.meta { margin: 9px 0 0; font-size: 11px; color: var(--text-muted); }
+.meta { margin: 0; font-size: 11px; color: var(--text-muted); }
+
+.footer {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 9px; flex-wrap: wrap;
+}
+.footer .meta { flex: 1; min-width: 0; }
+
+.rate { display: flex; align-items: center; gap: 2px; flex: none; }
+.thumb {
+  display: grid; place-items: center; width: 24px; height: 24px;
+  border: 0; border-radius: 6px; background: none; color: var(--text-muted);
+}
+.thumb:hover { background: var(--page); color: var(--text-primary); }
+/* Colour plus fill, never colour alone — the pressed state is also carried by
+   aria-pressed and by the button staying filled. */
+.thumb.on { background: var(--accent-soft); color: var(--accent); }
+.notebtn { margin-left: 4px; font-size: 11px; }
+
+.yournote {
+  margin: 8px 0 0; padding: 7px 10px;
+  border-left: 2px solid var(--accent); background: var(--page);
+  border-radius: 0 6px 6px 0;
+  font-size: 12.5px; line-height: 1.45; color: var(--text-secondary);
+}
+
+.noteedit { margin-top: 9px; }
+.noteedit textarea {
+  width: 100%; font-family: inherit; font-size: 12.5px; line-height: 1.45;
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--page); color: var(--text-primary); resize: vertical;
+}
+.noteactions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 6px; }
 
 .pending { color: var(--text-secondary); display: flex; align-items: center; gap: 9px; }
 .dots { display: inline-flex; gap: 3px; }

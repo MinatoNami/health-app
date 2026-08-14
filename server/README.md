@@ -134,7 +134,9 @@ be deleted before the first sync ever shipped it.
 | GET/POST | `/v1/chat/sessions` | session/bearer | The sidebar's list; start a chat |
 | GET/PATCH/DELETE | `/v1/chat/sessions/<uuid>` | session/bearer | One transcript; rename, file, delete |
 | POST | `/v1/chat/sessions/<uuid>/compact` | session/bearer | Fold older turns into a summary (runs the model) |
+| GET | `/v1/chat/sessions/<uuid>/export.md\|.json` | session/bearer | One conversation as a file |
 | GET | `/v1/chat/messages` | session/bearer | Flat message export, filterable and paginated |
+| POST | `/v1/chat/messages/<id>/feedback` | session/bearer | Rate one answer, and say why |
 | POST | `/v1/health/batches` | Bearer | Ingest an NDJSON batch |
 | GET | `/v1/health/ping` | Bearer | Cheap probe — powers Test Connection |
 | GET | `/v1/health/stats` | Bearer | Per-device counts, top metrics |
@@ -325,7 +327,7 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-324 tests. The suite runs on SQLite so it needs no database server; the ingest
+348 tests. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
@@ -504,6 +506,35 @@ of the signal, which is why the endpoint returns it and why a bearer token is
 enough to read it. Oldest-first is not a style choice: a loop reads forward from
 where it stopped, and newest-first paging shifts every offset each time a
 question is asked.
+
+**The verdict is the missing half, and it comes from you.** Every answer in the
+dashboard carries a thumb and a note, saved through
+`POST /v1/chat/messages/<id>/feedback` (`{"rating": 1 | -1 | null, "note": "…"}`).
+The note is the part worth having: *"used the wrong sleep window"* is something
+you can act on, where a hundred bare thumbs-down tell you the score and not the
+reason. Filter the export by `rated=0` to find what you have not judged yet, or
+`rating=down` to pull the failures with their tool calls and safety verdict
+attached:
+
+```bash
+curl -sH "Authorization: Bearer $TOKEN" \
+  'https://<host>/v1/chat/messages?rating=down&limit=200'
+```
+
+It is a dedicated path rather than a `PATCH` on the message because the rest of
+a turn stays read-only — being able to reproduce a generated health claim later
+is the whole reason to store one. Feedback is a judgement recorded alongside it,
+not a licence to edit it. And it lives on the turn, so **it expires with the
+turn**: rate as you go and export regularly, or raise `INSIGHT_RETENTION_DAYS`.
+
+**One conversation can also leave as a file**, through
+`/v1/chat/sessions/<uuid>/export.md` or `.json` — Markdown for reading or
+printing, JSON for everything the row holds. The Markdown carries the confidence,
+the limitations and the review flag alongside each answer, because an answer
+separated from its caveats is exactly the artefact this system spends its effort
+not producing. The extension is in the path rather than a `?format=` parameter:
+DRF reserves that name for content negotiation, so `?format=md` would resolve to
+"a renderer called md" and 404 while `?format=json` worked by accident.
 
 ### Running and testing it
 

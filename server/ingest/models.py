@@ -486,9 +486,32 @@ class InsightTurn(models.Model):
     error = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
+    # What the person thought of the answer.
+    #
+    # The only field on this model somebody sets by hand, and the only one that
+    # can be changed after the fact — everything else is a record of what
+    # happened and editing it would destroy the reason to keep it. This is the
+    # signal a feedback loop is actually built on: the rest of the row says what
+    # the system did, and this says whether it was any good.
+    #
+    # `note` matters more than the thumb. "Used the wrong sleep window" is
+    # something you can act on; a bare thumbs-down over a hundred answers tells
+    # you the score and not the reason.
+    class Rating(models.IntegerChoices):
+        DOWN = -1, "Not useful"
+        UP = 1, "Useful"
+
+    rating = models.SmallIntegerField(
+        null=True, blank=True, choices=Rating.choices, db_index=True
+    )
+    note = models.TextField(blank=True)
+    rated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ("-created_at",)
         indexes = [models.Index(fields=["session", "created_at"])]
+
+    NOTE_CHARS = 2000
 
     @staticmethod
     def retention_days() -> int:
@@ -544,7 +567,22 @@ class InsightTurn(models.Model):
             "completion_tokens": self.completion_tokens,
             "error": self.error,
             "created_at": self.created_at.isoformat(),
+            "rating": self.rating,
+            "note": self.note,
+            "rated_at": self.rated_at.isoformat() if self.rated_at else None,
         }
+
+    def set_feedback(self, rating, note: str) -> None:
+        """Record what somebody thought of this answer.
+
+        Clearing is a first-class outcome rather than an oversight: people
+        mis-tap, and a rating you cannot take back is one nobody trusts enough
+        to give. `rated_at` goes with it, so an un-rated turn does not look like
+        one that was rated at some point and then blanked.
+        """
+        self.rating = rating
+        self.note = (note or "")[: self.NOTE_CHARS]
+        self.rated_at = timezone.now() if (rating is not None or self.note) else None
 
     def __str__(self):
         return f"{self.created_at:%Y-%m-%d %H:%M} {self.question[:60]}"

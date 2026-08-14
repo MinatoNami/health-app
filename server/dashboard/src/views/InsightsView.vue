@@ -34,6 +34,7 @@ const activeId = ref(null)
 const loadingList = ref(false)
 const loadingChat = ref(false)
 const search = ref('')
+const showArchived = ref(false)
 const drawerOpen = ref(false)
 const editing = ref(null)   // project whose instructions are open
 // Which project a not-yet-created chat will be filed under. Held separately
@@ -108,7 +109,11 @@ async function load() {
 async function loadSessions() {
   loadingList.value = true
   try {
-    sessions.value = (await api.chatSessions({ q: search.value, archived: 0 })).sessions
+    // `archived` is left off entirely when showing everything — the filter is
+    // tri-state on the server, and sending 1 would show *only* archived chats.
+    const params = { q: search.value }
+    if (!showArchived.value) params.archived = 0
+    sessions.value = (await api.chatSessions(params)).sessions
   } catch (e) {
     error.value = e.message
   } finally {
@@ -131,6 +136,12 @@ async function loadProjects() {
  * from the live one within a release. */
 function fromStored(message) {
   return {
+    // The live ask payload calls it `turn_id`; the stored row calls it `id`.
+    // Normalised here so one renderer handles both and the rating control does
+    // not have to know which path it is looking at.
+    turn_id: message.id,
+    rating: message.rating ?? null,
+    note: message.note || '',
     answer: message.answer,
     safety: message.safety || {},
     tool_calls: message.tool_calls || [],
@@ -141,6 +152,25 @@ function fromStored(message) {
     // Not stored, so inferred from the one thing that produces it: the safety
     // layer answering an urgent question without calling a model at all.
     source: message.safety?.level === 'urgent' ? 'safety_rules' : undefined,
+  }
+}
+
+/* Records a thumb or a note against one answer.
+ *
+ * The bubble is updated from the server's response rather than optimistically:
+ * this is the data a feedback loop is built on, and a thumb that looks saved
+ * but is not would poison it quietly. */
+async function rate(turnId, body) {
+  const index = turns.value.findIndex((t) => t.result?.turn_id === turnId)
+  if (index === -1) return
+  try {
+    const updated = await api.rateMessage(turnId, body)
+    turns.value[index] = {
+      ...turns.value[index],
+      result: { ...turns.value[index].result, rating: updated.rating, note: updated.note },
+    }
+  } catch (e) {
+    error.value = e.message
   }
 }
 
@@ -340,6 +370,21 @@ const moveSession = (session, projectId) =>
     await Promise.all([loadSessions(), loadProjects()])
   })
 
+/* Archiving is the answer to "I am done with this but do not want it gone".
+ * Deleting is the other answer, and keeping them as separate gestures is what
+ * makes the destructive one safe to offer at all. */
+const archiveSession = (session, archived) =>
+  guard(async () => {
+    await api.updateChatSession(session.id, { archived })
+    if (archived && !showArchived.value && session.id === activeId.value) newChat()
+    await loadSessions()
+  })
+
+function toggleArchived(value) {
+  showArchived.value = value
+  loadSessions()
+}
+
 const createProject = (name) =>
   guard(async () => {
     await api.createChatProject({ name })
@@ -381,15 +426,18 @@ onMounted(load)
       :active-id="activeId"
       :loading="loadingList"
       :retention-days="status?.retention_days ?? null"
+      :show-archived="showArchived"
       @new-chat="newChat()"
       @open="openSession"
       @rename="renameSession"
       @delete="deleteSession"
       @move="moveSession"
+      @archive="archiveSession"
       @create-project="createProject"
       @edit-project="editing = { ...$event }"
       @delete-project="deleteProject"
       @search="onSearch"
+      @show-archived="toggleArchived"
     />
     <div v-if="drawerOpen" class="scrim" @click="drawerOpen = false" />
 
@@ -405,6 +453,11 @@ onMounted(load)
           v-if="contextUse" class="ctx" :class="{ tight: contextUse.pct >= 80 }"
           :title="`Last prompt used about ${contextUse.last_prompt_tokens.toLocaleString()} of ${contextUse.limit_tokens.toLocaleString()} tokens`"
         >{{ contextUse.pct }}% context</span>
+        <a
+          v-if="activeId && turns.length" class="linkbtn compact"
+          :href="api.chatExportUrl(activeId, 'md')"
+          title="Download this conversation as Markdown"
+        >Download</a>
         <button
           v-if="activeId" class="linkbtn compact"
           :disabled="!canCompact"
@@ -432,7 +485,7 @@ onMounted(load)
           </p>
 
           <template v-for="(turn, i) in turns" :key="i">
-            <ChatMessage :turn="turn" />
+            <ChatMessage :turn="turn" @rate="rate" />
             <!-- The line where the model's memory of this chat becomes a
                  summary. Everything above it is still here to read — that is
                  the whole point of keeping the transcript out of it. -->

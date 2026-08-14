@@ -22,11 +22,12 @@ const props = defineProps({
   activeId: { type: String, default: null },
   loading: { type: Boolean, default: false },
   retentionDays: { type: Number, default: null },
+  showArchived: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
-  'new-chat', 'open', 'rename', 'delete', 'move',
-  'create-project', 'edit-project', 'delete-project', 'search',
+  'new-chat', 'open', 'rename', 'delete', 'move', 'archive',
+  'create-project', 'edit-project', 'delete-project', 'search', 'show-archived',
 ])
 
 const search = ref('')
@@ -101,6 +102,19 @@ function move(session, event) {
   emit('move', session, raw === '' ? null : Number(raw))
 }
 
+function archive(session) {
+  menuFor.value = null
+  emit('archive', session, !session.archived)
+}
+
+function exportChat(session, format) {
+  menuFor.value = null
+  // A plain navigation rather than a fetch: the response is an attachment, so
+  // the browser saves it under the name the server chose instead of us
+  // rebuilding a blob and a filename on this side.
+  window.location.href = `/v1/chat/sessions/${session.id}/export.${format}`
+}
+
 function newProject() {
   const name = window.prompt('Name this project')
   if (name?.trim()) emit('create-project', name.trim())
@@ -165,6 +179,7 @@ function newProject() {
             @click="emit('open', s)"
           >
             <span class="title">{{ s.title }}</span>
+            <span v-if="s.archived" class="archived" title="Archived">archived</span>
           </button>
           <button
             class="dots" aria-label="Chat options"
@@ -180,6 +195,9 @@ function newProject() {
                 <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
               </select>
             </label>
+            <button @click="exportChat(s, 'md')">Download as Markdown</button>
+            <button @click="exportChat(s, 'json')">Download as JSON</button>
+            <button @click="archive(s)">{{ s.archived ? 'Unarchive' : 'Archive' }}</button>
             <button class="danger" @click="remove(s)">Delete</button>
           </div>
         </div>
@@ -191,12 +209,21 @@ function newProject() {
       </p>
     </div>
 
-    <!-- Stated, not buried in Settings. A history panel that silently drops
-         conversations after a month reads as data loss the first time somebody
-         notices, and as a broken feature the second. -->
-    <p v-if="retentionDays" class="retention">
-      Chats are deleted after {{ retentionDays }} days.
-    </p>
+    <div class="foot">
+      <label class="archivetoggle">
+        <input
+          type="checkbox" :checked="showArchived"
+          @change="emit('show-archived', $event.target.checked)"
+        />
+        <span>Show archived</span>
+      </label>
+      <!-- Stated, not buried in Settings. A history panel that silently drops
+           conversations after a month reads as data loss the first time
+           somebody notices, and as a broken feature the second. -->
+      <p v-if="retentionDays" class="retention">
+        Chats are deleted after {{ retentionDays }} days.
+      </p>
+    </div>
   </aside>
 </template>
 
@@ -301,9 +328,19 @@ function newProject() {
 .addproject { display: block; margin: 2px 6px 12px; }
 .empty-line { margin: 6px 9px; font-size: 12px; color: var(--text-muted); }
 
-.retention {
-  margin: 0; padding: 9px 12px;
-  border-top: 1px solid var(--border);
-  font-size: 11px; color: var(--text-muted);
+.foot { border-top: 1px solid var(--border); padding: 8px 12px 9px; }
+
+.archivetoggle {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--text-secondary); cursor: pointer;
 }
+.archivetoggle input { accent-color: var(--series-1); margin: 0; }
+
+.archived {
+  display: inline-block; margin-top: 2px;
+  font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.retention { margin: 6px 0 0; font-size: 11px; color: var(--text-muted); }
 </style>

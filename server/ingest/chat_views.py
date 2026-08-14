@@ -34,11 +34,15 @@ about that record are not the more sensitive half. A token obtained by signing
 in carries an owner and is scoped to that person like any session.
 """
 
+import json
 import logging
+import re
 
 from django.core.exceptions import ValidationError
 from django.db.models import Count, Q
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.decorators import (
@@ -367,6 +371,146 @@ def session_compact(request, session_id):
     return Response({**outcome, "session": session.as_dict()})
 
 
+def _slug(text: str) -> str:
+    keep = [c.lower() if c.isalnum() else "-" for c in (text or "")]
+    return re.sub(r"-+", "-", "".join(keep)).strip("-")[:60] or "chat"
+
+
+def _markdown(session: ChatSession, turns: list[InsightTurn]) -> str:
+    """One conversation as something readable outside this app.
+
+    Markdown rather than the JSON next door because the two are for different
+    people: JSON is for whatever scores these answers, and this is for reading,
+    pasting into a note, or taking to an appointment. The caveats travel with
+    it — an answer separated from its confidence and its limitations is exactly
+    the artefact this system spends its effort not producing.
+    """
+    lines = [f"# {session.title or 'Chat'}", ""]
+    if session.project:
+        lines.append(f"**Project:** {session.project.name}")
+    lines.append(f"**Started:** {session.created_at:%Y-%m-%d %H:%M}")
+    lines.append(f"**Messages:** {len(turns)}")
+    lines += [
+        "",
+        "> Wellness guidance generated from this person's own recorded data.",
+        "> Not medical advice, and not a clinical record.",
+        "",
+    ]
+
+    if session.summary:
+        lines += [
+            "## Earlier in this conversation",
+            "",
+            f"_{session.summary_turns} messages, summarised to fit the model's context. "
+            "The messages themselves are below._",
+            "",
+            session.summary,
+            "",
+        ]
+
+    for turn in turns:
+        lines += ["---", "", f"### {turn.question or 'Weekly review'}", ""]
+        lines.append(f"_{turn.created_at:%Y-%m-%d %H:%M}_")
+        lines.append("")
+
+        answer = turn.answer or {}
+        if turn.error:
+            lines += [f"**No answer:** {turn.error}", ""]
+        if answer.get("summary"):
+            lines += [answer["summary"], ""]
+        if answer.get("period_examined"):
+            lines += [f"*Period examined: {answer['period_examined']}*", ""]
+
+        if answer.get("observations"):
+            lines.append("**Observations**")
+            lines.append("")
+            for item in answer["observations"]:
+                lines.append(f"- {item.get('statement', '')}")
+                if item.get("evidence"):
+                    lines.append(f"  - Evidence: {item['evidence']}")
+                if item.get("confidence"):
+                    lines.append(f"  - Confidence: {item['confidence']}")
+            lines.append("")
+
+        if answer.get("actions"):
+            lines += ["**Suggestions**", ""]
+            for item in answer["actions"]:
+                lines.append(
+                    f"- {item.get('action', '')} — {item.get('reason', '')} "
+                    f"({item.get('timeframe', '')})"
+                )
+            lines.append("")
+
+        if answer.get("limitations"):
+            lines += ["**Limits of this answer**", ""]
+            lines += [f"- {item}" for item in answer["limitations"]]
+            lines.append("")
+
+        if answer.get("professional_review_recommended"):
+            lines += [
+                "> **Worth raising with a healthcare professional.** "
+                + (answer.get("professional_review_reason") or ""),
+                "",
+            ]
+
+        meta = []
+        if turn.model_name:
+            meta.append(f"model {turn.model_name}")
+        if turn.latency_ms:
+            meta.append(f"{turn.latency_ms / 1000:.0f}s")
+        if turn.tool_calls:
+            meta.append(f"{len(turn.tool_calls)} tool call(s)")
+        if turn.rating is not None:
+            meta.append(f"rated {'useful' if turn.rating > 0 else 'not useful'}")
+        if meta:
+            lines += [f"<sub>{' · '.join(meta)}</sub>", ""]
+        if turn.note:
+            lines += [f"> Your note: {turn.note}", ""]
+
+    return "\n".join(lines)
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def session_export(request, session_id, fmt: str):
+    """One conversation, as a file.
+
+    `.md` for something a person reads, `.json` for everything the row holds.
+    Served as an attachment so the browser saves it under a name that says which
+    conversation it was, rather than the UUID.
+    """
+    session = get_object_or_404(_sessions(request).select_related("project"), pk=session_id)
+    turns = list(session.turns.order_by("created_at"))
+    stem = f"{_slug(session.title)}-{session.created_at:%Y%m%d}"
+    fmt = (fmt or "md").lower()
+
+    if fmt == "json":
+        body = json.dumps(
+            {
+                **session.as_dict(message_count=len(turns)),
+                "project": session.project.as_dict() if session.project else None,
+                "messages": [turn.as_dict() for turn in turns],
+                "exported_at": timezone.now().isoformat(),
+                "retention_days": InsightTurn.retention_days(),
+            },
+            indent=2,
+        )
+        response = HttpResponse(body, content_type="application/json")
+    elif fmt == "md":
+        response = HttpResponse(
+            _markdown(session, turns), content_type="text/markdown; charset=utf-8"
+        )
+    else:
+        return Response(
+            {"detail": "export must end in .md or .json"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
+    response["Content-Disposition"] = f'attachment; filename="{stem}.{fmt}"'
+    return response
+
+
 # --------------------------------------------------------------------------
 # Messages — the flat, filterable export
 # --------------------------------------------------------------------------
@@ -440,6 +584,25 @@ def messages(request):
     elif generated is False:
         queryset = queryset.filter(answer__isnull=True)
 
+    # `rated` splits judged from unjudged, `rating` picks a side. Both matter to
+    # a feedback loop and they are not the same question: "what have I not got
+    # round to rating?" is how you find the next batch to look at.
+    rated = _flag(request, "rated")
+    if rated is True:
+        queryset = queryset.filter(rating__isnull=False)
+    elif rated is False:
+        queryset = queryset.filter(rating__isnull=True)
+
+    rating = (request.query_params.get("rating") or "").strip().lower()
+    if rating in ("up", "1"):
+        queryset = queryset.filter(rating=InsightTurn.Rating.UP)
+    elif rating in ("down", "-1"):
+        queryset = queryset.filter(rating=InsightTurn.Rating.DOWN)
+    elif rating:
+        return Response(
+            {"detail": "rating must be 'up' or 'down'"}, status=status.HTTP_400_BAD_REQUEST
+        )
+
     search = (request.query_params.get("q") or "").strip()
     if search:
         queryset = queryset.filter(question__icontains=search)
@@ -470,6 +633,49 @@ def messages(request):
             # Stated in the payload because it bounds what this endpoint can
             # ever return. A caller that assumes it is reading the full history
             # will quietly train on the last 30 days and call it everything.
+            # Ratings live on the turn, so they expire with it — rate as you go
+            # and export regularly, or raise the window.
             "retention_days": InsightTurn.retention_days(),
         }
     )
+
+
+@api_view(["POST"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def message_feedback(request, turn_id: int):
+    """Record what you thought of one answer.
+
+    A dedicated path rather than a PATCH on the message, because the rest of a
+    turn is a record of what happened and must stay read-only — being able to
+    reproduce a generated health claim later is the whole reason to store one.
+    This adds a judgement alongside it; it does not edit it.
+
+    `rating` is 1, -1, or null to clear. `note` is the half worth having: "used
+    the wrong sleep window" is something you can act on, where a hundred bare
+    thumbs-down tell you the score and not the reason.
+    """
+    turn = get_object_or_404(_turns(request), pk=turn_id)
+
+    raw = request.data.get("rating", "keep")
+    if raw == "keep":
+        rating = turn.rating
+    elif raw in (None, "", "none"):
+        rating = None
+    else:
+        try:
+            rating = int(raw)
+        except (TypeError, ValueError):
+            rating = None
+            raw = "bad"
+        if raw == "bad" or rating not in InsightTurn.Rating.values:
+            return Response(
+                {"detail": "rating must be 1, -1, or null"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    note = turn.note if "note" not in request.data else str(request.data.get("note") or "")
+    turn.set_feedback(rating, note)
+    turn.save(update_fields=["rating", "note", "rated_at"])
+    return Response(turn.as_dict())

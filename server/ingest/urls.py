@@ -56,5 +56,21 @@ urlpatterns = [
         chat_views.session_compact,
         name="chat-session-compact",
     ),
+    # The extension is in the path, like `/v1/export/records.csv`, and not a
+    # `?format=` parameter — DRF reserves that name for content negotiation, so
+    # `?format=md` resolves to "a renderer called md", finds none, and 404s. It
+    # is a quiet trap: `?format=json` works by accident because that renderer
+    # does exist, which makes the endpoint look half-broken rather than
+    # misnamed.
+    path(
+        "v1/chat/sessions/<uuid:session_id>/export.<str:fmt>",
+        chat_views.session_export,
+        name="chat-session-export",
+    ),
     path("v1/chat/messages", chat_views.messages, name="chat-messages"),
+    path(
+        "v1/chat/messages/<int:turn_id>/feedback",
+        chat_views.message_feedback,
+        name="chat-message-feedback",
+    ),
 ]

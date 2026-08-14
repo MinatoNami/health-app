@@ -964,6 +964,266 @@ class CompactEndpointTests(InsightTestCase):
         self.assertIn(429, codes)
 
 
+class FeedbackTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+        self.session = ChatSession.objects.create(owner=self.user, title="Sleep")
+        self.turn = InsightTurn.objects.create(
+            session=self.session, owner=self.user, question="How is my sleep?", answer=GOOD_INSIGHT
+        )
+
+    def rate(self, body, turn=None):
+        return self.client.post(
+            f"/v1/chat/messages/{(turn or self.turn).pk}/feedback",
+            data=json.dumps(body),
+            content_type="application/json",
+        )
+
+    def test_an_answer_can_be_marked_useful(self):
+        body = self.rate({"rating": 1}).json()
+
+        self.turn.refresh_from_db()
+        self.assertEqual(body["rating"], 1)
+        self.assertEqual(self.turn.rating, InsightTurn.Rating.UP)
+        self.assertIsNotNone(self.turn.rated_at)
+
+    def test_a_rating_can_be_taken_back(self):
+        """People mis-tap, and a rating you cannot take back is one nobody
+        trusts enough to give."""
+        self.rate({"rating": -1})
+
+        body = self.rate({"rating": None}).json()
+
+        self.turn.refresh_from_db()
+        self.assertIsNone(body["rating"])
+        self.assertIsNone(self.turn.rating)
+        self.assertIsNone(self.turn.rated_at)
+
+    def test_a_note_can_be_left_without_a_thumb(self):
+        """The note is the half worth having — a hundred bare thumbs-down tell
+        you the score and not the reason."""
+        body = self.rate({"note": "Used the wrong sleep window."}).json()
+
+        self.turn.refresh_from_db()
+        self.assertEqual(body["note"], "Used the wrong sleep window.")
+        self.assertIsNone(self.turn.rating)
+        self.assertIsNotNone(self.turn.rated_at)
+
+    def test_rating_and_note_are_independent(self):
+        """Sending one must not blank the other: the UI saves the thumb the
+        moment it is pressed and the note when it is written."""
+        self.rate({"rating": -1})
+        self.rate({"note": "Sleep window was wrong."})
+
+        self.turn.refresh_from_db()
+        self.assertEqual(self.turn.rating, InsightTurn.Rating.DOWN)
+        self.assertEqual(self.turn.note, "Sleep window was wrong.")
+
+    def test_a_long_note_is_truncated_rather_than_rejected(self):
+        self.rate({"note": "x" * 9000})
+
+        self.turn.refresh_from_db()
+        self.assertEqual(len(self.turn.note), InsightTurn.NOTE_CHARS)
+
+    def test_a_nonsense_rating_is_a_400(self):
+        for value in (7, "brilliant", 0.5):
+            self.assertEqual(self.rate({"rating": value}).status_code, 400, value)
+
+    def test_the_answer_itself_stays_read_only(self):
+        """Feedback is a judgement recorded alongside a turn, not a licence to
+        edit it — being able to reproduce a generated health claim later is the
+        whole reason to store one."""
+        self.rate({"rating": 1, "question": "something else", "answer": {"summary": "rewritten"}})
+
+        self.turn.refresh_from_db()
+        self.assertEqual(self.turn.question, "How is my sleep?")
+        self.assertEqual(self.turn.answer["summary"], GOOD_INSIGHT["summary"])
+
+    def test_rating_somebody_elses_answer_is_a_404(self):
+        stranger = User.objects.create_user(username="other", password="other-p4ssw0rd-x")
+        theirs = InsightTurn.objects.create(owner=stranger, question="not yours")
+
+        self.assertEqual(self.rate({"rating": 1}, turn=theirs).status_code, 404)
+
+    def test_feedback_travels_with_the_export(self):
+        self.rate({"rating": -1, "note": "Wrong window."})
+
+        row = self.client.get("/v1/chat/messages").json()["messages"][0]
+
+        self.assertEqual(row["rating"], -1)
+        self.assertEqual(row["note"], "Wrong window.")
+        self.assertIsNotNone(row["rated_at"])
+
+    def test_filtering_the_export_by_verdict(self):
+        good = InsightTurn.objects.create(
+            session=self.session, owner=self.user, question="good one", answer=GOOD_INSIGHT
+        )
+        good.set_feedback(1, "")
+        good.save()
+        self.rate({"rating": -1})
+
+        up = self.client.get("/v1/chat/messages?rating=up").json()
+        down = self.client.get("/v1/chat/messages?rating=down").json()
+
+        self.assertEqual([m["question"] for m in up["messages"]], ["good one"])
+        self.assertEqual([m["question"] for m in down["messages"]], ["How is my sleep?"])
+
+    def test_finding_what_has_not_been_rated_yet(self):
+        """"What have I not got round to judging?" is how you find the next
+        batch to look at."""
+        InsightTurn.objects.create(
+            session=self.session, owner=self.user, question="unjudged", answer=GOOD_INSIGHT
+        )
+        self.rate({"rating": 1})
+
+        unrated = self.client.get("/v1/chat/messages?rated=0").json()
+
+        self.assertEqual([m["question"] for m in unrated["messages"]], ["unjudged"])
+
+    def test_a_nonsense_rating_filter_is_a_400(self):
+        self.assertEqual(self.client.get("/v1/chat/messages?rating=sideways").status_code, 400)
+
+
+class SessionExportTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+        self.project = ChatProject.objects.create(name="Marathon", owner=self.user)
+        self.session = ChatSession.objects.create(
+            owner=self.user, project=self.project, title="Long runs"
+        )
+        self.turn = InsightTurn.objects.create(
+            session=self.session,
+            owner=self.user,
+            question="How were my long runs?",
+            answer=GOOD_INSIGHT,
+            model_name="test-model",
+            latency_ms=8000,
+        )
+
+    def get(self, fmt="md"):
+        return self.client.get(f"/v1/chat/sessions/{self.session.pk}/export.{fmt}")
+
+    def test_markdown_carries_the_answer_and_its_caveats(self):
+        """An answer separated from its confidence and its limitations is
+        exactly the artefact this system spends its effort not producing."""
+        body = self.get().content.decode()
+
+        self.assertIn("# Long runs", body)
+        self.assertIn("**Project:** Marathon", body)
+        self.assertIn(GOOD_INSIGHT["summary"], body)
+        self.assertIn(GOOD_INSIGHT["observations"][0]["evidence"], body)
+        self.assertIn(GOOD_INSIGHT["limitations"][0], body)
+        self.assertIn("Not medical advice", body)
+
+    def test_markdown_is_served_as_a_named_download(self):
+        response = self.get()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/markdown", response["Content-Type"])
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertIn("long-runs-", response["Content-Disposition"])
+
+    def test_a_title_with_punctuation_still_makes_a_filename(self):
+        self.session.title = "Why is my HRV down?! / low?"
+        self.session.save()
+
+        disposition = self.get()["Content-Disposition"]
+
+        self.assertNotIn("?", disposition.split("filename=")[1])
+        self.assertIn("why-is-my-hrv-down-low-", disposition)
+
+    def test_json_carries_the_whole_row(self):
+        body = json.loads(self.get("json").content)
+
+        self.assertEqual(body["title"], "Long runs")
+        self.assertEqual(body["project"]["name"], "Marathon")
+        self.assertEqual(body["messages"][0]["model_name"], "test-model")
+        self.assertEqual(body["retention_days"], InsightTurn.retention_days())
+
+    def test_a_compacted_chat_says_so_and_still_exports_every_message(self):
+        self.session.summary = "Earlier: they asked about pacing."
+        self.session.summary_turns = 4
+        self.session.save()
+
+        body = self.get().content.decode()
+
+        self.assertIn("Earlier: they asked about pacing.", body)
+        self.assertIn("4 messages, summarised", body)
+        # The messages are still there — compaction never rewrote the transcript.
+        self.assertIn("How were my long runs?", body)
+
+    def test_a_note_is_exported_with_the_answer_it_is_about(self):
+        self.turn.set_feedback(-1, "Used the wrong window.")
+        self.turn.save()
+
+        body = self.get().content.decode()
+
+        self.assertIn("Used the wrong window.", body)
+        self.assertIn("rated not useful", body)
+
+    def test_an_unknown_format_is_a_400(self):
+        self.assertEqual(self.get("pdf").status_code, 400)
+
+    def test_exporting_somebody_elses_chat_is_a_404(self):
+        stranger = User.objects.create_user(username="other", password="other-p4ssw0rd-x")
+        theirs = ChatSession.objects.create(owner=stranger, title="Theirs")
+
+        self.assertEqual(
+            self.client.get(f"/v1/chat/sessions/{theirs.pk}/export.md").status_code, 404
+        )
+
+
+class ArchiveTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+        self.live = ChatSession.objects.create(owner=self.user, title="Live")
+        self.filed = ChatSession.objects.create(owner=self.user, title="Filed", archived=True)
+
+    def titles(self, query=""):
+        return [s["title"] for s in self.client.get(f"/v1/chat/sessions{query}").json()["sessions"]]
+
+    def test_archiving_hides_a_chat_without_deleting_it(self):
+        """Archiving is the answer to "I am done with this but do not want it
+        gone". Keeping it separate from delete is what makes offering the
+        destructive one safe."""
+        InsightTurn.objects.create(session=self.live, owner=self.user, question="kept")
+
+        self.client.patch(
+            f"/v1/chat/sessions/{self.live.pk}",
+            data=json.dumps({"archived": True}),
+            content_type="application/json",
+        )
+
+        self.assertNotIn("Live", self.titles("?archived=0"))
+        self.assertEqual(InsightTurn.objects.filter(session=self.live).count(), 1)
+
+    def test_the_default_listing_shows_everything(self):
+        """The filter is tri-state, so leaving it off must not silently mean
+        one of the two states."""
+        self.assertEqual(sorted(self.titles()), ["Filed", "Live"])
+
+    def test_asking_for_archived_shows_only_those(self):
+        self.assertEqual(self.titles("?archived=1"), ["Filed"])
+
+    def test_unarchiving_puts_it_back(self):
+        self.client.patch(
+            f"/v1/chat/sessions/{self.filed.pk}",
+            data=json.dumps({"archived": False}),
+            content_type="application/json",
+        )
+
+        self.assertIn("Filed", self.titles("?archived=0"))
+
+
 class ChatRetentionTests(TestCase):
     def expire(self, *rows):
         stale = timezone.now() - timedelta(days=InsightTurn.retention_days() + 1)
