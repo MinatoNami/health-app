@@ -1,6 +1,7 @@
 import hashlib
 import os
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.conf import settings
@@ -273,6 +274,136 @@ class AlertState(models.Model):
         return f"{self.key} ({'resolved' if self.resolved_at else 'open'})"
 
 
+class ChatProject(models.Model):
+    """A folder of related conversations, with instructions they all inherit.
+
+    The grouping is the cheap half. The reason a project is a database row
+    rather than a label on the sidebar is `instructions`: standing context that
+    is prepended to the system prompt for every session inside it, so "I am
+    training for a half marathon in October" is typed once instead of at the top
+    of every chat. That is the only thing here the model actually reads, and it
+    is deliberately free text the user wrote about themselves — never anything
+    derived from their health records.
+    """
+
+    name = models.CharField(max_length=120)
+    instructions = models.TextField(
+        blank=True,
+        help_text="Standing context prepended to the system prompt for every session "
+        "in this project.",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="chat_projects",
+        null=True,
+        blank=True,
+    )
+    archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+
+    def as_dict(self, session_count: int | None = None) -> dict:
+        payload = {
+            "id": self.pk,
+            "name": self.name,
+            "instructions": self.instructions,
+            "archived": self.archived,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+        if session_count is not None:
+            payload["session_count"] = session_count
+        return payload
+
+    def __str__(self):
+        return self.name
+
+
+class ChatSession(models.Model):
+    """One conversation: an ordered run of turns that share a context window.
+
+    The primary key is a UUID rather than a sequence. Session ids travel in URLs
+    the browser keeps and in the export endpoint's filters, and a guessable
+    integer over health conversations is an enumeration invitation for no gain.
+
+    `last_message_at` is set at creation and touched on every stored turn, so
+    the sidebar can order by recency without a subquery and a brand-new empty
+    chat still sorts to the top where the person just clicked. Ordering on
+    `updated_at` instead would reshuffle the list every time a title was edited.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        ChatProject,
+        on_delete=models.SET_NULL,
+        related_name="sessions",
+        null=True,
+        blank=True,
+        help_text="Null means the chat sits outside any project.",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="chat_sessions",
+        null=True,
+        blank=True,
+    )
+    title = models.CharField(max_length=200, blank=True)
+    # Set once somebody renames a chat by hand, which stops the first-question
+    # autotitle from overwriting their name on the next message.
+    title_locked = models.BooleanField(default=False)
+    archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_message_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        ordering = ("-last_message_at",)
+        indexes = [models.Index(fields=["owner", "-last_message_at"])]
+
+    TITLE_CHARS = 60
+
+    def autotitle(self, question: str) -> None:
+        """Name an untitled chat after its first question.
+
+        Deterministic on purpose. Asking the model for a title would mean a
+        second generation — tens of seconds on a local GPU — to produce
+        something the first line of the question already says.
+        """
+        if self.title_locked or self.title:
+            return
+        text = " ".join((question or "").split())
+        if not text:
+            return
+        self.title = text if len(text) <= self.TITLE_CHARS else text[: self.TITLE_CHARS - 1] + "…"
+
+    def touch(self, when=None) -> None:
+        self.last_message_at = when or timezone.now()
+
+    def as_dict(self, *, message_count: int | None = None, preview: str | None = None) -> dict:
+        payload = {
+            "id": str(self.pk),
+            "title": self.title or "New chat",
+            "project_id": self.project_id,
+            "archived": self.archived,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "last_message_at": self.last_message_at.isoformat(),
+        }
+        if message_count is not None:
+            payload["message_count"] = message_count
+        if preview is not None:
+            payload["preview"] = preview
+        return payload
+
+    def __str__(self):
+        return self.title or f"chat {self.pk}"
+
+
 class InsightTurn(models.Model):
     """One question and the answer that came back.
 
@@ -284,8 +415,20 @@ class InsightTurn(models.Model):
     second copy would only widen what a deletion request has to reach. §8 of the
     integration notes also asks that prompts and responses not be retained
     indefinitely, which `prune` enforces.
+
+    `session` is nullable because turns predate sessions and because the phone
+    and the `weekly_review` command both ask questions without opening a chat.
+    A turn with no session is still a stored question subject to retention; it
+    simply does not appear in the sidebar.
     """
 
+    session = models.ForeignKey(
+        ChatSession,
+        on_delete=models.CASCADE,
+        related_name="turns",
+        null=True,
+        blank=True,
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -304,6 +447,7 @@ class InsightTurn(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        indexes = [models.Index(fields=["session", "created_at"])]
 
     @staticmethod
     def retention_days() -> int:
@@ -314,13 +458,24 @@ class InsightTurn(models.Model):
 
     @classmethod
     def prune(cls) -> int:
+        """Delete expired turns, then the chats left holding nothing.
+
+        The second half is not tidiness. Retention deletes the messages but the
+        session row survives it, so a sidebar built on sessions alone would list
+        month-old conversations that open empty — which reads as data loss
+        rather than as the retention policy working. Sessions younger than the
+        cutoff are left alone even when empty: that is a chat someone just
+        opened and has not typed in yet.
+        """
         cutoff = timezone.now() - timedelta(days=cls.retention_days())
         deleted, _ = cls.objects.filter(created_at__lt=cutoff).delete()
+        ChatSession.objects.filter(turns__isnull=True, created_at__lt=cutoff).delete()
         return deleted
 
     def as_dict(self) -> dict:
         return {
             "id": self.pk,
+            "session_id": str(self.session_id) if self.session_id else None,
             "question": self.question,
             "answer": self.answer,
             "safety": self.safety,

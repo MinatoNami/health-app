@@ -17,6 +17,7 @@ import logging
 from datetime import date
 
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from rest_framework import status
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import (
@@ -30,10 +31,11 @@ from rest_framework.response import Response
 
 from . import correlations, health_analysis, patterns
 from .analytics_views import AUTH, AnalyticsThrottle, _FixedScopeThrottle
+from .auth import owner_of as _owner
 from .llm import client as llm_client
 from .llm import service as llm_service
 from .llm import tools as llm_tools
-from .models import Goal, InsightTurn
+from .models import ChatSession, Goal, InsightTurn
 
 log = logging.getLogger(__name__)
 
@@ -57,21 +59,6 @@ def _as_of(request) -> date | None:
         return date.fromisoformat(raw)
     except ValueError:
         return None
-
-
-def _owner(request):
-    """The person behind the request, session or token.
-
-    A bearer token authenticates a *device*, not a person, so `request.user` is
-    a `TokenUser` with no primary key. But a token obtained by signing in
-    records who signed in — and using that is what stops a question asked on the
-    phone from being invisible in the dashboard's own history.
-    """
-    user = getattr(request, "user", None)
-    if getattr(user, "pk", None):
-        return user
-    token = getattr(request, "auth", None)
-    return getattr(token, "owner", None)
 
 
 # --------------------------------------------------------------------------
@@ -361,6 +348,27 @@ def llm_status(request):
 MAX_QUESTION_CHARS = 1000
 
 
+class UnknownSession(Exception):
+    pass
+
+
+def _session(request):
+    """The conversation this question belongs to, if one was named.
+
+    Resolved through the caller's own scope, so a session id that belongs to
+    somebody else is indistinguishable from one that does not exist. Absent
+    entirely is fine and stays the default: the phone asks one-off questions and
+    should not have to invent a chat to do it.
+    """
+    raw = request.data.get("session_id")
+    if not raw:
+        return None
+    session = llm_service.scoped(ChatSession.objects.all(), _owner(request)).filter(pk=raw).first()
+    if session is None:
+        raise UnknownSession
+    return session
+
+
 @api_view(["POST"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
@@ -375,6 +383,10 @@ def ask(request):
             {"detail": f"question is longer than {MAX_QUESTION_CHARS} characters"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    try:
+        session = _session(request)
+    except (UnknownSession, ValidationError):
+        return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
 
     payload = llm_service.answer(
         question,
@@ -382,7 +394,10 @@ def ask(request):
         tz_name=_tz(request) or request.data.get("tz"),
         owner=_owner(request),
         persist=request.data.get("remember") is not False,
+        # A session carries its own history without being asked; `follow_up`
+        # stays for callers that have no session, which is how the phone asks.
         follow_up=bool(request.data.get("follow_up")),
+        session=session,
     )
     return Response(payload)
 
@@ -392,9 +407,15 @@ def ask(request):
 @permission_classes([IsAuthenticated])
 @throttle_classes([InsightThrottle])
 def weekly_review(request):
+    try:
+        session = _session(request)
+    except (UnknownSession, ValidationError):
+        return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
     return Response(
         llm_service.weekly_review(
-            tz_name=_tz(request) or request.data.get("tz"), owner=_owner(request)
+            tz_name=_tz(request) or request.data.get("tz"),
+            owner=_owner(request),
+            session=session,
         )
     )
 

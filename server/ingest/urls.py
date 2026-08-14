@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import analytics_views, insight_views, session_views, views
+from . import analytics_views, chat_views, insight_views, session_views, views
 
 urlpatterns = [
     # Path fixed by the client: SinkConfiguration appends /v1/health/batches to
@@ -43,4 +43,13 @@ urlpatterns = [
     path("v1/insights/ask", insight_views.ask, name="insight-ask"),
     path("v1/insights/weekly", insight_views.weekly_review, name="insight-weekly"),
     path("v1/insights/history", insight_views.insight_history, name="insight-history"),
+    # Conversations: the sidebar's list, one chat's transcript, and the flat
+    # message export a feedback loop reads. `<uuid:...>` is doing real work —
+    # it 404s a malformed session id at the router instead of letting it raise
+    # out of the field inside the view.
+    path("v1/chat/projects", chat_views.projects, name="chat-projects"),
+    path("v1/chat/projects/<int:project_id>", chat_views.project_detail, name="chat-project"),
+    path("v1/chat/sessions", chat_views.sessions, name="chat-sessions"),
+    path("v1/chat/sessions/<uuid:session_id>", chat_views.session_detail, name="chat-session"),
+    path("v1/chat/messages", chat_views.messages, name="chat-messages"),
 ]

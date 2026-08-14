@@ -75,13 +75,38 @@ export const api = {
   // Model-backed. Slow by nature: a local model works through this for tens of
   // seconds, so callers must show that something is happening.
   insightStatus: () => request('/v1/insights/status'),
-  // `follow_up` replays the last couple of turns for continuity. Only their
-  // summaries — the figures are re-read from the snapshot every time, so the
-  // model cannot cite its own earlier prose back as a measurement.
+  // `session_id` puts the question in a conversation, which is what makes the
+  // server replay that chat's earlier turns. Only their summaries — the figures
+  // are re-read from the snapshot every time, so the model cannot cite its own
+  // earlier prose back as a measurement.
   ask: (body) => request('/v1/insights/ask', { method: 'POST', body: JSON.stringify(body) }),
-  weeklyReview: () => request('/v1/insights/weekly', { method: 'POST', body: '{}' }),
+  weeklyReview: (body = {}) =>
+    request('/v1/insights/weekly', { method: 'POST', body: JSON.stringify(body) }),
   insightHistory: () => request('/v1/insights/history'),
   forgetInsights: () => request('/v1/insights/history', { method: 'DELETE' }),
+
+  // Conversations. The list endpoint is deliberately separate from the
+  // transcript one: the sidebar reloads on every new chat and must not drag a
+  // month of message bodies with it.
+  chatProjects: () => request('/v1/chat/projects'),
+  createChatProject: (body) =>
+    request('/v1/chat/projects', { method: 'POST', body: JSON.stringify(body) }),
+  updateChatProject: (id, body) =>
+    request(`/v1/chat/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteChatProject: (id) => request(`/v1/chat/projects/${id}`, { method: 'DELETE' }),
+
+  chatSessions: (params = {}) => request(`/v1/chat/sessions?${qs(params)}`),
+  createChatSession: (body = {}) =>
+    request('/v1/chat/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  chatSession: (id) => request(`/v1/chat/sessions/${id}`),
+  updateChatSession: (id, body) =>
+    request(`/v1/chat/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteChatSession: (id) => request(`/v1/chat/sessions/${id}`, { method: 'DELETE' }),
+
+  // Flat across every conversation, oldest first, with the safety verdict, the
+  // tools that ran and the model that answered attached to each turn. This is
+  // the one to read from a script when scoring answers.
+  chatMessages: (params = {}) => request(`/v1/chat/messages?${qs(params)}`),
 
   // Deliberately a URL rather than a fetch: handing it to the browser as a
   // normal download lets it stream to disk. Fetching it would buffer the whole

@@ -71,6 +71,13 @@ Your questions are sent as you type them. If you describe a symptom, that text
 reaches the model — except when the safety rules classify it as urgent, in which
 case the model is **not called at all** and a reviewed response is returned.
 
+Inside a chat, the earlier turns of **that conversation** go with it, so a
+follow-up makes sense: your questions, and the summary line of each answer, up to
+`INSIGHT_HISTORY_TURNS` (6). Never the observations or the evidence, and never
+anything from a different conversation. If the chat is in a project, the standing
+context you wrote for that project is sent too — it is part of the prompt, so
+treat it as something the model reads every time.
+
 ---
 
 ## How long things are kept
@@ -80,6 +87,8 @@ case the model is **not called at all** and a reviewed response is returned.
 | Health records | Indefinitely, until you delete them |
 | Uploaded batch files (phone) | Pruned after delivery; archive trimmed automatically |
 | Questions and generated answers | `INSIGHT_RETENTION_DAYS`, 30 by default, then deleted |
+| Chats and their titles | As above — a chat is deleted once retention has emptied it |
+| Project names and standing context | Until you delete the project. It is text you wrote, not health data |
 | The snapshot an answer was built from | **Never stored** — recomputed on demand |
 | Database backups | 30 days, encrypted with AES-256 |
 | Application logs | Record counts, metric names and error reasons. No measurements. |
@@ -108,6 +117,12 @@ people miss:
 
 To delete only stored questions, without touching health records: the
 **Insights** tab's "Delete stored questions", or `DELETE /v1/insights/history`.
+That clears the chat list too, since a chat is its messages.
+
+To delete a single conversation and everything said in it: the ⋯ menu beside it
+in the sidebar, or `DELETE /v1/chat/sessions/<uuid>`. Deleting a *project*
+deliberately does not delete its chats — they are unfiled and stay reachable, so
+one mis-click cannot take months of conversations with it.
 
 To take your data with you: **Export** tab, or `/v1/export/records.csv`.
 

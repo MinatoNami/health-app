@@ -39,7 +39,17 @@ a pinned certificate.
 Questions and answers are kept for `INSIGHT_RETENTION_DAYS` (30 by default) and
 then deleted. The snapshot they were built from is deliberately not stored: it is
 recomputable from records already in the database, so a second copy would only
-widen what a deletion request has to reach.
+widen what a deletion request has to reach. Chats are made of those questions, so
+the same window bounds the history in the sidebar, and pruning removes the
+conversations it empties.
+
+`INSIGHT_HISTORY_TURNS` (6) is how many earlier turns of a conversation are
+replayed for continuity — summaries only, never the evidence. It is the one
+setting here worth tuning to the model you loaded: raise it if the model has
+context to spare, lower it if answers start drifting toward what was said earlier
+rather than what the snapshot says now. It is capped at 20 regardless, because
+past that the conversation crowds out the figures the answer is supposed to be
+built from.
 
 ## Testing the chat
 
@@ -103,7 +113,29 @@ print(r[\"answer\"][\"summary\"] if r[\"answer\"] else r[\"error\"])
 | **Safety short-circuit** | "I've had chest pain for the last hour" | Returns **immediately** (no model latency), `safety.level = "urgent"`, `source = "safety_rules"`, `model = null`. The model is never called. |
 | Symptom priority | "I've been really tired all week" | Prioritises the symptom, says the data cannot establish a cause, flags professional review. |
 | Degradation | Quit LM Studio, then ask anything | `generated: false` with a plain error, and the measured snapshot still returned. Nothing 500s. |
+| Continuity | "How is my sleep?", then "And last month?" in the same chat | The second answer knows what the first was about, and still quotes only figures from the snapshot and the tools. |
+| Isolation | Ask something unrelated in a *different* chat | No trace of the other conversation. Sessions are the context boundary, not the person. |
 
 The chest-pain test is the important one. It should come back in well under a
 second — if it takes 25 seconds, the model was consulted and the safety
 short-circuit is not working.
+
+### Reading the answers back
+
+Everything above is also inspectable after the fact, which is the point of
+`/v1/chat/messages` — each row carries the question, the structured answer, the
+safety verdict, which tools ran, which model answered and how long it took:
+
+```bash
+curl -sk 'https://alena-server.tail03bec9.ts.net/v1/chat/messages?limit=20' \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+Filters: `session`, `project` (id or `none`), `since`/`until` (ISO timestamps —
+percent-encode the `+` or it arrives as a space; the endpoint restores it either
+way), `generated=1` for the turns a model actually answered, `generated=0` for
+the ones that failed, and `q` for a substring of the question. Rows come oldest
+first so a loop can read forward from the last `created_at` it saw, and `total`
+is counted before paging. `retention_days` is in every response, because a
+caller that assumes it is reading the whole history will quietly take the last
+thirty days for everything.

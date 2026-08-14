@@ -55,3 +55,21 @@ class BearerTokenAuthentication(authentication.BaseAuthentication):
 
     def authenticate_header(self, request):
         return 'Bearer realm="health"'
+
+
+def owner_of(request):
+    """The person behind the request, session or token.
+
+    A bearer token authenticates a *device*, not a person, so `request.user` is
+    a `TokenUser` with no primary key. But a token obtained by signing in
+    records who signed in — and using that is what stops a question asked on the
+    phone from being invisible in the dashboard's own history.
+
+    Lives here rather than in a view module because three of them need the same
+    answer, and "whose request is this?" is an authentication question.
+    """
+    user = getattr(request, "user", None)
+    if getattr(user, "pk", None):
+        return user
+    token = getattr(request, "auth", None)
+    return getattr(token, "owner", None)

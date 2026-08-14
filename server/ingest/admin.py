@@ -1,7 +1,16 @@
 from django.contrib import admin
 from django.utils import timezone
 
-from .models import ApiToken, Batch, Device, Goal, InsightTurn, Record
+from .models import (
+    ApiToken,
+    Batch,
+    ChatProject,
+    ChatSession,
+    Device,
+    Goal,
+    InsightTurn,
+    Record,
+)
 
 
 @admin.register(Device)
@@ -66,6 +75,21 @@ class GoalAdmin(admin.ModelAdmin):
     search_fields = ("metric_slug", "label")
 
 
+@admin.register(ChatProject)
+class ChatProjectAdmin(admin.ModelAdmin):
+    list_display = ("name", "owner", "archived", "updated_at")
+    list_filter = ("archived",)
+    search_fields = ("name", "instructions")
+
+
+@admin.register(ChatSession)
+class ChatSessionAdmin(admin.ModelAdmin):
+    list_display = ("title", "project", "owner", "archived", "last_message_at")
+    list_filter = ("archived", "project")
+    search_fields = ("title",)
+    readonly_fields = ("id", "created_at", "updated_at")
+
+
 @admin.register(InsightTurn)
 class InsightTurnAdmin(admin.ModelAdmin):
     """Read-only, and prunes on the schedule the model defines.
@@ -74,7 +98,7 @@ class InsightTurnAdmin(admin.ModelAdmin):
     able to see what was actually said.
     """
 
-    list_display = ("created_at", "question", "model_name", "latency_ms", "error")
+    list_display = ("created_at", "session", "question", "model_name", "latency_ms", "error")
     list_filter = ("model_name",)
     search_fields = ("question",)
     readonly_fields = tuple(f.name for f in InsightTurn._meta.fields)

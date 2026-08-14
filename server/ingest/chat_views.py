@@ -1,0 +1,442 @@
+"""Chat sessions, projects, and the stored messages inside them.
+
+`/v1/insights/ask` answers one question. These endpoints are what turn a run of
+those into something you can leave and come back to: a conversation with a name,
+optionally inside a project whose standing context every session in it inherits.
+
+Three things are worth knowing before changing anything here.
+
+**Sessions are the context boundary.** A question asked inside a session replays
+that session's earlier turns and nothing else. This is not a UI nicety — an
+owner's global last-N turns replayed into a named chat would carry last week's
+sleep question into a conversation about food and let the model answer as though
+it had been asked.
+
+**Retention still applies.** Messages are deleted after
+`INSIGHT_RETENTION_DAYS`, and `InsightTurn.prune` takes the emptied sessions with
+them. A chat history feature does not get to quietly become indefinite storage
+of health questions; `GET /v1/chat/messages` reports the window in its own
+response so anything reading it knows what it can and cannot see.
+
+**`/v1/chat/messages` is the export surface.** Flat, filterable and paginated
+across every session, returning the whole turn — question, structured answer,
+safety verdict, which tools ran, which model, how long it took, and what failed.
+That is the raw material for judging whether answers are any good, which is why
+it returns the machinery rather than just the prose, and why it accepts a bearer
+token: a feedback loop that has to drive a browser to read its own data is not
+one anybody keeps running.
+
+Bearer access is a deliberate widening of `/v1/insights/history`, which is
+session-only. It is defensible because a token scopes exactly as `_owned_by`
+already does, and because a CLI-minted token can already stream the entire
+health record through `/v1/export/records.csv` — the questions somebody asked
+about that record are not the more sensitive half. A token obtained by signing
+in carries an owner and is scoped to that person like any session.
+"""
+
+import logging
+
+from django.core.exceptions import ValidationError
+from django.db.models import Count, Q
+from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_datetime
+from rest_framework import status
+from rest_framework.decorators import (
+    api_view,
+    authentication_classes,
+    permission_classes,
+    throttle_classes,
+)
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from .analytics_views import AUTH, AnalyticsThrottle
+from .auth import owner_of as _owner
+from .llm import service as llm_service
+from .models import ChatProject, ChatSession, InsightTurn
+
+log = logging.getLogger(__name__)
+
+MAX_PROJECT_NAME = 120
+MAX_SESSION_TITLE = 200
+MAX_INSTRUCTIONS = 2000
+
+DEFAULT_SESSION_PAGE = 50
+MAX_SESSION_PAGE = 200
+DEFAULT_MESSAGE_PAGE = 100
+MAX_MESSAGE_PAGE = 500
+
+
+# --------------------------------------------------------------------------
+# Scoping
+# --------------------------------------------------------------------------
+
+
+def _sessions(request):
+    return llm_service.scoped(ChatSession.objects.all(), _owner(request))
+
+
+def _projects(request):
+    return llm_service.scoped(ChatProject.objects.all(), _owner(request))
+
+
+def _turns(request):
+    return llm_service.scoped(InsightTurn.objects.all(), _owner(request))
+
+
+def _paging(request, default: int, maximum: int) -> tuple[int, int] | None:
+    """(limit, offset), or None if either was not a number.
+
+    Returned rather than raised so the caller answers 400 with its own wording;
+    a page size that silently falls back to the default is how an export loop
+    quietly misses rows.
+    """
+    try:
+        limit = min(maximum, max(1, int(request.query_params.get("limit") or default)))
+        offset = max(0, int(request.query_params.get("offset") or 0))
+    except ValueError:
+        return None
+    return limit, offset
+
+
+def _flag(request, name: str) -> bool | None:
+    """Tri-state query flag: true, false, or "don't filter on this"."""
+    raw = request.query_params.get(name)
+    if raw is None or raw == "":
+        return None
+    return raw.lower() in ("1", "true", "yes")
+
+
+def _moment(raw: str):
+    """An ISO timestamp, tolerating the `+` a URL ate.
+
+    The round trip this endpoint exists for is: read `created_at` off a message,
+    pass it back as `since` next time. Do that without percent-encoding and the
+    `+` of `+00:00` arrives as a space, so a caller gets a 400 for handing back
+    a timestamp this API gave them. There is no valid ISO 8601 datetime with a
+    space in that position, so restoring it is unambiguous rather than lenient.
+    """
+    moment = parse_datetime(raw)
+    if moment is None and " " in raw:
+        head, _, tail = raw.rpartition(" ")
+        moment = parse_datetime(f"{head}+{tail}")
+    return moment
+
+
+# --------------------------------------------------------------------------
+# Projects
+# --------------------------------------------------------------------------
+
+
+@api_view(["GET", "POST"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def projects(request):
+    if request.method == "GET":
+        archived = _flag(request, "archived")
+        queryset = _projects(request).annotate(session_count=Count("sessions"))
+        if archived is not None:
+            queryset = queryset.filter(archived=archived)
+        return Response(
+            {"projects": [p.as_dict(session_count=p.session_count) for p in queryset]}
+        )
+
+    name = str(request.data.get("name") or "").strip()
+    if not name:
+        return Response({"detail": "name is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    project = ChatProject.objects.create(
+        name=name[:MAX_PROJECT_NAME],
+        instructions=str(request.data.get("instructions") or "")[:MAX_INSTRUCTIONS],
+        owner=_owner(request),
+    )
+    return Response(project.as_dict(session_count=0), status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def project_detail(request, project_id: int):
+    project = get_object_or_404(_projects(request), pk=project_id)
+
+    if request.method == "DELETE":
+        # The sessions survive and fall back to no project — `on_delete` is
+        # SET_NULL. Deleting a folder should not silently destroy months of
+        # conversations that happened to be filed in it; the chats stay
+        # reachable and can be deleted one at a time on purpose.
+        moved = project.sessions.count()
+        project.delete()
+        return Response({"status": "deleted", "sessions_unfiled": moved})
+
+    if request.method == "PATCH":
+        fields = []
+        if "name" in request.data:
+            name = str(request.data.get("name") or "").strip()
+            if not name:
+                return Response(
+                    {"detail": "name cannot be empty"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            project.name = name[:MAX_PROJECT_NAME]
+            fields.append("name")
+        if "instructions" in request.data:
+            project.instructions = str(request.data.get("instructions") or "")[
+                :MAX_INSTRUCTIONS
+            ]
+            fields.append("instructions")
+        if "archived" in request.data:
+            project.archived = bool(request.data.get("archived"))
+            fields.append("archived")
+        if fields:
+            project.save(update_fields=[*fields, "updated_at"])
+
+    return Response(project.as_dict(session_count=project.sessions.count()))
+
+
+# --------------------------------------------------------------------------
+# Sessions
+# --------------------------------------------------------------------------
+
+
+def _preview(session) -> str:
+    """The first question in the chat, for the sidebar's second line.
+
+    The *first* rather than the most recent: a title is already the opening
+    question truncated, and a preview showing the latest question would leave
+    the two lines saying nearly the same thing on a two-message chat.
+    """
+    turn = session.turns.order_by("created_at").first()
+    return (turn.question if turn else "") or ""
+
+
+def _session_list_payload(queryset) -> list[dict]:
+    queryset = queryset.annotate(message_count=Count("turns"))
+    return [
+        session.as_dict(message_count=session.message_count, preview=_preview(session))
+        for session in queryset
+    ]
+
+
+@api_view(["GET", "POST"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def sessions(request):
+    if request.method == "POST":
+        project = None
+        if request.data.get("project_id") is not None:
+            project = get_object_or_404(_projects(request), pk=request.data["project_id"])
+        title = str(request.data.get("title") or "").strip()[:MAX_SESSION_TITLE]
+        session = ChatSession.objects.create(
+            owner=_owner(request),
+            project=project,
+            title=title,
+            # A title given at creation is a name somebody chose, so the first
+            # question must not overwrite it.
+            title_locked=bool(title),
+        )
+        return Response(
+            session.as_dict(message_count=0, preview=""), status=status.HTTP_201_CREATED
+        )
+
+    page = _paging(request, DEFAULT_SESSION_PAGE, MAX_SESSION_PAGE)
+    if page is None:
+        return Response(
+            {"detail": "limit and offset must be numbers"}, status=status.HTTP_400_BAD_REQUEST
+        )
+    limit, offset = page
+
+    queryset = _sessions(request).select_related("project")
+
+    archived = _flag(request, "archived")
+    if archived is not None:
+        queryset = queryset.filter(archived=archived)
+
+    project_id = request.query_params.get("project")
+    if project_id == "none":
+        queryset = queryset.filter(project__isnull=True)
+    elif project_id:
+        try:
+            queryset = queryset.filter(project_id=int(project_id))
+        except ValueError:
+            return Response(
+                {"detail": "project must be an id or 'none'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    # Search covers the questions inside a chat as well as its title, because
+    # the title is only ever the first question — searching titles alone would
+    # miss everything anybody asked after the opening line. distinct() because
+    # the join multiplies a session by its matching turns.
+    search = (request.query_params.get("q") or "").strip()
+    if search:
+        queryset = queryset.filter(
+            Q(title__icontains=search) | Q(turns__question__icontains=search)
+        ).distinct()
+
+    total = queryset.count()
+    return Response(
+        {
+            "sessions": _session_list_payload(queryset[offset : offset + limit]),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def session_detail(request, session_id):
+    session = get_object_or_404(_sessions(request), pk=session_id)
+
+    if request.method == "DELETE":
+        # Cascades to the turns. This is the "delete this conversation" the
+        # sidebar offers, and it has to actually delete the messages — a chat
+        # that disappears from the list while its questions stay in the database
+        # is the kind of deletion that is worse than none.
+        deleted = session.turns.count()
+        session.delete()
+        return Response({"status": "deleted", "messages_deleted": deleted})
+
+    if request.method == "PATCH":
+        fields = []
+        if "title" in request.data:
+            title = str(request.data.get("title") or "").strip()[:MAX_SESSION_TITLE]
+            session.title = title
+            # Clearing the title hands naming back to the next question.
+            session.title_locked = bool(title)
+            fields += ["title", "title_locked"]
+        if "project_id" in request.data:
+            raw = request.data.get("project_id")
+            session.project = (
+                None if raw in (None, "", "none")
+                else get_object_or_404(_projects(request), pk=raw)
+            )
+            fields.append("project")
+        if "archived" in request.data:
+            session.archived = bool(request.data.get("archived"))
+            fields.append("archived")
+        if fields:
+            session.save(update_fields=[*fields, "updated_at"])
+
+    turns = list(session.turns.order_by("created_at"))
+    return Response(
+        {
+            **session.as_dict(message_count=len(turns), preview=_preview(session)),
+            "project": session.project.as_dict() if session.project else None,
+            "messages": [turn.as_dict() for turn in turns],
+            "retention_days": InsightTurn.retention_days(),
+        }
+    )
+
+
+# --------------------------------------------------------------------------
+# Messages — the flat, filterable export
+# --------------------------------------------------------------------------
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def messages(request):
+    """Stored turns across every session, oldest-newest, filterable.
+
+    Filters: `session`, `project` (id or `none`), `since`/`until` (ISO
+    timestamps), `generated=1` for turns a model actually answered, `q` for a
+    substring of the question. Paginated with `limit`/`offset`, and `total` is
+    the count *before* paging so a caller knows how far it has to walk.
+
+    Each row carries the session and project it belongs to. Denormalised on
+    purpose: the alternative is that anything scoring these answers has to hold
+    a session table in memory to know which conversation a message came from.
+    """
+    page = _paging(request, DEFAULT_MESSAGE_PAGE, MAX_MESSAGE_PAGE)
+    if page is None:
+        return Response(
+            {"detail": "limit and offset must be numbers"}, status=status.HTTP_400_BAD_REQUEST
+        )
+    limit, offset = page
+
+    queryset = _turns(request).select_related("session", "session__project")
+
+    session_id = request.query_params.get("session")
+    if session_id:
+        # Resolved through the scoped queryset rather than filtered on directly,
+        # so asking for somebody else's session is a 404 rather than an empty
+        # list that reads as "that conversation had no messages". The id arrives
+        # as a query parameter, so it has not been through the URL converter and
+        # a malformed one would otherwise raise out of the field.
+        try:
+            session = get_object_or_404(_sessions(request), pk=session_id)
+        except (ValidationError, ValueError):
+            return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
+        queryset = queryset.filter(session=session)
+
+    project_id = request.query_params.get("project")
+    if project_id == "none":
+        queryset = queryset.filter(session__project__isnull=True)
+    elif project_id:
+        try:
+            queryset = queryset.filter(session__project_id=int(project_id))
+        except ValueError:
+            return Response(
+                {"detail": "project must be an id or 'none'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    for name, lookup in (("since", "created_at__gte"), ("until", "created_at__lt")):
+        raw = request.query_params.get(name)
+        if not raw:
+            continue
+        moment = _moment(raw)
+        if moment is None:
+            return Response(
+                {"detail": f"{name} must be an ISO 8601 timestamp"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        queryset = queryset.filter(**{lookup: moment})
+
+    generated = _flag(request, "generated")
+    if generated is True:
+        queryset = queryset.filter(answer__isnull=False)
+    elif generated is False:
+        queryset = queryset.filter(answer__isnull=True)
+
+    search = (request.query_params.get("q") or "").strip()
+    if search:
+        queryset = queryset.filter(question__icontains=search)
+
+    total = queryset.count()
+    # Oldest first: a feedback loop reads forward from where it stopped, and
+    # newest-first paging shifts every offset each time a question is asked.
+    rows = queryset.order_by("created_at")[offset : offset + limit]
+
+    return Response(
+        {
+            "messages": [
+                {
+                    **turn.as_dict(),
+                    "session_title": turn.session.title if turn.session else None,
+                    "project_id": turn.session.project_id if turn.session else None,
+                    "project_name": (
+                        turn.session.project.name
+                        if turn.session and turn.session.project
+                        else None
+                    ),
+                }
+                for turn in rows
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            # Stated in the payload because it bounds what this endpoint can
+            # ever return. A caller that assumes it is reading the full history
+            # will quietly train on the last 30 days and call it everything.
+            "retention_days": InsightTurn.retention_days(),
+        }
+    )

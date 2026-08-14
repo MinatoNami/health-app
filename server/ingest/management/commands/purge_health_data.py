@@ -14,7 +14,16 @@ people forget.
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from ingest.models import AlertState, Batch, Device, Goal, InsightTurn, Record
+from ingest.models import (
+    AlertState,
+    Batch,
+    ChatProject,
+    ChatSession,
+    Device,
+    Goal,
+    InsightTurn,
+    Record,
+)
 
 
 class Command(BaseCommand):
@@ -38,6 +47,8 @@ class Command(BaseCommand):
             "batches": Batch.objects.count(),
             "goals": Goal.objects.count(),
             "stored questions": InsightTurn.objects.count(),
+            "chats": ChatSession.objects.count(),
+            "chat projects": ChatProject.objects.count(),
             "alerts": AlertState.objects.count(),
             "devices": Device.objects.count(),
         }
@@ -63,6 +74,9 @@ class Command(BaseCommand):
             Batch.objects.all().delete()
             Goal.objects.all().delete()
             InsightTurn.objects.all().delete()
+            # After the turns, so the cascade has nothing left to walk.
+            ChatSession.objects.all().delete()
+            ChatProject.objects.all().delete()
             AlertState.objects.all().delete()
             if not options["keep_devices"]:
                 Device.objects.all().delete()
