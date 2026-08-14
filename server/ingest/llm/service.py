@@ -823,6 +823,7 @@ def _persist(
             safety=payload.get("safety"),
             tool_calls=payload.get("tool_calls"),
             model_name=(payload.get("model") or {}).get("name", "")[:128],
+            prompt_version=prompts.VERSION,
             latency_ms=(payload.get("model") or {}).get("latency_ms") or 0,
             prompt_tokens=(payload.get("model") or {}).get("prompt_tokens") or 0,
             completion_tokens=(payload.get("model") or {}).get("completion_tokens") or 0,

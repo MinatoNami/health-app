@@ -73,4 +73,7 @@ urlpatterns = [
         chat_views.message_feedback,
         name="chat-message-feedback",
     ),
+    # How the answers are doing, grouped by the model and prompt that produced
+    # them. The comparison prompt_version exists for.
+    path("v1/chat/feedback", chat_views.feedback_summary, name="chat-feedback"),
 ]

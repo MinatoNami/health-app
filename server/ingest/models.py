@@ -476,6 +476,11 @@ class InsightTurn(models.Model):
     safety = models.JSONField(null=True, blank=True)
     tool_calls = models.JSONField(null=True, blank=True)
     model_name = models.CharField(max_length=128, blank=True)
+    # Digest of the prompt text this build sent. Without it, answers written
+    # before and after a prompt edit are indistinguishable in the export, and
+    # "did my change help?" can only ever be answered about a single undated
+    # blur of every answer ever given.
+    prompt_version = models.CharField(max_length=16, blank=True, db_index=True)
     latency_ms = models.IntegerField(default=0)
     # Reported by the model server, so exact rather than estimated. Kept for two
     # reasons: a feedback loop wants to know what an answer cost, and the
@@ -520,6 +525,26 @@ class InsightTurn(models.Model):
         except ValueError:
             return 30
 
+    @staticmethod
+    def keep_rated() -> bool:
+        """Whether a turn you rated outlives the retention window.
+
+        On by default, and that is a deliberate softening of §8 rather than an
+        oversight. Retention exists so health questions are not kept
+        indefinitely *by default*; a thumb or a note is the data subject — the
+        only person involved — explicitly marking one as worth keeping. Without
+        this the feedback loop can never hold more than thirty days of judged
+        answers, which caps it at roughly nothing.
+
+        `INSIGHT_KEEP_RATED=0` restores the stricter behaviour, and the
+        retention table in docs/PRIVACY.md says which is in force.
+        """
+        return os.environ.get("INSIGHT_KEEP_RATED", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+        )
+
     @classmethod
     def prune(cls) -> int:
         """Delete expired turns, then the chats left holding nothing.
@@ -532,7 +557,10 @@ class InsightTurn(models.Model):
         opened and has not typed in yet.
         """
         cutoff = timezone.now() - timedelta(days=cls.retention_days())
-        deleted, _ = cls.objects.filter(created_at__lt=cutoff).delete()
+        expired = cls.objects.filter(created_at__lt=cutoff)
+        if cls.keep_rated():
+            expired = expired.filter(rating__isnull=True, note="")
+        deleted, _ = expired.delete()
 
         # A compaction is generated *from* questions. Once the newest turn it
         # folded in has aged out, every question behind it is gone and the
@@ -562,6 +590,7 @@ class InsightTurn(models.Model):
             "safety": self.safety,
             "tool_calls": self.tool_calls,
             "model_name": self.model_name,
+            "prompt_version": self.prompt_version,
             "latency_ms": self.latency_ms,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,

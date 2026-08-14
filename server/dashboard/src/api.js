@@ -105,8 +105,14 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ tz: tz(), ...body }),
     }),
-  insightHistory: () => request('/v1/insights/history'),
+  // Reading stored questions moved to chatMessages below — same rows, with the
+  // conversation, tools, safety verdict and feedback attached. This is the
+  // delete-everything action, which has no equivalent there.
   forgetInsights: () => request('/v1/insights/history', { method: 'DELETE' }),
+
+  // How the answers are doing, grouped by the model and prompt version that
+  // produced them. Counts alone say something went wrong; the notes say what.
+  chatFeedback: (params = {}) => request(`/v1/chat/feedback?${qs(params)}`),
 
   // Conversations. The list endpoint is deliberately separate from the
   // transcript one: the sidebar reloads on every new chat and must not drag a

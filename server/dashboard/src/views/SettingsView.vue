@@ -13,6 +13,7 @@ const status = ref(null)
 const goals = ref([])
 const analysable = ref([])
 const quality = ref([])
+const feedback = ref(null)
 const error = ref('')
 const newGoal = ref({ metric_slug: '', target_value: '' })
 
@@ -33,6 +34,17 @@ async function load() {
   try {
     quality.value = (await api.quality()).metrics
   } catch { /* optional */ }
+  try {
+    feedback.value = await api.chatFeedback()
+  } catch { /* optional */ }
+}
+
+/* A ratio needs both sides to mean anything. Two thumbs-up out of two is not
+ * better than a hundred out of a hundred and twenty, so the count travels with
+ * the score everywhere it is shown. */
+function score(row) {
+  if (row.score === null) return '—'
+  return `${Math.round(row.score * 100)}%`
 }
 
 async function saveGoal() {
@@ -116,6 +128,77 @@ onMounted(load)
       </form>
     </section>
 
+    <section v-if="feedback" class="card">
+      <h3>Answer feedback</h3>
+      <p class="card-sub">
+        What you made of the answers, grouped by what produced them. This is the
+        comparison the prompt version exists for: rate as you go, change one
+        thing, and see whether the next batch reads better.
+      </p>
+
+      <dl>
+        <dt>Judged</dt>
+        <dd>
+          {{ feedback.overall.up + feedback.overall.down }} of
+          {{ feedback.overall.answers }} answers
+          <span class="muted">
+            {{ feedback.overall.up }} useful · {{ feedback.overall.down }} not
+          </span>
+        </dd>
+        <dt>Prompt now</dt>
+        <dd><code>{{ feedback.current_prompt_version }}</code></dd>
+        <dt>Ratings kept</dt>
+        <dd>
+          <template v-if="feedback.rated_turns_kept">
+            Answers you rated survive the {{ feedback.retention_days }}-day window.
+          </template>
+          <template v-else>
+            Deleted with everything else after {{ feedback.retention_days }} days.
+          </template>
+        </dd>
+      </dl>
+
+      <template v-for="group in [
+        { title: 'By model', rows: feedback.by_model, key: 'model_name' },
+        { title: 'By prompt version', rows: feedback.by_prompt_version, key: 'prompt_version' },
+      ]" :key="group.title">
+        <h4 v-if="group.rows.length > 1">{{ group.title }}</h4>
+        <table v-if="group.rows.length > 1" class="fb">
+          <tbody>
+            <tr v-for="row in group.rows" :key="row[group.key]">
+              <td class="name">
+                <code>{{ row[group.key] }}</code>
+                <span
+                  v-if="group.key === 'prompt_version' && row[group.key] === feedback.current_prompt_version"
+                  class="badge"
+                >current</span>
+              </td>
+              <td class="num">{{ score(row) }}</td>
+              <td class="num muted">{{ row.up }}↑ {{ row.down }}↓</td>
+              <td class="num muted">{{ row.answers }} answers</td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
+
+      <template v-if="feedback.recent_negative.length">
+        <h4>What you marked as not useful</h4>
+        <ul class="negatives">
+          <li v-for="item in feedback.recent_negative" :key="item.id">
+            <strong>{{ item.question || 'Weekly review' }}</strong>
+            <span v-if="item.note" class="note">{{ item.note }}</span>
+            <span class="muted">
+              {{ item.created_at.slice(0, 10) }} · {{ item.model_name || 'no model' }}
+              <template v-if="item.prompt_version"> · <code>{{ item.prompt_version }}</code></template>
+            </span>
+          </li>
+        </ul>
+      </template>
+      <p v-else-if="feedback.overall.answers" class="muted">
+        Nothing marked as unhelpful. Thumbs sit under every answer on the Insights tab.
+      </p>
+    </section>
+
     <section v-if="quality.length" class="card">
       <h3>Data quality</h3>
       <table class="data">
@@ -191,4 +274,24 @@ dd.warn { color: var(--warning-text); }
 .goal:last-child { border-bottom: 0; padding-bottom: 0; }
 .goal-form { display: flex; gap: 8px; flex-wrap: wrap; }
 .goal-form input { width: 100px; }
+
+.fb { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+.fb td { padding: 4px 0; border-bottom: 1px solid var(--gridline); font-size: 12.5px; }
+.fb tr:last-child td { border-bottom: 0; }
+.fb .name code { font-size: 11.5px; }
+.fb .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 10px; }
+
+.settings h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted); margin: 14px 0 4px; font-weight: 600;
+}
+
+.negatives { margin: 0; padding-left: 16px; }
+.negatives li { margin-bottom: 9px; font-size: 12.5px; line-height: 1.45; }
+.negatives strong { display: block; font-weight: 550; }
+.negatives .note {
+  display: block; color: var(--text-secondary);
+  border-left: 2px solid var(--accent); padding-left: 7px; margin: 3px 0;
+}
+.negatives .muted { display: block; font-size: 11px; }
 </style>

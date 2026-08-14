@@ -37,6 +37,7 @@ in carries an owner and is scoped to that person like any session.
 import json
 import logging
 import re
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
 from django.db.models import Count, Q
@@ -57,6 +58,7 @@ from rest_framework.response import Response
 from .analytics_views import AUTH, AnalyticsThrottle
 from .auth import owner_of as _owner
 from .insight_views import InsightThrottle
+from .llm import prompts
 from .llm import service as llm_service
 from .models import ChatProject, ChatSession, InsightTurn
 
@@ -625,6 +627,16 @@ def messages(request):
             {"detail": "rating must be 'up' or 'down'"}, status=status.HTTP_400_BAD_REQUEST
         )
 
+    # The whole point of recording a prompt version: pulling one side of a
+    # prompt change to compare against the other.
+    version = (request.query_params.get("prompt_version") or "").strip()
+    if version:
+        queryset = queryset.filter(prompt_version=version)
+
+    model_name = (request.query_params.get("model") or "").strip()
+    if model_name:
+        queryset = queryset.filter(model_name=model_name)
+
     search = (request.query_params.get("q") or "").strip()
     if search:
         queryset = queryset.filter(question__icontains=search)
@@ -633,6 +645,29 @@ def messages(request):
     # Oldest first: a feedback loop reads forward from where it stopped, and
     # newest-first paging shifts every offset each time a question is asked.
     rows = queryset.order_by("created_at")[offset : offset + limit]
+
+    rows = list(rows)
+    # One entry per conversation on this page rather than a copy of the summary
+    # on every row: a compaction runs to 150 words and repeating it beside each
+    # message would be most of the payload. Without it the export is not a
+    # faithful record of what the model saw — some of those turns were replaced
+    # by the summary in every later prompt.
+    seen_sessions = {}
+    for turn in rows:
+        if turn.session and turn.session_id not in seen_sessions:
+            seen_sessions[turn.session_id] = {
+                "id": str(turn.session_id),
+                "title": turn.session.title,
+                "project_id": turn.session.project_id,
+                "project_name": turn.session.project.name if turn.session.project else None,
+                "summary": turn.session.summary or None,
+                "summary_turns": turn.session.summary_turns,
+                "summary_through_at": (
+                    turn.session.summary_through_at.isoformat()
+                    if turn.session.summary_through_at
+                    else None
+                ),
+            }
 
     return Response(
         {
@@ -649,6 +684,7 @@ def messages(request):
                 }
                 for turn in rows
             ],
+            "sessions": list(seen_sessions.values()),
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -658,6 +694,95 @@ def messages(request):
             # Ratings live on the turn, so they expire with it — rate as you go
             # and export regularly, or raise the window.
             "retention_days": InsightTurn.retention_days(),
+        }
+    )
+
+
+MAX_FEEDBACK_EXAMPLES = 20
+
+
+def _tally(rows) -> dict:
+    up = sum(1 for r in rows if r["rating"] == InsightTurn.Rating.UP)
+    down = sum(1 for r in rows if r["rating"] == InsightTurn.Rating.DOWN)
+    return {
+        "answers": len(rows),
+        "up": up,
+        "down": down,
+        "unrated": len(rows) - up - down,
+        # None rather than 0 when nothing was rated: a score of zero and no
+        # opinion at all are different things, and a bar chart that renders them
+        # the same is how you conclude a prompt is failing when nobody judged it.
+        "score": round(up / (up + down), 2) if (up + down) else None,
+    }
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def feedback_summary(request):
+    """How the answers are doing, grouped by what produced them.
+
+    A rating on its own says an answer was bad. Grouped by model and by prompt
+    version it says something you can act on — that the last prompt edit made
+    things worse, or that swapping the model did nothing. That comparison is the
+    entire reason `prompt_version` is stored, and computing it here rather than
+    leaving every caller to reduce the export themselves is what makes it a
+    glance instead of a script.
+
+    `days` bounds the window; the default covers everything still retained.
+    """
+    try:
+        days = int(request.query_params.get("days") or 0)
+    except ValueError:
+        return Response({"detail": "days must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+
+    queryset = _turns(request).exclude(answer__isnull=True)
+    if days > 0:
+        queryset = queryset.filter(created_at__gte=timezone.now() - timedelta(days=days))
+
+    rows = list(queryset.values("rating", "model_name", "prompt_version"))
+
+    def grouped(key):
+        buckets: dict = {}
+        for row in rows:
+            buckets.setdefault(row[key] or "unknown", []).append(row)
+        return [
+            {key: name, **_tally(items)}
+            # Most-judged first: a version with two ratings is noise beside one
+            # with two hundred, and sorting by score would put the noise on top.
+            for name, items in sorted(buckets.items(), key=lambda kv: -len(kv[1]))
+        ]
+
+    negatives = (
+        queryset.filter(rating=InsightTurn.Rating.DOWN)
+        .select_related("session")
+        .order_by("-created_at")[:MAX_FEEDBACK_EXAMPLES]
+    )
+
+    return Response(
+        {
+            "overall": _tally(rows),
+            "by_model": grouped("model_name"),
+            "by_prompt_version": grouped("prompt_version"),
+            "current_prompt_version": prompts.VERSION,
+            # The actual complaints. Counts tell you something went wrong; these
+            # tell you what, which is the half you can do something about.
+            "recent_negative": [
+                {
+                    "id": turn.pk,
+                    "question": turn.question,
+                    "note": turn.note,
+                    "model_name": turn.model_name,
+                    "prompt_version": turn.prompt_version,
+                    "session_id": str(turn.session_id) if turn.session_id else None,
+                    "session_title": turn.session.title if turn.session else None,
+                    "created_at": turn.created_at.isoformat(),
+                }
+                for turn in negatives
+            ],
+            "retention_days": InsightTurn.retention_days(),
+            "rated_turns_kept": InsightTurn.keep_rated(),
         }
     )
 

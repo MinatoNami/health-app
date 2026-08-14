@@ -33,6 +33,7 @@ from . import correlations, health_analysis, patterns
 from .analytics_views import AUTH, AnalyticsThrottle, _FixedScopeThrottle
 from .auth import owner_of as _owner
 from .llm import client as llm_client
+from .llm import prompts as llm_prompts
 from .llm import service as llm_service
 from .llm import tools as llm_tools
 from .models import ChatProject, ChatSession, Goal, InsightTurn
@@ -348,6 +349,8 @@ def llm_status(request):
     # unanswerable from the UI.
     info["context_tokens"] = llm_service.context_tokens()
     info["history_turns"] = llm_service.session_turns()
+    # Which prompt this build sends, so a rating can be attributed to it.
+    info["prompt_version"] = llm_prompts.VERSION
     return Response(info)
 
 
@@ -481,21 +484,21 @@ def weekly_review(request):
     return Response(payload)
 
 
-@api_view(["GET", "DELETE"])
+@api_view(["DELETE"])
 @authentication_classes([SessionAuthentication])
 @permission_classes([IsAuthenticated])
 @throttle_classes([AnalyticsThrottle])
 def insight_history(request):
-    """Stored questions and answers, and a way to delete all of them.
+    """Delete every stored question and answer.
 
-    Session-only: this is a person's question history, and the phone's device
-    token authenticates a device rather than a person.
+    Reading them moved to `/v1/chat/messages`, which does the same job with the
+    conversation, the safety verdict, the tools and the feedback attached, and
+    can be paged. Two endpoints returning overlapping views of one table is how
+    they drift apart, so this one kept only the half that has no equivalent
+    anywhere else.
+
+    Session-only, unlike the rest of `/v1/chat`: this is irreversible deletion
+    of a person's whole question history, and the phone's device token
+    authenticates a device rather than a person.
     """
-    if request.method == "DELETE":
-        return Response({"deleted": llm_service.forget(_owner(request))})
-    return Response(
-        {
-            "turns": llm_service.history(_owner(request)),
-            "retention_days": InsightTurn.retention_days(),
-        }
-    )
+    return Response({"deleted": llm_service.forget(_owner(request))})

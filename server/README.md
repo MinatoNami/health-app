@@ -128,7 +128,7 @@ be deleted before the first sync ever shipped it.
 | GET | `/v1/insights/status` | session/bearer | Where summaries are processed |
 | POST | `/v1/insights/ask` | session/bearer | Ask a question (runs the model) |
 | POST | `/v1/insights/weekly` | session/bearer | Weekly review |
-| GET/DELETE | `/v1/insights/history` | session | Stored questions; permanent deletion |
+| DELETE | `/v1/insights/history` | session | Delete every stored question (reading moved to `/v1/chat/messages`) |
 | GET/POST | `/v1/chat/projects` | session/bearer | Folders of chats, and their standing context |
 | GET/PATCH/DELETE | `/v1/chat/projects/<id>` | session/bearer | Rename, re-instruct, delete (chats survive) |
 | GET/POST | `/v1/chat/sessions` | session/bearer | The sidebar's list; start a chat |
@@ -137,6 +137,7 @@ be deleted before the first sync ever shipped it.
 | GET | `/v1/chat/sessions/<uuid>/export.md\|.json` | session/bearer | One conversation as a file |
 | GET | `/v1/chat/messages` | session/bearer | Flat message export, filterable and paginated |
 | POST | `/v1/chat/messages/<id>/feedback` | session/bearer | Rate one answer, and say why |
+| GET | `/v1/chat/feedback` | session/bearer | Ratings grouped by model and prompt version |
 | POST | `/v1/health/batches` | Bearer | Ingest an NDJSON batch |
 | GET | `/v1/health/ping` | Bearer | Cheap probe — powers Test Connection |
 | GET | `/v1/health/stats` | Bearer | Per-device counts, top metrics |
@@ -327,7 +328,7 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-370 tests. The suite runs on SQLite so it needs no database server; the ingest
+397 tests. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
@@ -541,8 +542,29 @@ curl -sH "Authorization: Bearer $TOKEN" \
 It is a dedicated path rather than a `PATCH` on the message because the rest of
 a turn stays read-only — being able to reproduce a generated health claim later
 is the whole reason to store one. Feedback is a judgement recorded alongside it,
-not a licence to edit it. And it lives on the turn, so **it expires with the
-turn**: rate as you go and export regularly, or raise `INSIGHT_RETENTION_DAYS`.
+not a licence to edit it.
+
+**A rating outlives the retention window.** `INSIGHT_KEEP_RATED` defaults to on,
+which is a deliberate softening of §8 rather than an oversight: retention exists
+so health questions are not kept indefinitely *by default*, and a thumb is the
+only person involved explicitly marking one as worth keeping. Without it the
+feedback loop could never hold more than thirty days of judged answers, which
+caps it at roughly nothing. Set it to `0` for the stricter behaviour.
+
+**Every turn records the prompt that produced it.** `prompt_version` is a digest
+of `prompts.py` — the system prompt, the finalise instruction, the review and
+compaction prompts, and the answer schema. Without it, answers written before
+and after a prompt edit are indistinguishable in the export and "did my change
+help?" is unanswerable. It is a hash rather than a hand-maintained number
+because one of those is only correct while somebody remembers to bump it, and
+the turn it is wrong on is the turn you are trying to explain.
+
+`GET /v1/chat/feedback` is that comparison, done for you: overall counts, then
+the same tally grouped by model and by prompt version, plus the most recent
+answers you marked unhelpful *with their notes* — counts say something went
+wrong, notes say what. The dashboard shows it under **Settings → Answer
+feedback**. `/v1/chat/messages` also takes `prompt_version=` and `model=` so you
+can pull one side of a change and read it in full.
 
 **One conversation can also leave as a file**, through
 `/v1/chat/sessions/<uuid>/export.md` or `.json` — Markdown for reading or

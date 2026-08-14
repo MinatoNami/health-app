@@ -1,11 +1,21 @@
 """System prompts and the structured shape every answer is forced into.
 
+Every stored turn records `VERSION`, a digest of the text in this file. It is
+what makes "did my change help?" answerable: without it, answers written before
+and after a prompt edit are indistinguishable in the export, and the feedback
+loop can only ever measure a single undated blur. With it, ratings group by the
+prompt that produced them.
+
+
 The behaviour rules in §11 are written as instructions here *and* enforced by
 `safety.py` afterwards. Both are needed: a prompt sets the default, and a small
 local model will still occasionally write "you may have sleep apnoea". The
 prompt reduces how often that happens; the post-flight check decides what the
 user sees when it does.
 """
+
+import hashlib
+import json
 
 SYSTEM = """You are the health-insight assistant for one person's own Apple Health data.
 
@@ -200,3 +210,31 @@ Cover, in this order: activity, sleep, and anything that moved notably against
 baseline. Lead with what actually changed rather than a list of numbers. If a
 metric's coverage is too thin to say anything, say that instead of filling the
 space. End with at most three specific things worth trying next week."""
+
+
+def _digest() -> str:
+    """A short, stable hash of everything in this file the model is sent.
+
+    Deliberately not a hand-maintained version number: one of those is only
+    correct while somebody remembers to bump it, and the turn it is wrong on is
+    the turn you are trying to explain. The schema is included because changing
+    a field description changes the answers as surely as changing a sentence of
+    the system prompt does.
+
+    Project instructions are *not* included. They are per-chat context somebody
+    typed about themselves, not the prompt this build ships, and folding them in
+    would give every project its own version and make the grouping useless.
+    """
+    material = "\n".join(
+        [
+            SYSTEM,
+            FINALISE,
+            WEEKLY_REVIEW,
+            COMPACT,
+            json.dumps(INSIGHT_SCHEMA, sort_keys=True),
+        ]
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+
+
+VERSION = _digest()

@@ -97,7 +97,8 @@ been deleted.
 | Questions and generated answers | `INSIGHT_RETENTION_DAYS`, 30 by default, then deleted |
 | Chats and their titles | As above — a chat is deleted once retention has emptied it |
 | Conversation summaries (compaction) | Cleared once the questions they were written from have expired |
-| Your ratings and notes on answers | Stored on the answer, so they expire with it |
+| Your ratings and notes on answers | Kept — an answer you rated survives the window (`INSIGHT_KEEP_RATED=0` to disable) |
+| Answers you rated | Kept with the rating, for the same reason |
 | Project names and standing context | Until you delete the project. It is text you wrote, not health data |
 | The snapshot an answer was built from | **Never stored** — recomputed on demand |
 | Database backups | 30 days, encrypted with AES-256 |
@@ -126,8 +127,10 @@ people miss:
 3. **Apple Health itself.** Deleting here never touches it. Use the Health app.
 
 To delete only stored questions, without touching health records: the
-**Insights** tab's "Delete stored questions", or `DELETE /v1/insights/history`.
-That clears the chat list too, since a chat is its messages.
+**Settings** tab's "Delete now", or `DELETE /v1/insights/history`. That clears
+the chat list too, since a chat is its messages, and it takes the rated ones
+with it — the retention exemption keeps them past the window, it does not
+protect them from a deliberate deletion.
 
 To delete a single conversation and everything said in it: the ⋯ menu beside it
 in the sidebar, or `DELETE /v1/chat/sessions/<uuid>`. Deleting a *project*

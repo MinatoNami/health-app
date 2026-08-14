@@ -15,6 +15,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.core.cache import cache
 from django.db import connection
 from django.test import TestCase
@@ -22,6 +23,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from ingest.llm import client as llm_client
+from ingest.llm import prompts
 from ingest.llm import service as llm_service
 from ingest.models import ChatProject, ChatSession, InsightTurn
 
@@ -1532,6 +1534,274 @@ class ArchiveTests(InsightTestCase):
         )
 
         self.assertIn("Filed", self.titles("?archived=0"))
+
+
+class PromptVersionTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+
+    def test_the_version_is_stable_and_short(self):
+        self.assertEqual(prompts.VERSION, prompts._digest())
+        self.assertEqual(len(prompts.VERSION), 12)
+
+    def test_editing_a_prompt_changes_the_version(self):
+        """Not a hand-maintained number: one of those is only correct while
+        somebody remembers to bump it, and the turn it is wrong on is the turn
+        you are trying to explain."""
+        with mock.patch.object(prompts, "SYSTEM", prompts.SYSTEM + "\nOne more rule."):
+            self.assertNotEqual(prompts._digest(), prompts.VERSION)
+
+    def test_changing_the_answer_schema_changes_the_version(self):
+        """A field description shapes the answers as surely as a sentence of
+        the system prompt does."""
+        edited = json.loads(json.dumps(prompts.INSIGHT_SCHEMA))
+        edited["properties"]["summary"]["description"] = "One sentence only."
+
+        with mock.patch.object(prompts, "INSIGHT_SCHEMA", edited):
+            self.assertNotEqual(prompts._digest(), prompts.VERSION)
+
+    def test_every_stored_turn_records_it(self):
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=fake_chat()):
+            llm_service.answer("How is my sleep?")
+
+        self.assertEqual(InsightTurn.objects.get().prompt_version, prompts.VERSION)
+
+    def test_the_export_can_be_filtered_to_one_version(self):
+        InsightTurn.objects.create(owner=self.user, question="old", prompt_version="aaaaaaaaaaaa")
+        InsightTurn.objects.create(owner=self.user, question="new", prompt_version="bbbbbbbbbbbb")
+
+        rows = self.client.get("/v1/chat/messages?prompt_version=bbbbbbbbbbbb").json()
+
+        self.assertEqual([m["question"] for m in rows["messages"]], ["new"])
+
+    def test_the_export_can_be_filtered_to_one_model(self):
+        InsightTurn.objects.create(owner=self.user, question="a", model_name="qwen-small")
+        InsightTurn.objects.create(owner=self.user, question="b", model_name="qwen-large")
+
+        rows = self.client.get("/v1/chat/messages?model=qwen-large").json()
+
+        self.assertEqual([m["question"] for m in rows["messages"]], ["b"])
+
+    def test_the_status_endpoint_names_the_current_version(self):
+        body = self.client.get("/v1/insights/status").json()
+        self.assertEqual(body["prompt_version"], prompts.VERSION)
+
+
+class FeedbackSummaryTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+
+    def turn(self, question, rating=None, note="", **fields):
+        turn = InsightTurn.objects.create(
+            owner=self.user, question=question, answer=GOOD_INSIGHT, **fields
+        )
+        if rating is not None or note:
+            turn.set_feedback(rating, note)
+            turn.save()
+        return turn
+
+    def test_the_overall_tally(self):
+        self.turn("a", rating=1)
+        self.turn("b", rating=1)
+        self.turn("c", rating=-1)
+        self.turn("d")
+
+        body = self.client.get("/v1/chat/feedback").json()
+
+        self.assertEqual(body["overall"]["answers"], 4)
+        self.assertEqual(body["overall"]["up"], 2)
+        self.assertEqual(body["overall"]["down"], 1)
+        self.assertEqual(body["overall"]["unrated"], 1)
+        self.assertEqual(body["overall"]["score"], 0.67)
+
+    def test_an_unjudged_batch_scores_none_rather_than_zero(self):
+        """A score of zero and no opinion at all are different things, and a
+        chart that renders them the same is how you conclude a prompt is failing
+        when nobody judged it."""
+        self.turn("nobody looked at this")
+
+        body = self.client.get("/v1/chat/feedback").json()
+
+        self.assertIsNone(body["overall"]["score"])
+
+    def test_grouping_by_prompt_version(self):
+        """The comparison the whole thing exists for."""
+        self.turn("old good", rating=1, prompt_version="aaaaaaaaaaaa")
+        self.turn("old bad", rating=-1, prompt_version="aaaaaaaaaaaa")
+        self.turn("new good", rating=1, prompt_version="bbbbbbbbbbbb")
+        self.turn("new also good", rating=1, prompt_version="bbbbbbbbbbbb")
+
+        groups = {
+            g["prompt_version"]: g
+            for g in self.client.get("/v1/chat/feedback").json()["by_prompt_version"]
+        }
+
+        self.assertEqual(groups["aaaaaaaaaaaa"]["score"], 0.5)
+        self.assertEqual(groups["bbbbbbbbbbbb"]["score"], 1.0)
+
+    def test_grouping_by_model(self):
+        self.turn("a", rating=-1, model_name="qwen-small")
+        self.turn("b", rating=1, model_name="qwen-large")
+
+        groups = {
+            g["model_name"]: g for g in self.client.get("/v1/chat/feedback").json()["by_model"]
+        }
+
+        self.assertEqual(groups["qwen-small"]["down"], 1)
+        self.assertEqual(groups["qwen-large"]["up"], 1)
+
+    def test_the_busiest_group_is_reported_first(self):
+        """A version with two ratings is noise beside one with two hundred, and
+        sorting by score would put the noise on top."""
+        for i in range(5):
+            self.turn(f"many {i}", rating=1, prompt_version="aaaaaaaaaaaa")
+        self.turn("few", rating=1, prompt_version="bbbbbbbbbbbb")
+
+        groups = self.client.get("/v1/chat/feedback").json()["by_prompt_version"]
+
+        self.assertEqual(groups[0]["prompt_version"], "aaaaaaaaaaaa")
+
+    def test_the_complaints_come_back_with_their_notes(self):
+        """Counts tell you something went wrong; the notes tell you what."""
+        self.turn("Why is my HRV low?", rating=-1, note="Used the wrong sleep window.")
+
+        negatives = self.client.get("/v1/chat/feedback").json()["recent_negative"]
+
+        self.assertEqual(negatives[0]["question"], "Why is my HRV low?")
+        self.assertEqual(negatives[0]["note"], "Used the wrong sleep window.")
+
+    def test_the_window_can_be_narrowed(self):
+        old = self.turn("last month", rating=-1)
+        InsightTurn.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(days=40)
+        )
+        self.turn("this week", rating=1)
+
+        body = self.client.get("/v1/chat/feedback?days=7").json()
+
+        self.assertEqual(body["overall"]["answers"], 1)
+        self.assertEqual(body["overall"]["up"], 1)
+
+    def test_turns_that_never_produced_an_answer_are_left_out(self):
+        """They cannot be judged on quality — there was nothing to judge."""
+        InsightTurn.objects.create(owner=self.user, question="failed", error="refused")
+        self.turn("answered", rating=1)
+
+        body = self.client.get("/v1/chat/feedback").json()
+
+        self.assertEqual(body["overall"]["answers"], 1)
+
+    def test_a_nonsense_window_is_a_400(self):
+        self.assertEqual(self.client.get("/v1/chat/feedback?days=lots").status_code, 400)
+
+    def test_it_requires_auth(self):
+        self.client.logout()
+        self.assertIn(self.client.get("/v1/chat/feedback").status_code, (401, 403))
+
+
+class ExportSessionSummaryTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+
+    def test_the_export_carries_each_conversations_compaction(self):
+        """Without it the export is not a faithful record of what the model saw
+        — some of those turns were replaced by the summary in every later
+        prompt."""
+        session = ChatSession.objects.create(
+            owner=self.user, title="Long one", summary="Earlier: they asked about pacing.",
+            summary_turns=4,
+        )
+        InsightTurn.objects.create(session=session, owner=self.user, question="and now?")
+
+        body = self.client.get("/v1/chat/messages").json()
+
+        self.assertEqual(len(body["sessions"]), 1)
+        self.assertEqual(body["sessions"][0]["summary"], "Earlier: they asked about pacing.")
+        self.assertEqual(body["sessions"][0]["summary_turns"], 4)
+
+    def test_the_summary_appears_once_per_conversation_not_once_per_row(self):
+        session = ChatSession.objects.create(
+            owner=self.user, title="Long one", summary="A summary.", summary_turns=2
+        )
+        for i in range(5):
+            InsightTurn.objects.create(session=session, owner=self.user, question=f"q{i}")
+
+        body = self.client.get("/v1/chat/messages").json()
+
+        self.assertEqual(len(body["messages"]), 5)
+        self.assertEqual(len(body["sessions"]), 1)
+
+    def test_sessionless_turns_contribute_no_entry(self):
+        InsightTurn.objects.create(owner=self.user, question="asked from the phone")
+
+        body = self.client.get("/v1/chat/messages").json()
+
+        self.assertEqual(body["sessions"], [])
+
+
+class WeeklyReviewSessionTests(InsightTestCase):
+    def run_command(self, **options):
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=fake_chat()):
+            call_command("weekly_review", **options)
+
+    def test_the_review_lands_in_a_chat_you_can_find(self):
+        """It used to store a sessionless turn, so the scheduled review was
+        invisible in the sidebar that exists to show exactly this."""
+        self.run_command()
+
+        session = ChatSession.objects.get()
+        self.assertEqual(session.turns.count(), 1)
+        self.assertTrue(session.title.startswith("Weekly review"))
+        self.assertEqual(session.project.name, "Weekly reviews")
+
+    def test_reviews_are_filed_together_rather_than_loose(self):
+        """A year of them is one collapsible row instead of fifty-two entries
+        burying every real conversation."""
+        self.run_command()
+        self.run_command()
+
+        self.assertEqual(ChatProject.objects.filter(name="Weekly reviews").count(), 1)
+        self.assertEqual(ChatSession.objects.count(), 2)
+
+    def test_each_run_gets_its_own_chat(self):
+        """Appending them all to one conversation would mean the model replaying
+        last month's review as context for this one."""
+        self.run_command()
+        self.run_command()
+
+        self.assertEqual([s.turns.count() for s in ChatSession.objects.all()], [1, 1])
+
+    def test_the_title_survives_the_empty_question_a_review_is_asked_with(self):
+        self.run_command()
+        self.assertNotEqual(ChatSession.objects.get().title, "New chat")
+
+    def test_a_review_that_produced_nothing_leaves_no_chat(self):
+        """An empty row appearing every Monday the laptop was shut is worse than
+        no row at all."""
+        with mock.patch.object(
+            llm_client, "resolve_model", side_effect=llm_client.LLMUnavailable("asleep")
+        ):
+            call_command("weekly_review")
+
+        # The turn recording the failure is sessionless, and no chat is left.
+        self.assertEqual(ChatSession.objects.count(), 0)
+
+    def test_the_old_sessionless_behaviour_is_still_available(self):
+        self.run_command(no_session=True)
+
+        self.assertEqual(ChatSession.objects.count(), 0)
+        self.assertEqual(InsightTurn.objects.count(), 1)
 
 
 class ChatRetentionTests(TestCase):

@@ -106,20 +106,32 @@ async function load() {
   await Promise.all([loadSessions(), loadProjects()])
 }
 
-async function loadSessions() {
+/* One page of chats. `more` appends the next one instead of replacing.
+ *
+ * The list is paged because the server caps it — before this, the sidebar
+ * showed the 50 most recent chats and simply stopped, with no indication that
+ * older ones existed. Search still found them, browsing never would. */
+const PAGE = 40
+const totalSessions = ref(0)
+
+async function loadSessions({ more = false } = {}) {
   loadingList.value = true
   try {
     // `archived` is left off entirely when showing everything — the filter is
     // tri-state on the server, and sending 1 would show *only* archived chats.
-    const params = { q: search.value }
+    const params = { q: search.value, limit: PAGE, offset: more ? sessions.value.length : 0 }
     if (!showArchived.value) params.archived = 0
-    sessions.value = (await api.chatSessions(params)).sessions
+    const body = await api.chatSessions(params)
+    sessions.value = more ? [...sessions.value, ...body.sessions] : body.sessions
+    totalSessions.value = body.total
   } catch (e) {
     error.value = e.message
   } finally {
     loadingList.value = false
   }
 }
+
+const hasMoreSessions = computed(() => sessions.value.length < totalSessions.value)
 
 async function loadProjects() {
   try {
@@ -430,6 +442,7 @@ onMounted(load)
       :loading="loadingList"
       :retention-days="status?.retention_days ?? null"
       :show-archived="showArchived"
+      :has-more="hasMoreSessions"
       @new-chat="newChat()"
       @open="openSession"
       @rename="renameSession"
@@ -441,6 +454,7 @@ onMounted(load)
       @delete-project="deleteProject"
       @search="onSearch"
       @show-archived="toggleArchived"
+      @load-more="loadSessions({ more: true })"
     />
     <div v-if="drawerOpen" class="scrim" @click="drawerOpen = false" />
 

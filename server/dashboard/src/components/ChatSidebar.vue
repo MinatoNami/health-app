@@ -23,11 +23,13 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   retentionDays: { type: Number, default: null },
   showArchived: { type: Boolean, default: false },
+  hasMore: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
   'new-chat', 'open', 'rename', 'delete', 'move', 'archive',
   'create-project', 'edit-project', 'delete-project', 'search', 'show-archived',
+  'load-more',
 ])
 
 const search = ref('')
@@ -203,7 +205,14 @@ function newProject() {
         </div>
       </section>
 
-      <p v-if="loading" class="empty-line">Loading…</p>
+      <!-- The server caps a page of chats. Without this the list simply
+           stopped at the cap with nothing to say older ones existed. -->
+      <button
+        v-if="hasMore" class="loadmore" :disabled="loading"
+        @click="emit('load-more')"
+      >{{ loading ? 'Loading…' : 'Load older chats' }}</button>
+
+      <p v-if="loading && !sessions.length" class="empty-line">Loading…</p>
       <p v-else-if="!sessions.length" class="empty-line">
         {{ search ? 'Nothing matched.' : 'No chats yet. Ask something to start one.' }}
       </p>
@@ -327,6 +336,14 @@ function newProject() {
 
 .addproject { display: block; margin: 2px 6px 12px; }
 .empty-line { margin: 6px 9px; font-size: 12px; color: var(--text-muted); }
+
+.loadmore {
+  display: block; width: calc(100% - 12px); margin: 6px;
+  padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: none; color: var(--text-secondary); font-size: 12px;
+}
+.loadmore:hover:not(:disabled) { border-color: var(--axis); color: var(--text-primary); }
+.loadmore:disabled { opacity: 0.5; cursor: default; }
 
 .foot { border-top: 1px solid var(--border); padding: 8px 12px 9px; }
 
