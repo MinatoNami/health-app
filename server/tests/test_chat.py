@@ -16,7 +16,9 @@ from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from ingest.llm import client as llm_client
@@ -229,6 +231,195 @@ class ProjectContextTests(InsightTestCase):
 
         self.assertIsNone(payload["answer"])
         self.assertTrue(payload["safety"]["blocked"])
+
+
+class StartSessionTests(InsightTestCase):
+    """Opening a chat is the ask's job, not a call before it.
+
+    Creating the session first and then asking leaves an empty chat in the
+    sidebar every time the question behind it never lands — and the 10/min
+    insight throttle makes that routine rather than exceptional.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+
+    def ask(self, body, chat=None):
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=chat or fake_chat()):
+            return self.client.post(
+                "/v1/insights/ask", data=json.dumps(body), content_type="application/json"
+            )
+
+    def test_asking_with_start_session_opens_one_and_returns_it(self):
+        body = self.ask({"question": "How is my sleep?", "start_session": True}).json()
+
+        session = ChatSession.objects.get()
+        self.assertEqual(body["session_id"], str(session.pk))
+        self.assertEqual(session.turns.count(), 1)
+        self.assertEqual(session.title, "How is my sleep?")
+
+    def test_a_new_chat_can_be_opened_straight_into_a_project(self):
+        project = ChatProject.objects.create(name="Marathon", owner=self.user)
+
+        self.ask({"question": "Am I on track?", "start_session": True, "project_id": project.pk})
+
+        self.assertEqual(ChatSession.objects.get().project_id, project.pk)
+
+    def test_a_throttled_question_leaves_no_chat_behind(self):
+        """The bug this replaces. The throttle rejects before the view runs, so
+        with creation inside the ask there is nothing to orphan."""
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=fake_chat()):
+            codes = [
+                self.client.post(
+                    "/v1/insights/ask",
+                    data=json.dumps({"question": "again", "start_session": True}),
+                    content_type="application/json",
+                ).status_code
+                for _ in range(14)
+            ]
+
+        self.assertIn(429, codes)
+        # One chat per question that actually ran, and none for the rejections.
+        self.assertEqual(ChatSession.objects.count(), codes.count(200))
+
+    def test_a_question_that_is_not_remembered_leaves_no_chat_behind(self):
+        body = self.ask(
+            {"question": "private", "start_session": True, "remember": False}
+        ).json()
+
+        self.assertIsNone(body["session_id"])
+        self.assertEqual(ChatSession.objects.count(), 0)
+        self.assertEqual(InsightTurn.objects.count(), 0)
+
+    def test_a_failure_inside_the_answer_takes_the_new_chat_with_it(self):
+        with mock.patch.object(
+            llm_service, "answer", side_effect=RuntimeError("boom")
+        ), self.assertRaises(RuntimeError):
+            self.client.post(
+                "/v1/insights/ask",
+                data=json.dumps({"question": "How is my sleep?", "start_session": True}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(ChatSession.objects.count(), 0)
+
+    def test_an_unreachable_model_still_opens_the_chat(self):
+        """The question was asked and the failure is worth keeping — that is a
+        turn, not an orphan."""
+        with mock.patch.object(
+            llm_client, "resolve_model", side_effect=llm_client.LLMUnavailable("refused")
+        ):
+            body = self.client.post(
+                "/v1/insights/ask",
+                data=json.dumps({"question": "How is my sleep?", "start_session": True}),
+                content_type="application/json",
+            ).json()
+
+        session = ChatSession.objects.get()
+        self.assertEqual(body["session_id"], str(session.pk))
+        self.assertEqual(session.turns.count(), 1)
+
+    def test_a_second_question_reuses_the_chat_rather_than_opening_another(self):
+        first = self.ask({"question": "How is my sleep?", "start_session": True}).json()
+
+        second = self.ask(
+            {"question": "And last month?", "session_id": first["session_id"]}
+        ).json()
+
+        self.assertEqual(second["session_id"], first["session_id"])
+        self.assertEqual(ChatSession.objects.count(), 1)
+        self.assertEqual(ChatSession.objects.get().turns.count(), 2)
+
+    def test_asking_without_a_session_still_stores_a_sessionless_turn(self):
+        """How the phone asks. It must not start acquiring chats it never
+        asked for."""
+        body = self.ask({"question": "How is my sleep?"}).json()
+
+        self.assertIsNone(body["session_id"])
+        self.assertEqual(ChatSession.objects.count(), 0)
+        self.assertEqual(InsightTurn.objects.count(), 1)
+
+    def test_a_weekly_review_can_open_its_own_chat(self):
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=fake_chat()):
+            body = self.client.post(
+                "/v1/insights/weekly",
+                data=json.dumps({"start_session": True}),
+                content_type="application/json",
+            ).json()
+
+        session = ChatSession.objects.get()
+        self.assertEqual(body["session_id"], str(session.pk))
+        self.assertEqual(session.title, "Weekly review")
+
+
+class SessionListingTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+
+    def test_the_message_count_is_not_distorted_by_a_search(self):
+        """`annotate(Count("turns"))` reuses the join the search already made,
+        so it counts only the turns that matched and reports a five-message chat
+        as having one."""
+        session = ChatSession.objects.create(owner=self.user, title="Sleep")
+        InsightTurn.objects.create(session=session, owner=self.user, question="about sleep")
+        for i in range(4):
+            InsightTurn.objects.create(session=session, owner=self.user, question=f"other {i}")
+
+        found = self.client.get("/v1/chat/sessions?q=sleep").json()["sessions"]
+
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["message_count"], 5)
+
+    def test_the_preview_is_the_opening_question(self):
+        session = ChatSession.objects.create(owner=self.user, title="Sleep")
+        InsightTurn.objects.create(session=session, owner=self.user, question="first one")
+        InsightTurn.objects.create(session=session, owner=self.user, question="second one")
+
+        row = self.client.get("/v1/chat/sessions").json()["sessions"][0]
+
+        self.assertEqual(row["preview"], "first one")
+
+    def seed_chats(self, count, offset=0):
+        for i in range(offset, offset + count):
+            session = ChatSession.objects.create(owner=self.user, title=f"Chat {i}")
+            InsightTurn.objects.create(session=session, owner=self.user, question=f"q{i}")
+
+    def test_listing_does_not_cost_a_query_per_chat(self):
+        """The sidebar reloads after every question asked, so a query per chat
+        is a cost paid constantly rather than once.
+
+        Asserted as "does not grow" rather than against a fixed number: most of
+        the queries in a request are session auth and throttle bookkeeping, and
+        pinning their total would make this fail for reasons that have nothing
+        to do with the sidebar.
+        """
+        self.seed_chats(5)
+        with CaptureQueriesContext(connection) as few:
+            self.client.get("/v1/chat/sessions")
+
+        self.seed_chats(20, offset=5)
+        with CaptureQueriesContext(connection) as many:
+            body = self.client.get("/v1/chat/sessions").json()
+
+        self.assertEqual(len(body["sessions"]), 25)
+        self.assertEqual(len(many), len(few))
+
+    def test_an_empty_chat_lists_without_a_preview(self):
+        ChatSession.objects.create(owner=self.user, title="Nothing here")
+
+        row = self.client.get("/v1/chat/sessions").json()["sessions"][0]
+
+        self.assertEqual(row["message_count"], 0)
+        self.assertEqual(row["preview"], "")
 
 
 class TimezoneTests(InsightTestCase):

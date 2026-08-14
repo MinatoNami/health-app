@@ -215,11 +215,33 @@ def _preview(session) -> str:
     return (turn.question if turn else "") or ""
 
 
-def _session_list_payload(queryset) -> list[dict]:
-    queryset = queryset.annotate(message_count=Count("turns"))
+def _session_list_payload(sessions: list) -> list[dict]:
+    """Counts and previews for a page of chats, in one extra query.
+
+    Not `annotate(Count("turns"))`, for two reasons. It is a query per chat once
+    a preview is wanted alongside it, and the sidebar reloads after every
+    question asked. And when the list is filtered by `q`, the search already
+    joined `turns` — Django reuses that join, so the annotation would count only
+    the turns that *matched the search* and report a five-message chat as having
+    one. Walking the page's turns once sidesteps both.
+    """
+    counts: dict = {}
+    previews: dict = {}
+    rows = (
+        InsightTurn.objects.filter(session__in=sessions)
+        .order_by("session_id", "created_at")
+        .values_list("session_id", "question")
+    )
+    for session_id, question in rows:
+        counts[session_id] = counts.get(session_id, 0) + 1
+        previews.setdefault(session_id, question or "")
+
     return [
-        session.as_dict(message_count=session.message_count, preview=_preview(session))
-        for session in queryset
+        session.as_dict(
+            message_count=counts.get(session.pk, 0),
+            preview=previews.get(session.pk, ""),
+        )
+        for session in sessions
     ]
 
 
@@ -283,7 +305,7 @@ def sessions(request):
     total = queryset.count()
     return Response(
         {
-            "sessions": _session_list_payload(queryset[offset : offset + limit]),
+            "sessions": _session_list_payload(list(queryset[offset : offset + limit])),
             "total": total,
             "limit": limit,
             "offset": offset,

@@ -271,20 +271,18 @@ async function compactNow() {
 // Asking
 // --------------------------------------------------------------------------
 
-/* Returns the id to ask against, creating the chat if this is the first
- * question. A failure here is not fatal: the question is still worth asking,
- * it just lands outside any conversation. */
-async function ensureSession() {
-  if (activeId.value) return activeId.value
-  try {
-    const session = await api.createChatSession(
-      pendingProject.value ? { project_id: pendingProject.value } : {},
-    )
-    activeId.value = session.id
-    pendingProject.value = null
-    return session.id
-  } catch {
-    return null
+/* Which conversation this question belongs to.
+ *
+ * A new chat is opened by the ask itself rather than by a call beforehand. The
+ * old order — create the session, then ask — left an empty chat in the sidebar
+ * whenever the question behind it never landed, and the 10/min insight throttle
+ * makes that a routine occurrence rather than an edge case. Now nothing exists
+ * until there is a turn to put in it. */
+function sessionArgs() {
+  if (activeId.value) return { session_id: activeId.value }
+  return {
+    start_session: true,
+    ...(pendingProject.value ? { project_id: pendingProject.value } : {}),
   }
 }
 
@@ -295,8 +293,13 @@ async function run(label, call) {
   error.value = ''
   scrollDown()
   try {
-    const sessionId = await ensureSession()
-    const result = await call(sessionId)
+    const result = await call(sessionArgs())
+    // The server says which conversation the turn landed in — including when it
+    // just opened one. Null means nothing was stored, so there is no chat.
+    if (result.session_id) {
+      activeId.value = result.session_id
+      pendingProject.value = null
+    }
     turns.value.splice(-1, 1, { role: 'assistant', result })
     // Said out loud rather than left to be noticed: the alternative is a
     // conversation that quietly forgets its own opening.
@@ -322,12 +325,12 @@ async function ask(text) {
   question.value = ''
   // No `follow_up` flag: the server replays this session's own history, which
   // is both narrower and more correct than the last two turns from anywhere.
-  await run(asked, (sessionId) => api.ask({ question: asked, session_id: sessionId }))
+  await run(asked, (args) => api.ask({ question: asked, ...args }))
 }
 
 async function weekly() {
   if (asking.value) return
-  await run('Weekly review', (sessionId) => api.weeklyReview({ session_id: sessionId }))
+  await run('Weekly review', (args) => api.weeklyReview(args))
 }
 
 /* Enter sends, Shift+Enter breaks the line — the convention every chat box

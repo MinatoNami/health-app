@@ -35,7 +35,7 @@ from .auth import owner_of as _owner
 from .llm import client as llm_client
 from .llm import service as llm_service
 from .llm import tools as llm_tools
-from .models import ChatSession, Goal, InsightTurn
+from .models import ChatProject, ChatSession, Goal, InsightTurn
 
 log = logging.getLogger(__name__)
 
@@ -358,21 +358,60 @@ class UnknownSession(Exception):
     pass
 
 
-def _session(request):
-    """The conversation this question belongs to, if one was named.
+def _session(request) -> tuple[ChatSession | None, bool]:
+    """(conversation, did_this_request_create_it).
 
     Resolved through the caller's own scope, so a session id that belongs to
     somebody else is indistinguishable from one that does not exist. Absent
     entirely is fine and stays the default: the phone asks one-off questions and
     should not have to invent a chat to do it.
+
+    `start_session` is how a client opens a new chat. It creates the session
+    *here*, in the same request that will store the first turn, rather than
+    having the client create one and then ask — that ordering leaves an empty
+    chat in the sidebar forever whenever the question behind it never lands,
+    which the insight throttle alone makes a routine occurrence.
     """
     raw = request.data.get("session_id")
-    if not raw:
-        return None
-    session = llm_service.scoped(ChatSession.objects.all(), _owner(request)).filter(pk=raw).first()
-    if session is None:
-        raise UnknownSession
-    return session
+    if raw:
+        session = (
+            llm_service.scoped(ChatSession.objects.all(), _owner(request))
+            .filter(pk=raw)
+            .first()
+        )
+        if session is None:
+            raise UnknownSession
+        return session, False
+
+    if not request.data.get("start_session"):
+        return None, False
+
+    project = None
+    project_id = request.data.get("project_id")
+    if project_id:
+        project = (
+            llm_service.scoped(ChatProject.objects.all(), _owner(request))
+            .filter(pk=project_id)
+            .first()
+        )
+    return (
+        ChatSession.objects.create(owner=_owner(request), project=project),
+        True,
+    )
+
+
+def _discard_if_empty(session, created: bool) -> bool:
+    """Undo a session this request opened but never wrote to.
+
+    The remaining orphan window after `start_session` is narrow — the throttle
+    rejects before the view runs, and `answer` stores a turn even when the model
+    is unreachable — but "narrow" is not "closed", and an empty chat is a piece
+    of litter nobody can tell apart from a real one.
+    """
+    if created and session is not None and not session.turns.exists():
+        session.delete()
+        return True
+    return False
 
 
 @api_view(["POST"])
@@ -390,21 +429,30 @@ def ask(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     try:
-        session = _session(request)
+        session, created = _session(request)
     except (UnknownSession, ValidationError):
         return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
 
-    payload = llm_service.answer(
-        question,
-        context=str(request.data.get("context") or "")[:1000],
-        tz_name=_tz(request) or request.data.get("tz"),
-        owner=_owner(request),
-        persist=request.data.get("remember") is not False,
-        # A session carries its own history without being asked; `follow_up`
-        # stays for callers that have no session, which is how the phone asks.
-        follow_up=bool(request.data.get("follow_up")),
-        session=session,
-    )
+    try:
+        payload = llm_service.answer(
+            question,
+            context=str(request.data.get("context") or "")[:1000],
+            tz_name=_tz(request) or request.data.get("tz"),
+            owner=_owner(request),
+            persist=request.data.get("remember") is not False,
+            # A session carries its own history without being asked; `follow_up`
+            # stays for callers that have no session, which is how the phone asks.
+            follow_up=bool(request.data.get("follow_up")),
+            session=session,
+        )
+    except Exception:
+        _discard_if_empty(session, created)
+        raise
+
+    if _discard_if_empty(session, created):
+        # `remember: false` is the ordinary way to get here: nothing was stored,
+        # so there is no conversation to have opened.
+        payload["session_id"] = None
     return Response(payload)
 
 
@@ -414,16 +462,23 @@ def ask(request):
 @throttle_classes([InsightThrottle])
 def weekly_review(request):
     try:
-        session = _session(request)
+        session, created = _session(request)
     except (UnknownSession, ValidationError):
         return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
-    return Response(
-        llm_service.weekly_review(
+
+    try:
+        payload = llm_service.weekly_review(
             tz_name=_tz(request) or request.data.get("tz"),
             owner=_owner(request),
             session=session,
         )
-    )
+    except Exception:
+        _discard_if_empty(session, created)
+        raise
+
+    if _discard_if_empty(session, created):
+        payload["session_id"] = None
+    return Response(payload)
 
 
 @api_view(["GET", "DELETE"])

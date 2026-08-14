@@ -327,7 +327,7 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-357 tests. The suite runs on SQLite so it needs no database server; the ingest
+370 tests. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
@@ -433,6 +433,14 @@ A question on its own is a transaction. A conversation is what you get when the
 answer to "why?" knows what the previous answer said, and that is what
 `/v1/chat/*` adds: named chats, optionally filed into projects, listed in the
 dashboard sidebar the way anyone would expect.
+
+**A chat is opened by the question, not before it.** `POST /v1/insights/ask`
+takes `start_session: true` (and an optional `project_id`) and creates the
+conversation in the same request that stores the first turn. The obvious
+ordering — create the session, then ask — leaves an empty chat in the sidebar
+every time the question behind it never lands, and the 10/min insight throttle
+makes that routine rather than exceptional. `POST /v1/chat/sessions` still
+exists for opening one explicitly.
 
 **The session is the context boundary.** A question asked inside a session
 replays that session's earlier turns and nothing else. Scoping to the *person*
