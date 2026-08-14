@@ -15,6 +15,7 @@ import logging
 import os
 import re
 
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 
@@ -376,12 +377,17 @@ def _prior_turns(owner, session=None) -> list[dict]:
 # Context budgeting and compaction
 # --------------------------------------------------------------------------
 
-# What the model behind LLM_BASE_URL can hold. There is no way to ask it: the
-# OpenAI-compatible /models endpoint does not report a context length, and
-# guessing high means discovering the limit as a truncated answer halfway
-# through a conversation. Conservative by default, and worth setting once you
-# know what you loaded.
+# What the model behind LLM_BASE_URL can hold, when nothing better is known.
+# Conservative: guessing high means discovering the real limit as a truncated
+# answer halfway through a conversation.
 DEFAULT_CONTEXT_TOKENS = 8192
+
+# LM Studio reports the loaded model's context length, so normally nothing has
+# to be configured at all. Cached because it only changes when somebody reloads
+# a model, and the compaction check would otherwise make an HTTP call on the way
+# to every answer.
+CONTEXT_CACHE_KEY = "ingest:llm-context-length:v1"
+CONTEXT_CACHE_SECONDS = 300
 
 # Reserved for the answer itself. `answer()` asks for 2000 and the tool loop for
 # 1200; the headroom above that absorbs the estimate being an estimate.
@@ -398,11 +404,31 @@ MIN_TURNS_TO_COMPACT = 2
 
 
 def context_tokens() -> int:
-    raw = os.environ.get("LLM_CONTEXT_TOKENS") or str(DEFAULT_CONTEXT_TOKENS)
-    try:
-        return max(2048, int(raw))
-    except ValueError:
-        return DEFAULT_CONTEXT_TOKENS
+    """How much context this conversation has to fit into.
+
+    Three sources, in this order:
+
+    1. `LLM_CONTEXT_TOKENS`, if set. An explicit operator override always wins —
+       there are reasons to want a smaller working window than the model
+       technically has, and a setting that gets silently ignored is worse than
+       no setting.
+    2. What the model server reports. LM Studio knows, and asking beats
+       maintaining a number by hand that goes stale the moment somebody loads a
+       different model.
+    3. A conservative default, for a server that cannot say.
+    """
+    raw = os.environ.get("LLM_CONTEXT_TOKENS", "").strip()
+    if raw:
+        try:
+            return max(2048, int(raw))
+        except ValueError:
+            log.warning("LLM_CONTEXT_TOKENS is not a number: %r", raw)
+
+    cached = cache.get(CONTEXT_CACHE_KEY)
+    if cached is None:
+        cached = client.loaded_context_length() or 0
+        cache.set(CONTEXT_CACHE_KEY, cached, CONTEXT_CACHE_SECONDS)
+    return max(2048, cached) if cached else DEFAULT_CONTEXT_TOKENS
 
 
 def estimate_tokens(text: str) -> int:

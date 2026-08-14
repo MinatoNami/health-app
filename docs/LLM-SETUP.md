@@ -51,16 +51,30 @@ rather than what the snapshot says now. It is capped at 20 regardless, because
 past that the conversation crowds out the figures the answer is supposed to be
 built from.
 
-`LLM_CONTEXT_TOKENS` (8192) is what the model can actually hold. **Set this to
-whatever you loaded the model with in LM Studio** — there is no way to ask the
-server, since the OpenAI-compatible `/models` endpoint does not report a context
-length, and guessing high means finding out as a truncated answer halfway
-through a conversation. When a chat's replayed history would not fit, its older
-turns are folded into a summary and replaced by it; the transcript is untouched.
-Set this too low and you pay for needless summarising, too high and long chats
-truncate. The dashboard shows the last prompt's measured token use in the chat
-header once it passes 50%, which is the quickest way to tell if the number here
-is honest.
+`LLM_CONTEXT_TOKENS` normally needs no setting at all. LM Studio reports the
+loaded model's context length through its own `/api/v0/models` — the only place
+it is available, since the OpenAI-compatible `/v1/models` has no field for it —
+and the server asks, so swapping a 262k model for an 8k one adjusts the budget by
+itself. Set this only to work in a smaller window than the model technically has;
+an explicit value always wins, and a server that cannot answer falls back to a
+conservative 8192.
+
+When a chat's replayed history would not fit, its older turns are folded into a
+summary and replaced by it; the transcript is untouched. The dashboard shows the
+last prompt's measured token use in the chat header once it passes 50%, which is
+the quickest way to see how close a long conversation is getting.
+
+To see what the server currently believes it has to work with:
+
+```bash
+ssh alena-tailscale 'cd health-server && docker compose exec -T web \
+  python manage.py shell -c "
+from ingest.llm import service
+print(service.context_tokens())
+"'
+```
+
+---
 
 ## Testing the chat
 

@@ -616,8 +616,49 @@ class BudgetTests(TestCase):
         self.assertEqual(llm_service.history_budget("x" * 10_000_000), 0)
 
     def test_a_nonsense_context_setting_falls_back(self):
-        with mock.patch.dict("os.environ", {"LLM_CONTEXT_TOKENS": "loads"}):
+        cache.clear()
+        with mock.patch.dict("os.environ", {"LLM_CONTEXT_TOKENS": "loads"}), \
+             mock.patch.object(llm_client, "loaded_context_length", return_value=None):
             self.assertEqual(llm_service.context_tokens(), llm_service.DEFAULT_CONTEXT_TOKENS)
+
+    def test_the_context_length_is_read_from_the_model_server(self):
+        """Asking beats maintaining a number by hand that goes stale the moment
+        somebody loads a different model."""
+        cache.clear()
+        with mock.patch.dict("os.environ", {"LLM_CONTEXT_TOKENS": ""}), \
+             mock.patch.object(llm_client, "loaded_context_length", return_value=262_144):
+            self.assertEqual(llm_service.context_tokens(), 262_144)
+
+    def test_an_explicit_setting_beats_what_the_server_reports(self):
+        """There are reasons to want a smaller working window than the model
+        technically has, and a setting that gets silently ignored is worse than
+        no setting at all."""
+        cache.clear()
+        with mock.patch.dict("os.environ", {"LLM_CONTEXT_TOKENS": "16384"}), \
+             mock.patch.object(llm_client, "loaded_context_length", return_value=262_144):
+            self.assertEqual(llm_service.context_tokens(), 16_384)
+
+    def test_the_context_length_is_only_asked_for_once(self):
+        cache.clear()
+        with mock.patch.dict("os.environ", {"LLM_CONTEXT_TOKENS": ""}), \
+             mock.patch.object(
+                 llm_client, "loaded_context_length", return_value=32_768
+             ) as probe:
+            llm_service.context_tokens()
+            llm_service.context_tokens()
+
+        probe.assert_called_once()
+
+    def test_a_server_that_cannot_say_is_not_asked_repeatedly(self):
+        """The negative answer is cached too. Otherwise every question to a
+        non-LM-Studio server pays for a doomed HTTP call on the way."""
+        cache.clear()
+        with mock.patch.dict("os.environ", {"LLM_CONTEXT_TOKENS": ""}), \
+             mock.patch.object(llm_client, "loaded_context_length", return_value=None) as probe:
+            self.assertEqual(llm_service.context_tokens(), llm_service.DEFAULT_CONTEXT_TOKENS)
+            self.assertEqual(llm_service.context_tokens(), llm_service.DEFAULT_CONTEXT_TOKENS)
+
+        probe.assert_called_once()
 
 
 class CompactionTests(InsightTestCase):

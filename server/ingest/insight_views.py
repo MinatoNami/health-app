@@ -342,6 +342,12 @@ def llm_status(request):
     """
     info = llm_client.status()
     info["retention_days"] = InsightTurn.retention_days()
+    # What a conversation has to fit into, and how much of it history may use
+    # before older turns are folded into a summary. Reported here rather than
+    # left to be inferred: "why did my chat just compact?" is otherwise
+    # unanswerable from the UI.
+    info["context_tokens"] = llm_service.context_tokens()
+    info["history_turns"] = llm_service.session_turns()
     return Response(info)
 
 

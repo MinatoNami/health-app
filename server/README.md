@@ -325,7 +325,7 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-320 tests. The suite runs on SQLite so it needs no database server; the ingest
+324 tests. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
@@ -470,13 +470,22 @@ Four things about it are deliberate:
   and that is replayed into later prompts; exempting it would leave one piece of
   model output nobody checks.
 
-The budget is derived, not fixed: `LLM_CONTEXT_TOKENS` minus room for the answer
+The budget is derived, not fixed: the context window, minus room for the answer,
 minus the system prompt — which carries the snapshot and grows with how many
 metrics you record — and history may occupy 35% of what remains. Auto-compaction
 fires only when that is exceeded, because it costs a whole extra model call. If
 it fails, the turn cap still bounds the history and the question is answered
 anyway; a conversation that cannot be summarised is not a reason to refuse to
 answer it.
+
+**The context window is asked for, not configured.** LM Studio reports the
+loaded model's length through its own `/api/v0/models`, which is the only place
+it is available — the OpenAI-compatible `/v1/models` follows a schema with no
+field for it. So swapping a 262k model for an 8k one adjusts the budget by
+itself, instead of leaving a hand-maintained number to go stale and truncate an
+answer halfway through. `LLM_CONTEXT_TOKENS` overrides it when you want a
+smaller working window than the model technically has, and a server that cannot
+answer falls back to a conservative 8192.
 
 **`GET /v1/chat/messages` is the export.** Flat across every conversation,
 oldest first, filterable by `session`, `project`, `since`/`until`, `generated`
