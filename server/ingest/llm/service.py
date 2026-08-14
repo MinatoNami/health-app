@@ -35,6 +35,19 @@ MAX_TOOL_ROUNDS = 6
 # of the answer and it is definitely not part of the JSON.
 THINK_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
 
+# How many of the most recent per-day rows survive `_condense`. Matches the cap
+# the tools themselves apply, so the snapshot and `get_sleep_summary` cannot
+# disagree about what the recent days were.
+#
+# The number this was originally written around no longer applies. Dropping
+# every per-day row saves about 1,800 tokens, which mattered when the local
+# window was a few thousand; the model behind LLM_BASE_URL now loads at 262,144
+# and the whole prompt is under 3% of it. What the saving cost was accuracy: with
+# no row carrying a date, a question about one day gets answered from the window
+# average, and "what did I eat today" comes back with the mean of the logged days
+# presented as one day's meal.
+RECENT_DAY_ROWS = 14
+
 
 def _condense(snapshot: dict) -> dict:
     """The snapshot, trimmed to what a model can hold and reason about.
@@ -77,8 +90,11 @@ def _condense(snapshot: dict) -> dict:
             }
             for q in snapshot["data_quality"]
         ],
+        # `recent` is kept for the same reason the per-day rows below are: it is
+        # the only thing here that can answer "what did I do on Saturday". Only
+        # `by_activity` is dropped, and the totals above already summarise it.
         "workouts": {
-            k: v for k, v in snapshot["workouts"].items() if k not in ("recent", "by_activity")
+            k: v for k, v in snapshot["workouts"].items() if k != "by_activity"
         },
         "metrics_never_recorded": snapshot["metrics_unavailable"],
         # Named separately so the model can say "sleep has not synced since
@@ -87,16 +103,37 @@ def _condense(snapshot: dict) -> dict:
         "metrics_that_stopped_syncing": snapshot.get("metrics_not_syncing") or [],
     }
     if snapshot.get("sleep"):
-        condensed["sleep"] = {
-            k: v for k, v in snapshot["sleep"].items() if k != "nights"
-        }
+        sleep = {k: v for k, v in snapshot["sleep"].items() if k != "nights"}
+        # "Last night" and "how did I sleep on Tuesday" are the most common
+        # questions asked of this thing, and with no dated row in the prompt a
+        # small model does not call a tool for them — it answers from the window
+        # average and reports a weekly mean as a single night. The averages stay
+        # alongside, so the row to quote is always the nearer one.
+        nights = snapshot["sleep"].get("nights") or []
+        if nights:
+            sleep["most_recent_nights"] = nights[-RECENT_DAY_ROWS:]
+        condensed["sleep"] = sleep
     if snapshot.get("nutrition"):
         # The per-day table is dropped like every other per-day array, but the
         # three day-counts and the limitations stay: without them the averages
         # read as a full picture of what somebody ate.
-        condensed["nutrition"] = {
-            k: v for k, v in snapshot["nutrition"].items() if k != "days"
-        }
+        nutrition = {k: v for k, v in snapshot["nutrition"].items() if k != "days"}
+        logged = [d for d in (snapshot["nutrition"].get("days") or []) if d.get("energy_kcal")]
+        if logged:
+            nutrition["most_recent_logged_days"] = [
+                {
+                    "date": day.get("date"),
+                    "energy_kcal": day.get("energy_kcal"),
+                    "complete_log": day.get("complete_log"),
+                    **{
+                        key: (day.get("totals") or {}).get(key)
+                        for key in ("dietary_protein", "dietary_carbohydrates", "dietary_fat_total")
+                        if (day.get("totals") or {}).get(key) is not None
+                    },
+                }
+                for day in logged[-RECENT_DAY_ROWS:]
+            ]
+        condensed["nutrition"] = nutrition
     return condensed
 
 
@@ -169,9 +206,13 @@ def _system_prompt(
     return (
         prompt
         + _now_block(snapshot)
-        + "PREPARED SNAPSHOT — already computed from the database, correct, and safe to "
-        "quote directly. Use these figures rather than recomputing anything. Call tools "
-        "only for detail this does not contain.\n"
+        + "PREPARED SNAPSHOT — a fixed weekly overview, already computed from the "
+        "database, correct, and safe to quote directly. It is sent on every turn "
+        "regardless of what was asked, so it is background rather than the answer. It "
+        "holds averages over the windows named in it and nothing finer — no individual "
+        "days and no individual nights. Quote it when the question is about those "
+        "windows; call a tool for any single day, any named date, and any period it "
+        "does not cover.\n"
         f"{json.dumps(_condense(snapshot), default=str)}\n"
     )
 
@@ -251,6 +292,10 @@ def _normalise(insight: dict) -> dict:
         )
 
     return {
+        # Kept rather than dropped: it is the model's own statement of what it
+        # thought it was answering, so a turn that answered the wrong question is
+        # visible in the export instead of having to be inferred from the prose.
+        "asked_for": str(insight.get("asked_for") or "").strip(),
         "summary": str(insight.get("summary") or "").strip(),
         "period_examined": str(insight.get("period_examined") or "").strip(),
         "observations": [o for o in observations if o["statement"]],
@@ -310,7 +355,13 @@ def _run_tool_loop(messages: list[dict], model: str, tz_name: str | None) -> tup
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0}
 
     for _round in range(MAX_TOOL_ROUNDS):
-        result = client.chat(messages, model=model, tools=schema, max_tokens=1200)
+        # Greedy. Picking a tool and its arguments is a lookup, not a piece of
+        # writing: there is one right answer and sampling around it only invents
+        # a different metric or a different window. The prose call afterwards
+        # keeps its own small temperature.
+        result = client.chat(
+            messages, model=model, tools=schema, max_tokens=1200, temperature=0
+        )
         usage["prompt_tokens"] += result["usage"].get("prompt_tokens", 0) or 0
         usage["completion_tokens"] += result["usage"].get("completion_tokens", 0) or 0
         usage["latency_ms"] += result["latency_ms"]
@@ -663,6 +714,13 @@ def answer(
         user_message += f"\n\nContext I want you to take into account:\n{context}"
     if instruction:
         user_message = f"{instruction}\n\n{user_message}" if question else instruction
+    if not user_message.strip():
+        # A blank turn is not something the server can render: the chat template
+        # raises "No user query found in messages" and the 400 comes back as
+        # "insight generation unavailable", so pressing send on an empty box read
+        # as a broken model rather than as an empty box. Name the situation
+        # instead, and the prompt's rule for it applies.
+        user_message = "(The person sent an empty message without asking anything.)"
 
     system = _system_prompt(verdict, snapshot, project=getattr(session, "project", None))
 
