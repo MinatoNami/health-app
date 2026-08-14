@@ -483,6 +483,22 @@ def _flatten(insight: dict) -> str:
     return "\n".join(parts)
 
 
+def prohibited_claim(text: str) -> str | None:
+    """The description of the first rule this prose trips, or None.
+
+    Split out of `postflight` because an answer is no longer the only model
+    output a person reads. A conversation summary is generated prose too, and it
+    is replayed into later prompts — so it goes through the same rules rather
+    than through a second, laxer set that would drift from these within a
+    release.
+    """
+    lowered = (text or "").lower()
+    for rule in PROHIBITED:
+        if rule.hits(lowered):
+            return rule.description
+    return None
+
+
 def postflight(insight: dict, verdict: SafetyVerdict) -> SafetyVerdict:
     """Re-reads the model's answer and blocks the failure modes §7 lists.
 
@@ -493,15 +509,15 @@ def postflight(insight: dict, verdict: SafetyVerdict) -> SafetyVerdict:
     """
     text = _flatten(insight).lower()
 
-    for rule in PROHIBITED:
-        if rule.hits(text):
-            verdict.blocked = True
-            verdict.blocked_reason = (
-                f"The generated answer {rule.description}, which this system does not allow. "
-                "The measured summary below is unaffected."
-            )
-            verdict.level = escalate(verdict.level, "review_recommended")
-            return verdict
+    breach = prohibited_claim(text)
+    if breach:
+        verdict.blocked = True
+        verdict.blocked_reason = (
+            f"The generated answer {breach}, which this system does not allow. "
+            "The measured summary below is unaffected."
+        )
+        verdict.level = escalate(verdict.level, "review_recommended")
+        return verdict
 
     if verdict.level == "urgent" and not insight.get("professional_review_recommended"):
         # The model was told to escalate and did not. Rather than trust the

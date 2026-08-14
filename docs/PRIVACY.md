@@ -78,6 +78,14 @@ anything from a different conversation. If the chat is in a project, the standin
 context you wrote for that project is sent too — it is part of the prompt, so
 treat it as something the model reads every time.
 
+When a chat outgrows the model's context, its older turns are sent once more to
+be summarised, and that summary is what travels afterwards instead of them. The
+summary is stored on the chat and you can read it in the transcript. It is
+written to carry topics and what you said about yourself, not figures — but it is
+model-generated text about your questions, so it is treated as one: it is subject
+to the same retention window, and it is cleared once the questions behind it have
+been deleted.
+
 ---
 
 ## How long things are kept
@@ -88,6 +96,7 @@ treat it as something the model reads every time.
 | Uploaded batch files (phone) | Pruned after delivery; archive trimmed automatically |
 | Questions and generated answers | `INSIGHT_RETENTION_DAYS`, 30 by default, then deleted |
 | Chats and their titles | As above — a chat is deleted once retention has emptied it |
+| Conversation summaries (compaction) | Cleared once the questions they were written from have expired |
 | Project names and standing context | Until you delete the project. It is text you wrote, not health data |
 | The snapshot an answer was built from | **Never stored** — recomputed on demand |
 | Database backups | 30 days, encrypted with AES-256 |

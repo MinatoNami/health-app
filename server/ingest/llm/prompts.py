@@ -158,6 +158,30 @@ Rules for the fields:
 
 Use only figures that appeared above. Plain text in every field."""
 
+COMPACT = """You are compressing a conversation so it can be carried forward into a
+smaller context window. You are not answering anything.
+
+Write a short note — at most 150 words, plain prose, no headings or bullets —
+that lets the assistant pick this conversation up without having read it.
+
+INCLUDE
+- What the person asked about, in the order the threads appeared.
+- What they said about themselves: circumstances, constraints, what they are
+  working towards, what they have already tried.
+- Anything they corrected, rejected, or asked not to be repeated.
+- Where the conversation had got to when it was compacted.
+
+DO NOT INCLUDE
+- Figures. No averages, counts, percentages, durations, dates or ranges. Those
+  are re-read from the live data on every turn, and a number carried here would
+  be quoted later as though it were current when it is weeks old.
+- Conclusions about the person's health, and anything resembling a diagnosis.
+  You are recording what was discussed, not deciding what is true.
+
+Write it as notes about the conversation — "asked about sleep and whether the
+weekend pattern was real; said they work nights on Tuesdays" — not as a reply to
+anybody."""
+
 WEEKLY_REVIEW = """Write this person's weekly health review.
 
 Cover, in this order: activity, sleep, and anything that moved notably against

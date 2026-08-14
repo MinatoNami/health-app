@@ -582,6 +582,347 @@ class MessageExportTests(InsightTestCase):
         self.assertNotIn("not yours", [m["question"] for m in rows])
 
 
+def compacting_chat(text="Asked about sleep and weekend patterns; works nights on Tuesdays."):
+    """A stand-in for `client.chat` during compaction, which takes no tools and
+    no response_format — so it is distinguishable from an answer call."""
+    def _chat(messages, *, model, tools=None, response_format=None, **kwargs):
+        return {
+            "message": {"content": text},
+            "finish_reason": "stop",
+            "usage": {"prompt_tokens": 300, "completion_tokens": 40},
+            "latency_ms": 9,
+            "model": model,
+        }
+
+    return _chat
+
+
+class BudgetTests(TestCase):
+    def test_the_estimate_scales_with_the_text(self):
+        self.assertEqual(llm_service.estimate_tokens(""), 0)
+        self.assertEqual(llm_service.estimate_tokens("abcd"), 1)
+        self.assertEqual(llm_service.estimate_tokens("a" * 400), 100)
+
+    def test_the_budget_shrinks_as_the_snapshot_grows(self):
+        """Derived rather than fixed. A constant history budget would be too
+        generous on a sparse account and over the limit on a full one."""
+        small = llm_service.history_budget("x" * 400)
+        large = llm_service.history_budget("x" * 40_000)
+
+        self.assertGreater(small, large)
+        self.assertEqual(large, 0)
+
+    def test_the_budget_never_goes_negative(self):
+        self.assertEqual(llm_service.history_budget("x" * 10_000_000), 0)
+
+    def test_a_nonsense_context_setting_falls_back(self):
+        with mock.patch.dict("os.environ", {"LLM_CONTEXT_TOKENS": "loads"}):
+            self.assertEqual(llm_service.context_tokens(), llm_service.DEFAULT_CONTEXT_TOKENS)
+
+
+class CompactionTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        self.session = ChatSession.objects.create()
+
+    def seed_turns(self, count, answered=True):
+        for i in range(count):
+            InsightTurn.objects.create(
+                session=self.session,
+                question=f"Question {i}",
+                answer={**GOOD_INSIGHT, "summary": f"Summary {i}"} if answered else None,
+            )
+
+    def compact(self, text=None, **kwargs):
+        chat = compacting_chat(text) if text else compacting_chat()
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=chat):
+            return llm_service.compact(self.session, **kwargs)
+
+    def test_older_turns_fold_into_a_summary(self):
+        self.seed_turns(6)
+
+        result = self.compact()
+
+        self.session.refresh_from_db()
+        # Four folded, two kept verbatim — the exchange somebody is still in the
+        # middle of is where the detail matters most.
+        self.assertTrue(result["compacted"])
+        self.assertEqual(result["turns"], 4)
+        self.assertEqual(self.session.summary_turns, 4)
+        self.assertIn("works nights on Tuesdays", self.session.summary)
+
+    def test_compacted_turns_stop_being_replayed(self):
+        self.seed_turns(6)
+        self.compact()
+
+        replayed = llm_service._prior_turns(None, self.session)
+
+        self.assertEqual([t["question"] for t in replayed], ["Question 4", "Question 5"])
+
+    def test_the_transcript_is_never_rewritten(self):
+        """Compaction exists to fit a context window. Destroying what was
+        actually said to save room would be a strange trade in a system built
+        around answers you can go back and check."""
+        self.seed_turns(6)
+
+        self.compact()
+
+        self.assertEqual(self.session.turns.count(), 6)
+        self.assertEqual(
+            [t.question for t in self.session.turns.order_by("created_at")],
+            [f"Question {i}" for i in range(6)],
+        )
+
+    def test_a_short_chat_is_left_alone(self):
+        self.seed_turns(2)
+
+        result = self.compact()
+
+        self.assertFalse(result["compacted"])
+        self.assertIn("not enough conversation", result["reason"])
+
+    def test_forcing_it_compacts_a_shorter_chat(self):
+        self.seed_turns(3)
+
+        result = self.compact(force=True)
+
+        self.assertTrue(result["compacted"])
+        self.assertEqual(result["turns"], 1)
+
+    def test_compacting_twice_builds_on_the_first_summary(self):
+        self.seed_turns(6)
+        self.compact()
+        self.seed_turns(4)
+
+        result = self.compact(text="Also asked about magnesium and evening walks.")
+
+        self.session.refresh_from_db()
+        self.assertTrue(result["compacted"])
+        # 4 folded first, then 4 of the 6 now pending — the two most recent stay
+        # verbatim through every pass, so a compacted chat never loses the
+        # exchange somebody is still in.
+        self.assertEqual(result["turns"], 4)
+        self.assertEqual(self.session.summary_turns, 8)
+        self.assertEqual(self.session.pending_turns().count(), 2)
+        self.assertIn("magnesium", self.session.summary)
+
+    def test_an_unreachable_model_does_not_take_the_chat_with_it(self):
+        """Compaction is a convenience. A model server that is down must degrade
+        to the existing behaviour — dropping the oldest turns — rather than
+        failing the question."""
+        self.seed_turns(6)
+
+        with mock.patch.object(
+            llm_client, "resolve_model", side_effect=llm_client.LLMUnavailable("refused")
+        ):
+            result = llm_service.compact(self.session)
+
+        self.session.refresh_from_db()
+        self.assertFalse(result["compacted"])
+        self.assertIn("refused", result["reason"])
+        self.assertEqual(self.session.summary, "")
+
+    def test_an_empty_summary_is_refused(self):
+        self.seed_turns(6)
+
+        result = self.compact(text="   ")
+
+        self.session.refresh_from_db()
+        self.assertFalse(result["compacted"])
+        self.assertEqual(self.session.summary, "")
+
+    def test_a_summary_that_names_a_condition_is_discarded(self):
+        """A summary is generated prose that a person reads and that is replayed
+        into later prompts. Exempting it would leave one piece of model output
+        nobody checks."""
+        self.seed_turns(6)
+
+        result = self.compact(text="Discussed their symptoms; you probably have sleep apnea.")
+
+        self.session.refresh_from_db()
+        self.assertFalse(result["compacted"])
+        self.assertIn("names a medical condition", result["reason"])
+        self.assertEqual(self.session.summary, "")
+        # And nothing was marked as folded, so those turns are still replayed.
+        self.assertEqual(self.session.summary_turns, 0)
+
+    def test_turns_with_no_answer_are_not_folded(self):
+        self.seed_turns(6, answered=False)
+
+        result = self.compact()
+
+        self.assertFalse(result["compacted"])
+
+
+class AutoCompactionTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        self.session = ChatSession.objects.create()
+
+    def ask(self, question, chat=None):
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=chat or fake_chat()):
+            return llm_service.answer(question, session=self.session)
+
+    def seed_turns(self, count, size=400):
+        for i in range(count):
+            InsightTurn.objects.create(
+                session=self.session,
+                question=f"Question {i} " + ("padding " * size),
+                answer={**GOOD_INSIGHT, "summary": f"Summary {i} " + ("padding " * size)},
+            )
+
+    def test_a_conversation_that_outgrows_its_budget_is_compacted(self):
+        self.seed_turns(5)
+
+        # One fake stands in for both the compaction call and the answer calls;
+        # the compaction one is distinguishable by taking no response_format.
+        state = {"summaries": 0}
+        answering = fake_chat()
+
+        def chat(messages, *, model, tools=None, response_format=None, **kwargs):
+            if tools is None and response_format is None:
+                state["summaries"] += 1
+                return {
+                    "message": {"content": "Earlier: asked a series of padded questions."},
+                    "finish_reason": "stop",
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                    "latency_ms": 5,
+                    "model": model,
+                }
+            return answering(messages, model=model, tools=tools, response_format=response_format, **kwargs)
+
+        payload = self.ask("And now?", chat=chat)
+
+        self.session.refresh_from_db()
+        self.assertEqual(state["summaries"], 1)
+        self.assertGreater(payload["compacted"], 0)
+        self.assertGreater(self.session.summary_turns, 0)
+
+    def test_a_short_conversation_is_not_compacted(self):
+        """Compaction costs a whole extra model call. It is a response to
+        running out of room, not housekeeping on a timer."""
+        self.seed_turns(2, size=1)
+
+        payload = self.ask("And now?")
+
+        self.session.refresh_from_db()
+        self.assertEqual(payload["compacted"], 0)
+        self.assertEqual(self.session.summary, "")
+
+    def test_the_summary_reaches_the_prompt_as_background(self):
+        self.session.summary = "Earlier: they said they work nights on Tuesdays."
+        self.session.summary_through_at = timezone.now()
+        self.session.summary_turns = 4
+        self.session.save()
+
+        chat, seen = captured_chat()
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=chat):
+            llm_service.answer("What should I do about it?", session=self.session)
+
+        prompt = json.dumps(seen[0])
+        self.assertIn("work nights on Tuesdays", prompt)
+        self.assertIn("no measurements", prompt)
+
+    def test_a_failed_compaction_still_answers_the_question(self):
+        self.seed_turns(5)
+
+        answering = fake_chat()
+
+        def chat(messages, *, model, tools=None, response_format=None, **kwargs):
+            if tools is None and response_format is None:
+                raise llm_client.LLMUnavailable("summariser refused")
+            return answering(messages, model=model, tools=tools, response_format=response_format, **kwargs)
+
+        payload = self.ask("And now?", chat=chat)
+
+        self.assertTrue(payload["generated"])
+        self.assertEqual(payload["compacted"], 0)
+
+    def test_the_real_token_count_is_recorded(self):
+        """`prompt_tokens` comes from the model server, so it is exact. It is
+        what lets the estimate the budget runs on be checked rather than
+        trusted."""
+        self.ask("How is my sleep?")
+
+        turn = self.session.turns.get()
+        self.assertGreater(turn.prompt_tokens, 0)
+        self.assertGreater(turn.completion_tokens, 0)
+
+
+class CompactEndpointTests(InsightTestCase):
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+        self.session = ChatSession.objects.create(owner=self.user, title="Long one")
+        for i in range(6):
+            InsightTurn.objects.create(
+                session=self.session,
+                owner=self.user,
+                question=f"Question {i}",
+                answer={**GOOD_INSIGHT, "summary": f"Summary {i}"},
+            )
+
+    def post(self):
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=compacting_chat()):
+            return self.client.post(f"/v1/chat/sessions/{self.session.pk}/compact")
+
+    def test_compacting_from_the_api(self):
+        response = self.post()
+        body = response.json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(body["compacted"])
+        self.assertEqual(body["turns"], 4)
+        self.assertEqual(body["session"]["summary_turns"], 4)
+
+    def test_a_short_chat_reports_why_rather_than_failing(self):
+        """A short chat and an unreachable model are both ordinary outcomes of
+        pressing this button, not errors."""
+        empty = ChatSession.objects.create(owner=self.user)
+
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=compacting_chat()):
+            response = self.client.post(f"/v1/chat/sessions/{empty.pk}/compact")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["compacted"])
+        self.assertTrue(response.json()["reason"])
+
+    def test_compacting_somebody_elses_chat_is_a_404(self):
+        stranger = User.objects.create_user(username="other", password="other-p4ssw0rd-x")
+        theirs = ChatSession.objects.create(owner=stranger)
+
+        self.assertEqual(
+            self.client.post(f"/v1/chat/sessions/{theirs.pk}/compact").status_code, 404
+        )
+
+    def test_the_transcript_reports_measured_context_use(self):
+        InsightTurn.objects.create(
+            session=self.session, owner=self.user, question="latest", prompt_tokens=4321
+        )
+
+        body = self.client.get(f"/v1/chat/sessions/{self.session.pk}").json()
+
+        self.assertEqual(body["context"]["last_prompt_tokens"], 4321)
+        self.assertEqual(body["context"]["limit_tokens"], llm_service.context_tokens())
+
+    def test_compaction_is_throttled_like_generation(self):
+        """It runs the model, so it queues against the same local GPU."""
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=compacting_chat()):
+            codes = {
+                self.client.post(f"/v1/chat/sessions/{self.session.pk}/compact").status_code
+                for _ in range(14)
+            }
+        self.assertIn(429, codes)
+
+
 class ChatRetentionTests(TestCase):
     def expire(self, *rows):
         stale = timezone.now() - timedelta(days=InsightTurn.retention_days() + 1)
@@ -622,3 +963,38 @@ class ChatRetentionTests(TestCase):
 
         self.assertEqual(InsightTurn.objects.count(), 0)
         self.assertEqual(ChatSession.objects.count(), 0)
+
+    def test_a_summary_of_expired_questions_is_cleared(self):
+        """A compaction is generated *from* questions. Once every question it
+        folded in has aged out, the summary is the only surviving description of
+        them — which would make retention a thing you can read around."""
+        session = ChatSession.objects.create(title="Long-running")
+        old = InsightTurn.objects.create(session=session, question="asked a month ago")
+        self.expire(old)
+        old.refresh_from_db()
+        session.summary = "They asked about sleep and said they work nights."
+        session.summary_through_at = old.created_at
+        session.summary_turns = 4
+        session.save()
+        # A recent turn keeps the session itself alive.
+        InsightTurn.objects.create(session=session, question="asked today")
+
+        InsightTurn.prune()
+
+        session.refresh_from_db()
+        self.assertEqual(session.summary, "")
+        self.assertEqual(session.summary_turns, 0)
+        self.assertIsNone(session.summary_through_at)
+
+    def test_a_summary_of_questions_still_in_retention_survives(self):
+        session = ChatSession.objects.create(title="Recent")
+        turn = InsightTurn.objects.create(session=session, question="asked today")
+        session.summary = "Recent notes."
+        session.summary_through_at = turn.created_at
+        session.summary_turns = 2
+        session.save()
+
+        InsightTurn.prune()
+
+        session.refresh_from_db()
+        self.assertEqual(session.summary, "Recent notes.")

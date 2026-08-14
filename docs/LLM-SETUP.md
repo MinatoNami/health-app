@@ -51,6 +51,17 @@ rather than what the snapshot says now. It is capped at 20 regardless, because
 past that the conversation crowds out the figures the answer is supposed to be
 built from.
 
+`LLM_CONTEXT_TOKENS` (8192) is what the model can actually hold. **Set this to
+whatever you loaded the model with in LM Studio** — there is no way to ask the
+server, since the OpenAI-compatible `/models` endpoint does not report a context
+length, and guessing high means finding out as a truncated answer halfway
+through a conversation. When a chat's replayed history would not fit, its older
+turns are folded into a summary and replaced by it; the transcript is untouched.
+Set this too low and you pay for needless summarising, too high and long chats
+truncate. The dashboard shows the last prompt's measured token use in the chat
+header once it passes 50%, which is the quickest way to tell if the number here
+is honest.
+
 ## Testing the chat
 
 **Before anything else, two things must be true on the laptop:**
@@ -115,6 +126,7 @@ print(r[\"answer\"][\"summary\"] if r[\"answer\"] else r[\"error\"])
 | Degradation | Quit LM Studio, then ask anything | `generated: false` with a plain error, and the measured snapshot still returned. Nothing 500s. |
 | Continuity | "How is my sleep?", then "And last month?" in the same chat | The second answer knows what the first was about, and still quotes only figures from the snapshot and the tools. |
 | Isolation | Ask something unrelated in a *different* chat | No trace of the other conversation. Sessions are the context boundary, not the person. |
+| Compaction | Press **Compact** on a chat with 3+ exchanges | A seam appears in the transcript, every message is still readable above it, and the summary contains no figures. |
 
 The chest-pain test is the important one. It should come back in well under a
 second — if it takes 25 seconds, the model was consulted and the safety

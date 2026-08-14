@@ -362,10 +362,179 @@ def _prior_turns(owner, session=None) -> list[dict]:
     turns into a named chat would carry last week's sleep question into a
     conversation about nutrition and let the model answer as though it had been
     asked — the single most confusing thing a chat history can do.
+
+    Turns already folded into a compaction are left out: the summary stands in
+    for them, and replaying both would spend the context twice on the same
+    conversation.
     """
     if session is not None:
-        return _replayable(session.turns.all(), session_turns())
+        return _replayable(session.pending_turns(), session_turns())
     return _replayable(_owned_by(owner), FOLLOW_UP_TURNS)
+
+
+# --------------------------------------------------------------------------
+# Context budgeting and compaction
+# --------------------------------------------------------------------------
+
+# What the model behind LLM_BASE_URL can hold. There is no way to ask it: the
+# OpenAI-compatible /models endpoint does not report a context length, and
+# guessing high means discovering the limit as a truncated answer halfway
+# through a conversation. Conservative by default, and worth setting once you
+# know what you loaded.
+DEFAULT_CONTEXT_TOKENS = 8192
+
+# Reserved for the answer itself. `answer()` asks for 2000 and the tool loop for
+# 1200; the headroom above that absorbs the estimate being an estimate.
+OUTPUT_RESERVE_TOKENS = 2600
+
+# The share of what remains that conversation history may occupy. The snapshot
+# is the part that was actually measured, and it has to stay dominant — a chat
+# that has crowded out its own evidence answers from memory, which is the exact
+# failure this architecture exists to prevent.
+HISTORY_SHARE = 0.35
+
+# Below this there is nothing worth spending a model call on.
+MIN_TURNS_TO_COMPACT = 2
+
+
+def context_tokens() -> int:
+    raw = os.environ.get("LLM_CONTEXT_TOKENS") or str(DEFAULT_CONTEXT_TOKENS)
+    try:
+        return max(2048, int(raw))
+    except ValueError:
+        return DEFAULT_CONTEXT_TOKENS
+
+
+def estimate_tokens(text: str) -> int:
+    """Four characters to a token.
+
+    A real tokeniser would mean shipping one, and which one depends on a model
+    that changes without a redeploy. The ratio holds well enough for English
+    prose and JSON, and every decision it feeds is a threshold with a margin
+    rather than a hard cut. `prompt_tokens` from the last turn records what the
+    server actually counted, so the estimate is checkable rather than trusted.
+    """
+    return (len(text or "") + 3) // 4
+
+
+def history_budget(system_prompt: str) -> int:
+    """Tokens available for replayed conversation, after the snapshot.
+
+    Derived rather than fixed: the system prompt carries the condensed snapshot,
+    which grows with how many metrics somebody records. A constant budget would
+    be too generous on a sparse account and over the limit on a full one.
+    """
+    spare = context_tokens() - OUTPUT_RESERVE_TOKENS - estimate_tokens(system_prompt)
+    return max(0, int(spare * HISTORY_SHARE))
+
+
+def _history_text(summary: str, turns: list[dict]) -> str:
+    parts = [summary] if summary else []
+    for turn in turns:
+        parts.append(turn["question"])
+        parts.append(turn["summary"])
+    return "\n".join(parts)
+
+
+def compact(
+    session: ChatSession,
+    *,
+    keep: int = MIN_TURNS_TO_COMPACT,
+    force: bool = False,
+) -> dict:
+    """Fold this conversation's older turns into a written summary.
+
+    Returns `{compacted, turns, summary, reason}`. Never raises: compaction is a
+    convenience that keeps a long chat coherent, and a model server that is down
+    must degrade to the existing behaviour — dropping the oldest turns — rather
+    than taking the question down with it.
+
+    `keep` leaves the most recent turns replayed verbatim. Compacting everything
+    would summarise the exchange somebody is still in the middle of, which is
+    where the detail matters most.
+
+    The summary goes through the same prohibited-claim rules as an answer. It is
+    generated prose that a person reads and that is replayed into later prompts,
+    so exempting it would mean the one piece of model output nobody checks.
+    """
+    pending = list(session.pending_turns())
+    replayable = [
+        t for t in pending if t.question and (t.answer or {}).get("summary")
+    ]
+    keep = max(0, keep)
+    foldable = replayable[: max(0, len(replayable) - keep)]
+
+    if len(foldable) < (1 if force else MIN_TURNS_TO_COMPACT):
+        return {
+            "compacted": False,
+            "turns": 0,
+            "summary": session.summary,
+            "reason": "not enough conversation to compact yet",
+        }
+
+    transcript = "\n\n".join(
+        f"Asked: {t.question}\nAnswered: {(t.answer or {}).get('summary', '')}"
+        for t in foldable
+    )
+    if session.summary:
+        transcript = (
+            f"Notes from an earlier compaction of this same conversation:\n"
+            f"{session.summary}\n\n{transcript}"
+        )
+
+    try:
+        model = client.resolve_model()
+        result = client.chat(
+            [
+                {"role": "system", "content": prompts.COMPACT},
+                {"role": "user", "content": transcript},
+            ],
+            model=model,
+            temperature=0.1,
+            max_tokens=400,
+        )
+        text = THINK_BLOCK.sub("", result["message"].get("content") or "").strip()
+    except client.LLMUnavailable as exc:
+        log.warning("Could not compact session %s: %s", session.pk, exc)
+        return {"compacted": False, "turns": 0, "summary": session.summary, "reason": str(exc)}
+
+    if not text:
+        return {
+            "compacted": False,
+            "turns": 0,
+            "summary": session.summary,
+            "reason": "the model returned an empty summary",
+        }
+
+    breach = safety.prohibited_claim(text)
+    if breach:
+        log.warning("Refused a conversation summary that %s", breach)
+        return {
+            "compacted": False,
+            "turns": 0,
+            "summary": session.summary,
+            "reason": f"the generated summary {breach}, so it was discarded",
+        }
+
+    session.summary = text
+    session.summary_through_at = foldable[-1].created_at
+    session.summary_turns += len(foldable)
+    session.summarised_at = timezone.now()
+    session.save(
+        update_fields=[
+            "summary",
+            "summary_through_at",
+            "summary_turns",
+            "summarised_at",
+            "updated_at",
+        ]
+    )
+    return {
+        "compacted": True,
+        "turns": len(foldable),
+        "summary": text,
+        "reason": None,
+    }
 
 
 def answer(
@@ -404,6 +573,10 @@ def answer(
         "tool_calls": [],
         "model": None,
         "error": None,
+        # How many earlier turns were folded into the summary to make room for
+        # this one. Surfaced so the UI can say it happened rather than leaving
+        # the conversation to quietly forget its own opening.
+        "compacted": 0,
     }
 
     def stop(**fields) -> dict:
@@ -428,29 +601,67 @@ def answer(
     if instruction:
         user_message = f"{instruction}\n\n{user_message}" if question else instruction
 
-    messages = [
-        {
-            "role": "system",
-            "content": _system_prompt(
-                verdict, snapshot, project=getattr(session, "project", None)
-            ),
-        }
-    ]
+    system = _system_prompt(verdict, snapshot, project=getattr(session, "project", None))
 
     # Replayed as real turns rather than pasted into the prompt, so the model
     # treats them as things it said before rather than as evidence. A session
     # carries its own history without being asked: the transcript on screen is
     # visibly a conversation, so behaving like one is the only consistent option.
+    prior, compaction = [], None
     if follow_up or session is not None:
-        for turn in _prior_turns(owner, session):
-            messages.append({"role": "user", "content": turn["question"]})
-            messages.append({"role": "assistant", "content": turn["summary"]})
-        if len(messages) > 1:
-            messages[0]["content"] += (
-                "\nThis is a follow-up. Earlier answers are in the conversation for "
-                "continuity only — re-read the snapshot and the tools for every figure "
-                "you quote, and do not treat anything you said before as a measurement.\n"
-            )
+        prior = _prior_turns(owner, session)
+
+        # Auto-compaction. Only when the replayed conversation would not fit —
+        # this costs a whole extra model call, so it is a response to running
+        # out of room rather than housekeeping on a timer. If it fails, the
+        # turn cap still bounds the history and the question is answered
+        # anyway; a conversation that cannot be summarised is not a reason to
+        # refuse to answer it.
+        if session is not None:
+            budget = history_budget(system)
+            if estimate_tokens(_history_text(session.summary, prior)) > budget:
+                outcome = compact(session)
+                if outcome["compacted"]:
+                    prior = _prior_turns(owner, session)
+                    payload["compacted"] = outcome["turns"]
+                    log.info(
+                        "Compacted %d turns of session %s to fit the context window",
+                        outcome["turns"],
+                        session.pk,
+                    )
+            compaction = session.summary or None
+
+    messages = [{"role": "system", "content": system}]
+
+    if compaction:
+        # A user message rather than a system one: it is a record of what this
+        # person said and asked, and models weight a system block as standing
+        # instruction. Fenced the same way the replayed answers are.
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Notes from earlier in this same conversation, summarised to fit. "
+                    "Background only — it contains no measurements, and every figure "
+                    "you quote must come from the snapshot or the tools.\n"
+                    f"{compaction}"
+                ),
+            }
+        )
+        messages.append(
+            {"role": "assistant", "content": "Understood — I have the thread so far."}
+        )
+
+    for turn in prior:
+        messages.append({"role": "user", "content": turn["question"]})
+        messages.append({"role": "assistant", "content": turn["summary"]})
+
+    if len(messages) > 1:
+        messages[0]["content"] += (
+            "\nThis is a follow-up. Earlier answers are in the conversation for "
+            "continuity only — re-read the snapshot and the tools for every figure "
+            "you quote, and do not treat anything you said before as a measurement.\n"
+        )
 
     messages.append({"role": "user", "content": user_message})
 
@@ -550,6 +761,8 @@ def _persist(
             tool_calls=payload.get("tool_calls"),
             model_name=(payload.get("model") or {}).get("name", "")[:128],
             latency_ms=(payload.get("model") or {}).get("latency_ms") or 0,
+            prompt_tokens=(payload.get("model") or {}).get("prompt_tokens") or 0,
+            completion_tokens=(payload.get("model") or {}).get("completion_tokens") or 0,
             error=(payload.get("error") or "")[:500],
         )
         payload["turn_id"] = turn.pk

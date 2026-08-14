@@ -361,11 +361,40 @@ class ChatSession(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     last_message_at = models.DateTimeField(default=timezone.now, db_index=True)
 
+    # Compaction. `summary` stands in for every turn up to `summary_through_at`
+    # when the conversation is replayed, so a long chat keeps its thread instead
+    # of losing its opening to a turn cap.
+    #
+    # It replaces those turns *in the prompt only*. The transcript on screen and
+    # in the export is never rewritten — compaction exists to fit a context
+    # window, and destroying what was actually said to save room would be a
+    # strange trade in a system built around auditable answers.
+    summary = models.TextField(blank=True)
+    # A timestamp rather than a foreign key to the last folded turn: retention
+    # deletes turns, and a FK would go null and leave a summary covering an
+    # unknown range. A timestamp still answers "what comes after this".
+    summary_through_at = models.DateTimeField(null=True, blank=True)
+    summary_turns = models.IntegerField(default=0)
+    summarised_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ("-last_message_at",)
         indexes = [models.Index(fields=["owner", "-last_message_at"])]
 
     TITLE_CHARS = 60
+
+    def pending_turns(self):
+        """Turns not yet folded into the summary, oldest first."""
+        queryset = self.turns.order_by("created_at")
+        if self.summary_through_at:
+            queryset = queryset.filter(created_at__gt=self.summary_through_at)
+        return queryset
+
+    def clear_summary(self) -> None:
+        self.summary = ""
+        self.summary_through_at = None
+        self.summary_turns = 0
+        self.summarised_at = None
 
     def autotitle(self, question: str) -> None:
         """Name an untitled chat after its first question.
@@ -393,6 +422,12 @@ class ChatSession(models.Model):
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "last_message_at": self.last_message_at.isoformat(),
+            "summary": self.summary or None,
+            "summary_turns": self.summary_turns,
+            "summary_through_at": (
+                self.summary_through_at.isoformat() if self.summary_through_at else None
+            ),
+            "summarised_at": self.summarised_at.isoformat() if self.summarised_at else None,
         }
         if message_count is not None:
             payload["message_count"] = message_count
@@ -442,6 +477,12 @@ class InsightTurn(models.Model):
     tool_calls = models.JSONField(null=True, blank=True)
     model_name = models.CharField(max_length=128, blank=True)
     latency_ms = models.IntegerField(default=0)
+    # Reported by the model server, so exact rather than estimated. Kept for two
+    # reasons: a feedback loop wants to know what an answer cost, and the
+    # compaction budget calibrates its own character-based estimate against the
+    # last turn's real figure.
+    prompt_tokens = models.IntegerField(default=0)
+    completion_tokens = models.IntegerField(default=0)
     error = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
@@ -469,6 +510,23 @@ class InsightTurn(models.Model):
         """
         cutoff = timezone.now() - timedelta(days=cls.retention_days())
         deleted, _ = cls.objects.filter(created_at__lt=cutoff).delete()
+
+        # A compaction is generated *from* questions. Once the newest turn it
+        # folded in has aged out, every question behind it is gone and the
+        # summary is the only surviving description of them — which would make
+        # retention a thing you can read around. Clear it.
+        for session in ChatSession.objects.filter(summary_through_at__lt=cutoff).exclude(summary=""):
+            session.clear_summary()
+            session.save(
+                update_fields=[
+                    "summary",
+                    "summary_through_at",
+                    "summary_turns",
+                    "summarised_at",
+                    "updated_at",
+                ]
+            )
+
         ChatSession.objects.filter(turns__isnull=True, created_at__lt=cutoff).delete()
         return deleted
 
@@ -482,6 +540,8 @@ class InsightTurn(models.Model):
             "tool_calls": self.tool_calls,
             "model_name": self.model_name,
             "latency_ms": self.latency_ms,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
             "error": self.error,
             "created_at": self.created_at.isoformat(),
         }

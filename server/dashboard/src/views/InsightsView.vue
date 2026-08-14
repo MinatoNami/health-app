@@ -40,6 +40,14 @@ const editing = ref(null)   // project whose instructions are open
 // because there is no session row to hang it on until the first question.
 const pendingProject = ref(null)
 
+/* Compaction state for the open chat. `detail` is the transcript payload the
+ * server returned, which carries the summary, how many turns it covers, and the
+ * measured token usage of the last prompt. */
+const detail = ref(null)
+const compacting = ref(false)
+const showSummary = ref(false)
+const notice = ref('')
+
 /* Short on purpose. Full sentences on five chips was a paragraph of its own. */
 const SUGGESTIONS = [
   'How is my sleep?',
@@ -153,9 +161,12 @@ async function openSession(session) {
   drawerOpen.value = false
   loadingChat.value = true
   error.value = ''
+  notice.value = ''
+  showSummary.value = false
   try {
     const body = await api.chatSession(session.id)
     activeId.value = body.id
+    detail.value = body
     turns.value = toTranscript(body.messages)
     scrollDown()
   } catch (e) {
@@ -169,9 +180,61 @@ function newChat(projectId = null) {
   if (asking.value) return
   activeId.value = null
   turns.value = []
+  detail.value = null
   error.value = ''
+  notice.value = ''
+  showSummary.value = false
   drawerOpen.value = false
   pendingProject.value = projectId
+}
+
+// --------------------------------------------------------------------------
+// Compaction
+// --------------------------------------------------------------------------
+
+/* How many of the visible messages sit behind the compaction line. The server
+ * counts turns; the transcript renders two rows per turn, so the divider goes
+ * after twice that many rows. */
+const compactedRows = computed(() => (detail.value?.summary_turns || 0) * 2)
+
+/* Measured, not estimated: `last_prompt_tokens` is what the model server
+ * actually counted for the most recent prompt. Only shown once it is worth
+ * knowing — a meter that sits at 4% all day is decoration. */
+const contextUse = computed(() => {
+  const context = detail.value?.context
+  if (!context?.limit_tokens || !context.last_prompt_tokens) return null
+  const pct = Math.round((context.last_prompt_tokens / context.limit_tokens) * 100)
+  return pct >= 50 ? { pct, ...context } : null
+})
+
+const canCompact = computed(
+  () => activeId.value && !asking.value && !compacting.value && ready.value
+    && (detail.value?.context?.pending_turns || 0) >= 2,
+)
+
+async function refreshDetail() {
+  if (!activeId.value) return
+  try {
+    detail.value = await api.chatSession(activeId.value)
+  } catch { /* the transcript on screen is still correct */ }
+}
+
+async function compactNow() {
+  if (!canCompact.value) return
+  compacting.value = true
+  notice.value = ''
+  error.value = ''
+  try {
+    const result = await api.compactChatSession(activeId.value)
+    detail.value = { ...detail.value, ...result.session }
+    notice.value = result.compacted
+      ? `Compacted ${result.turns} earlier ${result.turns === 1 ? 'message' : 'messages'}. The transcript is unchanged — this only affects what the model is sent.`
+      : `Nothing compacted: ${result.reason}`
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    compacting.value = false
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -203,10 +266,17 @@ async function run(label, call) {
   scrollDown()
   try {
     const sessionId = await ensureSession()
-    turns.value.splice(-1, 1, { role: 'assistant', result: await call(sessionId) })
+    const result = await call(sessionId)
+    turns.value.splice(-1, 1, { role: 'assistant', result })
+    // Said out loud rather than left to be noticed: the alternative is a
+    // conversation that quietly forgets its own opening.
+    if (result.compacted) {
+      notice.value = `Compacted ${result.compacted} earlier messages to make room in the model's context. Nothing was deleted.`
+    }
     // The list changes shape on the first question of a chat — it gains a
     // title — and reorders on every one after that.
     loadSessions()
+    refreshDetail()
   } catch (e) {
     turns.value.splice(-1, 1)
     error.value = e.message
@@ -328,6 +398,19 @@ onMounted(load)
         <button class="drawerbtn" aria-label="Show chats" @click="drawerOpen = true">☰</button>
         <h2>{{ activeSession?.title || 'New chat' }}</h2>
         <span v-if="activeProject" class="badge">{{ activeProject.name }}</span>
+        <span class="spacer" />
+        <!-- Only once the prompt is genuinely filling up. A context meter that
+             reads 4% every day is decoration people stop seeing. -->
+        <span
+          v-if="contextUse" class="ctx" :class="{ tight: contextUse.pct >= 80 }"
+          :title="`Last prompt used about ${contextUse.last_prompt_tokens.toLocaleString()} of ${contextUse.limit_tokens.toLocaleString()} tokens`"
+        >{{ contextUse.pct }}% context</span>
+        <button
+          v-if="activeId" class="linkbtn compact"
+          :disabled="!canCompact"
+          title="Summarise the earlier part of this chat so it still fits the model's context. The transcript is not changed."
+          @click="compactNow"
+        >{{ compacting ? 'Compacting…' : 'Compact' }}</button>
       </div>
 
       <div ref="transcript" class="transcript">
@@ -348,8 +431,26 @@ onMounted(load)
             “{{ activeProject.name }}”.
           </p>
 
-          <ChatMessage v-for="(turn, i) in turns" :key="i" :turn="turn" />
+          <template v-for="(turn, i) in turns" :key="i">
+            <ChatMessage :turn="turn" />
+            <!-- The line where the model's memory of this chat becomes a
+                 summary. Everything above it is still here to read — that is
+                 the whole point of keeping the transcript out of it. -->
+            <div v-if="compactedRows && i === compactedRows - 1" class="compactline">
+              <span class="rule" />
+              <button class="linkbtn" @click="showSummary = !showSummary">
+                {{ detail.summary_turns }} earlier
+                {{ detail.summary_turns === 1 ? 'message' : 'messages' }} compacted
+                {{ showSummary ? '▾' : '▸' }}
+              </button>
+              <span class="rule" />
+            </div>
+            <p v-if="showSummary && compactedRows && i === compactedRows - 1" class="summarybox">
+              {{ detail.summary }}
+            </p>
+          </template>
 
+          <p v-if="notice" class="notice">{{ notice }}</p>
           <p v-if="error" class="error">{{ error }}</p>
 
           <p v-if="!ready && status" class="offline">
@@ -494,6 +595,31 @@ onMounted(load)
 }
 .opening { color: var(--text-secondary); }
 .projectnote { margin: 0 0 14px; font-size: 12px; color: var(--text-muted); }
+
+.ctx {
+  flex: none; font-size: 11px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ctx.tight { color: var(--warning-text); font-weight: 600; }
+.compact { flex: none; }
+.compact:disabled { opacity: 0.4; cursor: not-allowed; text-decoration: none; }
+
+/* A seam, not a banner. What happened is that the model's memory of the part
+   above became a paragraph; the messages are still there, so this should read
+   as a fold rather than as a deletion. */
+.compactline { display: flex; align-items: center; gap: 10px; margin: 2px 0 16px; }
+.compactline .rule { flex: 1; height: 1px; background: var(--gridline); }
+.compactline .linkbtn { flex: none; font-size: 11px; text-decoration: none; }
+.compactline .linkbtn:hover { text-decoration: underline; }
+
+.summarybox {
+  margin: -6px 0 16px; padding: 10px 13px;
+  background: var(--surface-1); border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: 12.5px; line-height: 1.5; color: var(--text-secondary);
+}
+
+.notice { margin: 0 0 14px; font-size: 12px; color: var(--text-secondary); }
 
 .composer { border-top: 1px solid var(--border); background: var(--surface-1); padding: 11px 14px 12px; }
 

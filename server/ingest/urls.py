@@ -51,5 +51,10 @@ urlpatterns = [
     path("v1/chat/projects/<int:project_id>", chat_views.project_detail, name="chat-project"),
     path("v1/chat/sessions", chat_views.sessions, name="chat-sessions"),
     path("v1/chat/sessions/<uuid:session_id>", chat_views.session_detail, name="chat-session"),
+    path(
+        "v1/chat/sessions/<uuid:session_id>/compact",
+        chat_views.session_compact,
+        name="chat-session-compact",
+    ),
     path("v1/chat/messages", chat_views.messages, name="chat-messages"),
 ]

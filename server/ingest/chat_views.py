@@ -52,6 +52,7 @@ from rest_framework.response import Response
 
 from .analytics_views import AUTH, AnalyticsThrottle
 from .auth import owner_of as _owner
+from .insight_views import InsightThrottle
 from .llm import service as llm_service
 from .models import ChatProject, ChatSession, InsightTurn
 
@@ -324,14 +325,46 @@ def session_detail(request, session_id):
             session.save(update_fields=[*fields, "updated_at"])
 
     turns = list(session.turns.order_by("created_at"))
+    # The last turn's prompt_tokens is what the model server actually counted,
+    # so the UI reports measured usage rather than the estimate the compaction
+    # threshold runs on. Zero until a model has answered in here at least once.
+    used = next((t.prompt_tokens for t in reversed(turns) if t.prompt_tokens), 0)
     return Response(
         {
             **session.as_dict(message_count=len(turns), preview=_preview(session)),
             "project": session.project.as_dict() if session.project else None,
             "messages": [turn.as_dict() for turn in turns],
             "retention_days": InsightTurn.retention_days(),
+            "context": {
+                "limit_tokens": llm_service.context_tokens(),
+                "last_prompt_tokens": used,
+                "pending_turns": session.pending_turns().count(),
+            },
         }
     )
+
+
+@api_view(["POST"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([InsightThrottle])
+def session_compact(request, session_id):
+    """Fold this conversation's older turns into a written summary, now.
+
+    Throttled with the generation limit rather than the analytics one: this runs
+    the model, and on a local GPU that is the scarce resource the insight
+    throttle exists to protect.
+
+    Returns 200 whether or not anything was compacted, with `compacted` and a
+    `reason`. A short chat and an unreachable model server are both ordinary
+    outcomes of pressing this button, not errors — and the conversation is
+    unchanged either way, because compaction only ever affects what is sent to
+    the model, never the transcript.
+    """
+    session = get_object_or_404(_sessions(request), pk=session_id)
+    outcome = llm_service.compact(session, force=True)
+    session.refresh_from_db()
+    return Response({**outcome, "session": session.as_dict()})
 
 
 # --------------------------------------------------------------------------

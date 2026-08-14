@@ -133,6 +133,7 @@ be deleted before the first sync ever shipped it.
 | GET/PATCH/DELETE | `/v1/chat/projects/<id>` | session/bearer | Rename, re-instruct, delete (chats survive) |
 | GET/POST | `/v1/chat/sessions` | session/bearer | The sidebar's list; start a chat |
 | GET/PATCH/DELETE | `/v1/chat/sessions/<uuid>` | session/bearer | One transcript; rename, file, delete |
+| POST | `/v1/chat/sessions/<uuid>/compact` | session/bearer | Fold older turns into a summary (runs the model) |
 | GET | `/v1/chat/messages` | session/bearer | Flat message export, filterable and paginated |
 | POST | `/v1/health/batches` | Bearer | Ingest an NDJSON batch |
 | GET | `/v1/health/ping` | Bearer | Cheap probe — powers Test Connection |
@@ -324,7 +325,7 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-294 tests. The suite runs on SQLite so it needs no database server; the ingest
+320 tests. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
@@ -444,6 +445,39 @@ and explicitly demoted to background. It never relaxes the safety rules, which
 run on the answer rather than the prompt; there is a test for that. Deleting a
 project keeps its chats and unfiles them.
 
+**A long chat compacts rather than forgetting.** A turn cap alone means turn 20
+has silently lost turns 1–14, which is worse than it sounds: the conversation
+still *reads* complete on screen while the model answers as though the opening
+never happened. So when the replayed history would not fit the budget, the older
+turns are summarised into the session and that summary is replayed in their
+place. `POST /v1/chat/sessions/<uuid>/compact` does it on demand; the dashboard
+puts a **Compact** button in the chat header and draws a seam in the transcript
+where the fold is, with the summary one click away.
+
+Four things about it are deliberate:
+
+- **The transcript is never rewritten.** Compaction changes what is *sent to the
+  model*, nothing else. Destroying what was actually said to save room would be
+  a strange trade in a system built around answers you can go back and check.
+- **The two most recent turns always stay verbatim**, through every pass. The
+  exchange somebody is still in the middle of is where the detail matters most.
+- **The summary carries no figures.** It records what was asked and what the
+  person said about themselves — not averages, counts or dates. A number folded
+  in here would be quoted weeks later as though it were current, and every
+  figure is re-read from the live snapshot on every turn anyway.
+- **It goes through the same prohibited-claim rules as an answer**, and is
+  discarded if it trips one. A summary is generated prose that a person reads
+  and that is replayed into later prompts; exempting it would leave one piece of
+  model output nobody checks.
+
+The budget is derived, not fixed: `LLM_CONTEXT_TOKENS` minus room for the answer
+minus the system prompt — which carries the snapshot and grows with how many
+metrics you record — and history may occupy 35% of what remains. Auto-compaction
+fires only when that is exceeded, because it costs a whole extra model call. If
+it fails, the turn cap still bounds the history and the question is answered
+anyway; a conversation that cannot be summarised is not a reason to refuse to
+answer it.
+
 **`GET /v1/chat/messages` is the export.** Flat across every conversation,
 oldest first, filterable by `session`, `project`, `since`/`until`, `generated`
 and `q`, paginated with `limit`/`offset`, and `total` counted before the page:
@@ -454,7 +488,8 @@ curl -sH "Authorization: Bearer $TOKEN" \
 ```
 
 Each row is the whole turn — question, structured answer, safety verdict, which
-tools ran, which model answered, how long it took, and what failed. Prose alone
+tools ran, which model answered, how long it took, how many tokens it cost, and
+what failed. Prose alone
 cannot tell you whether an answer was any good; the machinery around it is most
 of the signal, which is why the endpoint returns it and why a bearer token is
 enough to read it. Oldest-first is not a style choice: a loop reads forward from

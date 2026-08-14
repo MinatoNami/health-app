@@ -102,6 +102,11 @@ export const api = {
   updateChatSession: (id, body) =>
     request(`/v1/chat/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteChatSession: (id) => request(`/v1/chat/sessions/${id}`, { method: 'DELETE' }),
+  // Folds older turns into a written summary so a long chat keeps its thread
+  // instead of losing its opening to the turn cap. Affects what is sent to the
+  // model; the transcript is never rewritten. Slow — it runs the model.
+  compactChatSession: (id) =>
+    request(`/v1/chat/sessions/${id}/compact`, { method: 'POST', body: '{}' }),
 
   // Flat across every conversation, oldest first, with the safety verdict, the
   // tools that ran and the model that answered attached to each turn. This is
