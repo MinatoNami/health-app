@@ -53,10 +53,18 @@ screen held one question and one answer: asking a second thing silently erased
 the first, and "what about last month?" reached the model with no idea what
 "that" was.
 
-- **Chats** (toolbar, left) opens the history sheet: projects first, then loose
-  conversations under Today / Yesterday / Previous 7 days. Search reaches the
-  questions inside a chat, not just titles. Swipe a row to rename, archive or
-  delete. "Load older chats" pages.
+- **Chats** (toolbar, left) slides in the history drawer from the left, with the
+  conversation dimmed behind it: tap the dimmed area or drag it away to close.
+  A drawer rather than a sheet because a chat list is *navigation* — you open it
+  to glance, change your mind and put it back — where a sheet is modal and says
+  "finish with me first". Projects first, then loose conversations under Today /
+  Yesterday / Previous 7 days. Search reaches the questions inside a chat, not
+  just titles. Swipe a row to rename, archive or delete. "Load older chats"
+  pages.
+
+  The close-drag lives on the scrim, not the drawer: the panel is a list whose
+  rows carry swipe actions, and a container-level horizontal drag would eat them
+  — swiping a chat to rename it would close the drawer instead.
 - **⋯** (toolbar, right) starts a new chat or compacts the current one.
 - **Thumbs and a note** sit under every stored answer.
 - **A compaction seam** marks where the model's memory of the conversation
@@ -104,7 +112,7 @@ HealthExporter/
 │   └── DailyBriefScheduler.swift
 └── UI/
     ├── InsightsView.swift    transcript, composer, bubbles, rating
-    ├── ChatHistoryView.swift the history sheet
+    ├── ChatHistoryView.swift the history drawer
     ├── StatusView.swift, MetricsView.swift, SettingsView.swift, …
     └── TrendCharts.swift, MetricStyle.swift, CoverageGrid.swift
 ```

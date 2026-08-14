@@ -1,11 +1,15 @@
 import SwiftUI
 
-/// Past conversations, as a sheet.
+/// Past conversations, as a drawer down the left-hand side.
 ///
-/// The dashboard puts this in a permanent sidebar. A phone has no room for one
-/// beside a transcript, and the alternative — a column narrow enough to fit —
-/// is two unusable things instead of one usable one. So it is a sheet reached
-/// from the toolbar, which is where every chat app on this platform puts it.
+/// A sheet was wrong for this. A sheet is modal and arrives from the bottom,
+/// which says "finish with me before you carry on" — but a chat list is
+/// navigation. You open it to glance, change your mind, and dismiss it, and
+/// that wants the gesture every chat app on this platform already trained
+/// people to use: slide in from the left, tap anywhere else to put it back.
+///
+/// The dashboard reaches the same place from the other direction — a permanent
+/// column when there is room, this same drawer when there is not.
 ///
 /// Grouped the way people already look for things: projects first, because a
 /// project is something you chose to make and stays where you put it, then
@@ -13,7 +17,9 @@ import SwiftUI
 /// conversation is found by roughly when it happened.
 struct ChatHistoryView: View {
     @EnvironmentObject private var engine: SyncEngine
-    @Environment(\.dismiss) private var dismiss
+    /// Closing is the drawer's job, not the list's — tapping outside, dragging
+    /// it away and picking a chat all mean the same thing here.
+    let dismiss: () -> Void
 
     @State private var search = ""
     @State private var renaming: ChatSession?
@@ -60,10 +66,21 @@ struct ChatHistoryView: View {
                 }
 
                 if engine.chats.isEmpty && !engine.isLoadingChats {
-                    Text(search.isEmpty
-                         ? "No chats yet. Ask something to start one."
-                         : "Nothing matched.")
-                        .foregroundStyle(.secondary)
+                    // "No chats yet" is a confident answer, and the wrong one to
+                    // give when the request simply failed.
+                    if let problem = engine.chatsError {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Could not load your chats.")
+                            Text(problem).font(.caption).foregroundStyle(.secondary)
+                            Button("Try again") { Task { await engine.loadChats(search: search) } }
+                                .font(.subheadline)
+                        }
+                    } else {
+                        Text(search.isEmpty
+                             ? "No chats yet. Ask something to start one."
+                             : "Nothing matched.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .listStyle(.insetGrouped)
@@ -82,9 +99,6 @@ struct ChatHistoryView: View {
                 if engine.isLoadingChats && engine.chats.isEmpty { ProgressView() }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         engine.newChat()
@@ -181,5 +195,98 @@ struct ChatHistoryView: View {
             }
             .tint(.blue)
         }
+    }
+}
+
+/// Slides a panel in from the left over its content, with a dimmed scrim.
+///
+/// Written by hand rather than reached for from the toolkit because none of the
+/// stock presentations is this: a sheet is modal and comes from the bottom,
+/// `NavigationSplitView` collapses to a push on iPhone, and a plain overlay has
+/// no gesture. What people expect from a chat list is specifically the drawer —
+/// slide it in, tap the dimmed part to put it back, or throw it away with a
+/// flick.
+///
+/// The drag is tracked live rather than animated on release, so the panel
+/// follows your thumb and the scrim darkens as it comes. A drawer that ignores
+/// the gesture until you let go feels broken even when it ends up in the right
+/// place.
+///
+/// That drag lives on the **scrim**, not on the whole drawer. Putting it on the
+/// container costs more than it buys: the panel is a `List` whose rows carry
+/// swipe actions, and a container-level horizontal drag eats them — swiping a
+/// chat to rename or delete it would close the drawer instead. Dragging the
+/// dimmed area is the same gesture in the place where nothing else wants it.
+struct SideDrawer<Panel: View, Content: View>: View {
+    @Binding var isOpen: Bool
+    @ViewBuilder var panel: Panel
+    @ViewBuilder var content: Content
+
+    @GestureState private var drag: CGFloat = 0
+
+    /// Wide enough to read a chat title, narrow enough that the conversation
+    /// behind stays visible — the strip of context is what tells you the drawer
+    /// is temporary.
+    private func width(_ available: CGFloat) -> CGFloat {
+        min(available * 0.84, 340)
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = width(geometry.size.width)
+            // Clamped so dragging further open than open does nothing, and the
+            // panel cannot be pushed off past its own edge.
+            let offset = min(max((isOpen ? 0 : -width) + drag, -width), 0)
+            let progress = 1 + offset / width
+
+            ZStack(alignment: .leading) {
+                content
+                    // The scrim already swallows taps; this keeps VoiceOver from
+                    // wandering into a conversation the drawer is covering.
+                    .accessibilityHidden(isOpen)
+
+                if progress > 0 {
+                    Color.black
+                        .opacity(0.35 * progress)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .onTapGesture { close() }
+                        .gesture(closeDrag(width: width))
+                        .accessibilityLabel("Close chats")
+                        .accessibilityAddTraits(.isButton)
+                }
+
+                panel
+                    .frame(width: width)
+                    .background(Color(.systemGroupedBackground))
+                    .ignoresSafeArea(edges: .vertical)
+                    .offset(x: offset)
+                    .shadow(color: .black.opacity(0.18 * progress), radius: 12, x: 2)
+            }
+            .animation(.snappy(duration: 0.28), value: isOpen)
+        }
+    }
+
+    /// Drag the dimmed area to push the drawer back. Only ever closes — there
+    /// is no scrim to grab when it is shut, and opening is the toolbar's job.
+    private func closeDrag(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 12)
+            .updating($drag) { value, state, _ in
+                // Leftward, and horizontal: anything else is not this gesture.
+                guard value.translation.width < 0,
+                      abs(value.translation.width) > abs(value.translation.height)
+                else { return }
+                state = value.translation.width
+            }
+            .onEnded { value in
+                // Predicted end rather than raw translation, so a short flick
+                // closes it and a slow, short drag springs back.
+                guard value.predictedEndTranslation.width < -width / 3 else { return }
+                close()
+            }
+    }
+
+    private func close() {
+        withAnimation(.snappy(duration: 0.28)) { isOpen = false }
     }
 }

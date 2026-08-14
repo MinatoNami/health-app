@@ -26,31 +26,42 @@ struct InsightsView: View {
     ]
 
     var body: some View {
-        NavigationStack {
-            Group {
-                if !engine.isSignedIn {
-                    ContentUnavailableView(
-                        "Not signed in",
-                        systemImage: "person.crop.circle.badge.xmark",
-                        description: Text("Sign in on the Settings tab.")
-                    )
-                } else {
-                    conversation
-                }
+        // The drawer wraps the NavigationStack rather than sitting inside it,
+        // so it covers this screen's own navigation bar the way a chat list is
+        // expected to. The tab bar below stays put — it belongs to the app, not
+        // to this conversation.
+        SideDrawer(isOpen: $showingHistory) {
+            ChatHistoryView {
+                withAnimation(.snappy(duration: 0.28)) { showingHistory = false }
             }
-            .navigationTitle(engine.activeTitle ?? "Insights")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { if engine.isSignedIn { chatToolbar } }
-            .sheet(isPresented: $showingHistory) { ChatHistoryView() }
-            .task { if engine.snapshot == nil { await engine.refreshSnapshot() } }
+        } content: {
+            NavigationStack {
+                Group {
+                    if !engine.isSignedIn {
+                        ContentUnavailableView(
+                            "Not signed in",
+                            systemImage: "person.crop.circle.badge.xmark",
+                            description: Text("Sign in on the Settings tab.")
+                        )
+                    } else {
+                        conversation
+                    }
+                }
+                .navigationTitle(engine.activeTitle ?? "Insights")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar { if engine.isSignedIn { chatToolbar } }
+                .task { if engine.snapshot == nil { await engine.refreshSnapshot() } }
+            }
         }
     }
 
     @ToolbarContentBuilder
     private var chatToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button { showingHistory = true } label: {
-                Label("Chats", systemImage: "list.bullet")
+            Button {
+                withAnimation(.snappy(duration: 0.28)) { showingHistory = true }
+            } label: {
+                Label("Chats", systemImage: "sidebar.leading")
             }
         }
         ToolbarItem(placement: .topBarTrailing) {

@@ -691,6 +691,12 @@ final class SyncEngine: ObservableObject {
     @Published private(set) var chatProjects: [ChatProject] = []
     @Published private(set) var totalChats = 0
     @Published private(set) var isLoadingChats = false
+    /// Why the history list is empty, when the reason is not "there are none".
+    ///
+    /// Worth its own field: a failed request and an empty history look
+    /// identical on screen otherwise, and "No chats yet" is a confident,
+    /// wrong answer to give somebody whose token has just expired.
+    @Published private(set) var chatsError: String?
     @Published private(set) var isLoadingTranscript = false
     @Published private(set) var isCompacting = false
     /// Said out loud rather than left to be noticed — a conversation that
@@ -914,7 +920,9 @@ final class SyncEngine: ObservableObject {
         case .success(let page):
             chats = more ? chats + page.sessions : page.sessions
             totalChats = page.total
+            chatsError = nil
         case .failure(let error):
+            chatsError = error.localizedDescription
             Log.shared.error("insight", "Could not list chats: \(error.localizedDescription)")
         }
         if case .success(let list) = await sink.chatProjects() {

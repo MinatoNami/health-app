@@ -171,7 +171,7 @@ cannot mistake thirty days for everything.
 
 | | Dashboard | Phone |
 |---|---|---|
-| History | Permanent sidebar | Sheet from the toolbar |
+| History | Permanent sidebar, drawer below 860px | Drawer from the toolbar |
 | Projects | Create, rename, edit instructions, delete | Shown, grouped; not edited |
 | Search | Yes, server-side, reaches question bodies | Yes, same endpoint |
 | Rename / archive / delete | Row menu | Swipe actions |
