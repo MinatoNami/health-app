@@ -14,12 +14,13 @@ import json
 import logging
 import os
 import re
+from datetime import timedelta
 
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 
-from .. import health_analysis, safety
+from .. import analytics, health_analysis, safety
 from ..models import ChatSession, InsightTurn
 from . import client, prompts, tools
 
@@ -106,6 +107,41 @@ def _condense(snapshot: dict) -> dict:
 MAX_PROJECT_INSTRUCTIONS = 2000
 
 
+def _now_block(snapshot: dict) -> str:
+    """What time it is where the person is, and what that does and does not mean.
+
+    Without this the model has `as_of` — yesterday's date — and nothing else, so
+    "this week", "last month" and "since Tuesday" are resolved against whatever
+    it believes today to be. On a model whose training data stopped a year ago,
+    that is a year-old calendar, and the answer confidently names the wrong
+    dates while quoting the right figures.
+
+    The zone comes off the snapshot rather than from `tz_name` directly, so the
+    clock in the prompt and the day boundaries in the figures cannot disagree:
+    both resolve through the same `analytics.zone` fallback.
+
+    The second half matters as much as the first. Telling a model the current
+    time invites it to answer "how am I doing today" with a number, and there is
+    no such number — windows end yesterday precisely because a half-finished day
+    against full-day baselines reads as a collapse in activity that is only the
+    clock.
+    """
+    zone = analytics.zone(snapshot.get("timezone"))
+    now = timezone.now().astimezone(zone)
+    return (
+        "RIGHT NOW\n"
+        f"It is {now:%A %d %B %Y, %H:%M} in {zone}. Resolve every relative period the "
+        f"person uses against this clock: \"today\" means {now:%Y-%m-%d}, \"this week\" is "
+        f"the week containing it, \"last month\" is {now.replace(day=1) - timedelta(days=1):%B %Y}. "
+        "Name the actual dates you settled on so they can be checked.\n"
+        f"The measured windows below stop at the end of {snapshot['as_of']} — yesterday — "
+        "because today is still in progress. You may work out what somebody means by "
+        "\"this week\", but you have no figures for today and must not report any. If "
+        "they ask about today, say the day is not complete yet and answer for the most "
+        "recent complete one.\n\n"
+    )
+
+
 def _system_prompt(
     verdict: safety.SafetyVerdict, snapshot: dict, project=None
 ) -> str:
@@ -132,6 +168,7 @@ def _system_prompt(
 
     return (
         prompt
+        + _now_block(snapshot)
         + "PREPARED SNAPSHOT — already computed from the database, correct, and safe to "
         "quote directly. Use these figures rather than recomputing anything. Call tools "
         "only for detail this does not contain.\n"

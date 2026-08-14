@@ -327,7 +327,7 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-348 tests. The suite runs on SQLite so it needs no database server; the ingest
+357 tests. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
@@ -401,6 +401,15 @@ and confidence attached. No SQL, no credentials, no raw rows.
 - The 7-day current window and the 28-day baseline do **not** overlap.
 - Coverage travels with every figure. A weekly average built from two recorded
   days is not a weekly average, and the payload says so.
+
+**Days are cut in the caller's timezone.** Every endpoint that slices by day
+takes `tz` (an IANA name), and the dashboard sends the browser's — without it
+the server falls back to `DISPLAY_TIMEZONE`, which is right until you open it
+from another country and "yesterday" quietly becomes somebody else's. The model
+is told the current local date, time and zone under a `RIGHT NOW` heading, so
+"this week" and "last month" resolve against a real clock rather than whatever
+calendar it was trained on; it is told in the same breath that it has no figures
+for today and must not invent any.
 
 **Safety is decided by rules, not by the model.** Anything that reaches `urgent`
 — a reported symptom like chest pain — is answered from reviewed text with the

@@ -12,6 +12,7 @@ import json
 from datetime import timedelta
 from unittest import mock
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -228,6 +229,124 @@ class ProjectContextTests(InsightTestCase):
 
         self.assertIsNone(payload["answer"])
         self.assertTrue(payload["safety"]["blocked"])
+
+
+class TimezoneTests(InsightTestCase):
+    """What "this week" means, and who decides.
+
+    Every window in this system is cut on day boundaries, so the timezone is not
+    a display preference — it decides which samples land in which day. The
+    server has always accepted one; the question is whether the caller sends it
+    and whether the model is told what time it is.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.user = User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
+        self.client.force_login(self.user)
+
+    def system_prompt(self, **answer_kwargs):
+        chat, seen = captured_chat()
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=chat):
+            llm_service.answer("What did I do this week?", **answer_kwargs)
+        return seen[0][0]["content"]
+
+    def test_the_prompt_states_the_current_local_date_and_time(self):
+        """Without this the model resolves "this week" against whatever it
+        believes today to be — which, for a model trained a year ago, is a
+        year-old calendar quoted with confidence."""
+        prompt = self.system_prompt(tz_name="Asia/Singapore")
+
+        expected = timezone.now().astimezone(ZoneInfo("Asia/Singapore"))
+        self.assertIn("RIGHT NOW", prompt)
+        self.assertIn("Asia/Singapore", prompt)
+        self.assertIn(expected.strftime("%Y-%m-%d"), prompt)
+        self.assertIn(expected.strftime("%H:%M"), prompt)
+
+    def test_the_clock_follows_the_timezone_it_was_given(self):
+        singapore = self.system_prompt(tz_name="Asia/Singapore")
+        honolulu = self.system_prompt(tz_name="Pacific/Honolulu")
+
+        self.assertIn("Asia/Singapore", singapore)
+        self.assertIn("Pacific/Honolulu", honolulu)
+        # 18 hours apart, so the stated local date cannot be the same in both.
+        here = timezone.now().astimezone(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d")
+        there = timezone.now().astimezone(ZoneInfo("Pacific/Honolulu")).strftime("%Y-%m-%d")
+        self.assertNotEqual(here, there)
+        self.assertIn(there, honolulu)
+
+    def test_the_clock_and_the_day_boundaries_cannot_disagree(self):
+        """Both resolve through the same zone lookup. If the prompt said one
+        timezone while the figures were cut on another, every date in the answer
+        would be checkable and wrong."""
+        prompt = self.system_prompt(tz_name="Pacific/Honolulu")
+
+        snapshot = json.loads(prompt.split("PREPARED SNAPSHOT")[1].split("\n", 1)[1])
+        self.assertEqual(snapshot["timezone"], "Pacific/Honolulu")
+        self.assertIn("Pacific/Honolulu", prompt.split("PREPARED SNAPSHOT")[0])
+
+    def test_the_prompt_refuses_to_offer_figures_for_today(self):
+        """Telling a model the current time invites it to answer "how am I doing
+        today" with a number, and there is no such number."""
+        prompt = self.system_prompt(tz_name="Asia/Singapore")
+
+        self.assertIn("no figures for today", prompt)
+        self.assertIn("not complete", prompt)
+
+    def test_an_unknown_timezone_falls_back_rather_than_failing(self):
+        prompt = self.system_prompt(tz_name="Middle/Earth")
+
+        self.assertIn("RIGHT NOW", prompt)
+        self.assertIn(llm_service.analytics.DEFAULT_TZ, prompt)
+
+    def test_ask_takes_the_timezone_from_the_request_body(self):
+        """This is the path the dashboard uses — a POST with the browser's IANA
+        name in the body."""
+        chat, seen = captured_chat()
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=chat):
+            response = self.client.post(
+                "/v1/insights/ask",
+                data=json.dumps({"question": "How was this week?", "tz": "Europe/Lisbon"}),
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Europe/Lisbon", seen[0][0]["content"])
+
+    def test_ask_takes_the_timezone_from_the_query_string_too(self):
+        chat, seen = captured_chat()
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=chat):
+            self.client.post(
+                "/v1/insights/ask?tz=Europe/Lisbon",
+                data=json.dumps({"question": "How was this week?"}),
+                content_type="application/json",
+            )
+
+        self.assertIn("Europe/Lisbon", seen[0][0]["content"])
+
+    def test_the_snapshot_endpoint_honours_the_timezone(self):
+        """The rail beside the conversation has to be cut on the same days as
+        the answer, or the two disagree on screen."""
+        body = self.client.get("/v1/analysis/snapshot?tz=Pacific/Honolulu").json()
+
+        self.assertEqual(body["timezone"], "Pacific/Honolulu")
+        self.assertEqual(
+            body["as_of"],
+            (timezone.now().astimezone(ZoneInfo("Pacific/Honolulu")).date() - timedelta(days=1))
+            .isoformat(),
+        )
+
+    def test_two_timezones_are_cached_apart(self):
+        """The snapshot is cached. Keying it without the timezone would serve
+        Singapore's days to somebody in Honolulu for the next two minutes."""
+        here = self.client.get("/v1/analysis/snapshot?tz=Asia/Singapore").json()
+        there = self.client.get("/v1/analysis/snapshot?tz=Pacific/Honolulu").json()
+
+        self.assertNotEqual(here["as_of"], there["as_of"])
 
 
 class ChatEndpointTests(InsightTestCase):

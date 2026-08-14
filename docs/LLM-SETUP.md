@@ -141,6 +141,7 @@ print(r[\"answer\"][\"summary\"] if r[\"answer\"] else r[\"error\"])
 | Continuity | "How is my sleep?", then "And last month?" in the same chat | The second answer knows what the first was about, and still quotes only figures from the snapshot and the tools. |
 | Isolation | Ask something unrelated in a *different* chat | No trace of the other conversation. Sessions are the context boundary, not the person. |
 | Compaction | Press **Compact** on a chat with 3+ exchanges | A seam appears in the transcript, every message is still readable above it, and the summary contains no figures. |
+| Dates | "What did I do this week?" | Names the actual dates, cut on **your** timezone, and refuses to give a figure for today because the day is not finished. |
 
 The chest-pain test is the important one. It should come back in well under a
 second — if it takes 25 seconds, the model was consulted and the safety

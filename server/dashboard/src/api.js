@@ -43,6 +43,25 @@ const qs = (params) =>
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
 
+/* Where this browser thinks it is, as an IANA name.
+ *
+ * Sent on everything that slices data by day. Without it the server falls back
+ * to DISPLAY_TIMEZONE, which is a fixed guess — right until you open the
+ * dashboard from another country, at which point "yesterday" quietly means
+ * somebody else's yesterday and every daily total shifts by the offset. The
+ * phone has always sent this; the dashboard never did.
+ */
+const tz = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch {
+    return ''
+  }
+}
+
+/* Query string with the timezone attached, unless the caller set one. */
+const tzq = (params = {}) => qs({ tz: tz(), ...params })
+
 export const api = {
   async ensureCsrf() {
     await request('/v1/auth/csrf')
@@ -57,16 +76,16 @@ export const api = {
   },
   logout: () => request('/v1/auth/session/logout', { method: 'POST' }),
 
-  overview: (params) => request(`/v1/analytics/overview?${qs(params)}`),
+  overview: (params) => request(`/v1/analytics/overview?${tzq(params)}`),
   metrics: () => request('/v1/analytics/metrics'),
-  series: (params) => request(`/v1/analytics/series?${qs(params)}`),
-  exportSummary: (params) => request(`/v1/export/summary?${qs(params)}`),
+  series: (params) => request(`/v1/analytics/series?${tzq(params)}`),
+  exportSummary: (params) => request(`/v1/export/summary?${tzq(params)}`),
 
   // Deterministic analysis. Same inputs, same numbers, no model involved —
   // which is why these load instantly and the ask below does not.
-  snapshot: (params = {}) => request(`/v1/analysis/snapshot?${qs(params)}`),
-  quality: (params = {}) => request(`/v1/analysis/quality?${qs(params)}`),
-  sleepDetail: (params = {}) => request(`/v1/analysis/sleep?${qs(params)}`),
+  snapshot: (params = {}) => request(`/v1/analysis/snapshot?${tzq(params)}`),
+  quality: (params = {}) => request(`/v1/analysis/quality?${tzq(params)}`),
+  sleepDetail: (params = {}) => request(`/v1/analysis/sleep?${tzq(params)}`),
   goals: () => request('/v1/analysis/goals'),
   saveGoal: (body) =>
     request('/v1/analysis/goals', { method: 'POST', body: JSON.stringify(body) }),
@@ -79,9 +98,13 @@ export const api = {
   // server replay that chat's earlier turns. Only their summaries — the figures
   // are re-read from the snapshot every time, so the model cannot cite its own
   // earlier prose back as a measurement.
-  ask: (body) => request('/v1/insights/ask', { method: 'POST', body: JSON.stringify(body) }),
+  ask: (body) =>
+    request('/v1/insights/ask', { method: 'POST', body: JSON.stringify({ tz: tz(), ...body }) }),
   weeklyReview: (body = {}) =>
-    request('/v1/insights/weekly', { method: 'POST', body: JSON.stringify(body) }),
+    request('/v1/insights/weekly', {
+      method: 'POST',
+      body: JSON.stringify({ tz: tz(), ...body }),
+    }),
   insightHistory: () => request('/v1/insights/history'),
   forgetInsights: () => request('/v1/insights/history', { method: 'DELETE' }),
 
@@ -129,5 +152,5 @@ export const api = {
   // Deliberately a URL rather than a fetch: handing it to the browser as a
   // normal download lets it stream to disk. Fetching it would buffer the whole
   // CSV in memory, which for a multi-year export is hundreds of megabytes.
-  exportUrl: (params) => `/v1/export/records.csv?${qs(params)}`,
+  exportUrl: (params) => `/v1/export/records.csv?${tzq(params)}`,
 }
