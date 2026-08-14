@@ -1,0 +1,21 @@
+/* The dashboard's shared stylesheet.
+ *
+ * Split by what a rule *is*, not by which screen happens to use it. A component
+ * keeps only styling nobody else could want — its own grid, its own one-off
+ * spacing. Anything two components would otherwise both declare lives here, in
+ * the file that names its job.
+ *
+ * The rule of thumb for adding something: if you find yourself copying a block
+ * from one component into another, it belongs in here instead. That is not
+ * tidiness — the chart tooltip was declared identically in two files, and a
+ * change to one of them would have silently made the two charts disagree.
+ *
+ * Import order is the cascade: tokens first because everything reads them,
+ * base next, then the vocabularies, which are written not to overlap.
+ */
+@import './tokens.css';
+@import './base.css';
+@import './layout.css';
+@import './controls.css';
+@import './data.css';
+@import './chat.css';

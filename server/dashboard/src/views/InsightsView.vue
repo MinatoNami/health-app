@@ -492,8 +492,8 @@ onMounted(load)
         <div class="messages">
           <p v-if="loadingChat" class="offline">Loading this conversation…</p>
 
-          <div v-if="opening" class="row">
-            <div class="bubble assistant opening">{{ opening }}</div>
+          <div v-if="opening" class="chat-row">
+            <div class="chat-bubble assistant opening">{{ opening }}</div>
           </div>
 
           <p v-if="empty && activeProject?.instructions" class="projectnote">
@@ -654,16 +654,6 @@ onMounted(load)
 .messages { margin-top: auto; }
 @media (prefers-reduced-motion: reduce) { .transcript { scroll-behavior: auto; } }
 
-.row { display: flex; margin-bottom: 14px; }
-.bubble {
-  max-width: 46em; padding: 12px 15px; border-radius: var(--radius-lg);
-  font-size: 14px; line-height: 1.55;
-}
-.bubble.assistant {
-  background: var(--surface-1); border: 1px solid var(--border);
-  border-bottom-left-radius: 5px;
-}
-.opening { color: var(--text-secondary); }
 .projectnote { margin: 0 0 14px; font-size: 12px; color: var(--text-muted); }
 
 .ctx {

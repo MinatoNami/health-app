@@ -1,0 +1,43 @@
+/* Showing measurements: tiles, tables, deltas, and the chart tooltip.
+ *
+ * The tooltip lived identically in LineChart and ColumnChart. Two copies of a
+ * rule are two chances for the charts to stop agreeing with each other, which
+ * is exactly the kind of drift nobody notices until the screenshots differ.
+ */
+
+/* Stat tiles: label · value · delta. Proportional figures on the value —
+   tabular-nums would make a number like 121 look loose at display size. */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.tile-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.tile-value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
+.tile-unit { font-size: 13px; color: var(--text-secondary); font-weight: 500; margin-left: 3px; }
+.tile-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+
+/* A change against baseline. The only element tinted in a metric row — colour
+   the delta, the coverage bar and the confidence word and six metrics become
+   eighteen coloured things that read as a traffic light. */
+.delta { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: right; }
+.delta.good { color: var(--success-text); }
+.delta.watch { color: var(--critical-text); }
+.delta.none { color: var(--text-muted); font-weight: 500; }
+
+table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.data th, table.data td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--gridline); }
+table.data th:first-child, table.data td:first-child { text-align: left; }
+table.data th { color: var(--text-muted); font-weight: 500; }
+/* tabular-nums belongs here — columns that must align vertically. */
+table.data td { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.table-scroll { max-height: 260px; overflow: auto; }
+
+.chart { position: relative; }
+.chart svg { width: 100%; display: block; }
+.tip {
+  position: absolute; top: 0; transform: translateX(-50%);
+  background: var(--text-primary); color: var(--surface-1);
+  border-radius: 6px; padding: 5px 9px; font-size: 11px;
+  pointer-events: none; white-space: nowrap;
+  display: flex; gap: 6px; align-items: baseline;
+}
+.tip span { opacity: 0.75; }
+.tip .est { opacity: 1; font-style: italic; }

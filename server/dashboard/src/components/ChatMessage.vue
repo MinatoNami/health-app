@@ -64,35 +64,35 @@ const detailCount = computed(
 
 <template>
   <!-- User turn -->
-  <div v-if="turn.role === 'user'" class="row user">
-    <div class="bubble user">{{ turn.text }}</div>
+  <div v-if="turn.role === 'user'" class="chat-row user">
+    <div class="chat-bubble user">{{ turn.text }}</div>
   </div>
 
   <!-- Pending -->
-  <div v-else-if="turn.role === 'pending'" class="row">
-    <div class="bubble assistant pending">
-      <span class="dots"><i /><i /><i /></span>
+  <div v-else-if="turn.role === 'pending'" class="chat-row">
+    <div class="chat-bubble assistant typing">
+      <span class="typing-dots"><i /><i /><i /></span>
       Reading your summaries…
     </div>
   </div>
 
   <!-- Assistant turn -->
-  <div v-else class="row">
-    <div class="bubble assistant">
-      <div v-if="banner" class="banner" :class="safety.level">
+  <div v-else class="chat-row">
+    <div class="chat-bubble assistant">
+      <div v-if="banner" class="safety-banner" :class="safety.level">
         <strong>{{ banner }}</strong>
         <span v-for="r in safety.reasons" :key="r">{{ r }}</span>
       </div>
 
-      <p v-if="turn.result?.error" class="notice">{{ turn.result.error }}</p>
+      <p v-if="turn.result?.error" class="answer-notice">{{ turn.result.error }}</p>
 
       <template v-if="answer">
-        <p class="summary">{{ answer.summary }}</p>
+        <p class="answer-summary">{{ answer.summary }}</p>
 
-        <ul v-if="answer.observations.length" class="observations">
+        <ul v-if="answer.observations.length" class="answer-list">
           <li v-for="(o, i) in answer.observations" :key="i">
             {{ o.statement }}
-            <span class="evidence">{{ o.evidence }}</span>
+            <span class="answer-evidence">{{ o.evidence }}</span>
           </li>
         </ul>
 
@@ -100,33 +100,33 @@ const detailCount = computed(
           {{ showDetail ? 'Less' : `Suggestions and limits (${detailCount})` }}
         </button>
 
-        <div v-if="showDetail" class="detail">
+        <div v-if="showDetail" class="answer-detail">
           <template v-if="answer.actions.length">
             <h4>Try</h4>
-            <ul class="actions">
+            <ul class="answer-list">
               <li v-for="(a, i) in answer.actions" :key="i">
                 {{ a.action }}
-                <span class="evidence">{{ a.reason }} · {{ a.timeframe }}</span>
+                <span class="answer-evidence">{{ a.reason }} · {{ a.timeframe }}</span>
               </li>
             </ul>
           </template>
 
           <template v-if="answer.limitations.length">
             <h4>Limits</h4>
-            <ul class="limits">
+            <ul class="answer-list limits">
               <li v-for="(l, i) in answer.limitations" :key="i">{{ l }}</li>
             </ul>
           </template>
         </div>
 
-        <p v-if="answer.professional_review_recommended" class="review">
+        <p v-if="answer.professional_review_recommended" class="answer-review">
           Worth raising with a healthcare professional.
           <span v-if="answer.professional_review_reason">{{ answer.professional_review_reason }}</span>
         </p>
       </template>
 
       <div class="footer">
-        <p class="meta">
+        <p class="answer-meta">
           <template v-if="model">
             {{ (model.latency_ms / 1000).toFixed(0) }}s · {{ model.name }}
           </template>
@@ -183,75 +183,19 @@ const detailCount = computed(
 </template>
 
 <style scoped>
-.row { display: flex; margin-bottom: 14px; }
-.row.user { justify-content: flex-end; }
-
-.bubble {
-  max-width: 46em;
-  padding: 12px 15px;
-  border-radius: var(--radius-lg);
-  font-size: 14px;
-  line-height: 1.55;
-}
-.bubble.user {
-  background: var(--bubble-user);
-  border-bottom-right-radius: 5px;
-}
-.bubble.assistant {
-  background: var(--bubble-assistant);
-  border: 1px solid var(--border);
-  border-bottom-left-radius: 5px;
-}
-
-.summary { margin: 0; }
-
-.observations, .actions, .limits { margin: 10px 0 0; padding-left: 17px; }
-.observations li, .actions li { margin-bottom: 7px; }
-.limits li { margin-bottom: 3px; color: var(--text-secondary); font-size: 13px; }
-.evidence {
-  display: block;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 1px;
-}
+/* Only what belongs to a single turn. The bubbles, the banner, the parts of a
+   structured answer and the typing dots are shared with InsightsView and live
+   in styles/chat.css. */
 
 .more { margin-top: 10px; display: inline-block; }
-.detail { margin-top: 10px; border-top: 1px solid var(--gridline); padding-top: 10px; }
-.detail h4 {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
-  color: var(--text-muted); margin: 0 0 4px; font-weight: 600;
-}
-.detail h4 + ul + h4 { margin-top: 12px; }
 
-/* Status colour plus words, never colour alone. */
-.banner {
-  padding: 9px 11px; border-radius: 9px; margin-bottom: 10px;
-  font-size: 13px; line-height: 1.45;
-}
-.banner strong { display: block; }
-.banner span { display: block; color: var(--text-secondary); font-size: 12px; }
-.banner.urgent {
-  background: color-mix(in srgb, var(--status-critical) 13%, transparent);
-  box-shadow: inset 0 0 0 1px var(--status-critical);
-}
-.banner.review_recommended {
-  background: color-mix(in srgb, var(--status-warning) 15%, transparent);
-  box-shadow: inset 0 0 0 1px var(--status-warning);
-}
-
-.notice { margin: 0 0 8px; font-size: 13px; color: var(--text-secondary); }
-.review {
-  margin: 10px 0 0; font-size: 12.5px; color: var(--warning-text);
-}
-.review span { display: block; color: var(--text-secondary); }
-
-.meta { margin: 0; font-size: 11px; color: var(--text-muted); }
-
+/* The row under an answer: what produced it on the left, what you made of it
+   on the right. */
 .footer {
   display: flex; align-items: center; gap: 10px;
   margin-top: 9px; flex-wrap: wrap;
 }
-.footer .meta { flex: 1; min-width: 0; }
+.footer .answer-meta { flex: 1; min-width: 0; }
 
 .rate { display: flex; align-items: center; gap: 2px; flex: none; }
 .thumb {
@@ -278,20 +222,4 @@ const detailCount = computed(
   background: var(--page); color: var(--text-primary); resize: vertical;
 }
 .noteactions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 6px; }
-
-.pending { color: var(--text-secondary); display: flex; align-items: center; gap: 9px; }
-.dots { display: inline-flex; gap: 3px; }
-.dots i {
-  width: 5px; height: 5px; border-radius: 50%;
-  background: var(--text-muted); animation: pulse 1.2s infinite ease-in-out;
-}
-.dots i:nth-child(2) { animation-delay: 0.15s; }
-.dots i:nth-child(3) { animation-delay: 0.3s; }
-@keyframes pulse {
-  0%, 60%, 100% { opacity: 0.25; }
-  30% { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dots i { animation: none; opacity: 0.6; }
-}
 </style>

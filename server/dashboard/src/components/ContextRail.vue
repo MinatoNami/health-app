@@ -148,11 +148,6 @@ const coverage = (m) => m.current?.coverage ?? 0
 .value.small { font-size: 12.5px; font-weight: 500; }
 .unit { font-size: 11px; color: var(--text-muted); font-weight: 400; margin-left: 2px; }
 
-.delta { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: right; }
-.delta.good { color: var(--success-text); }
-.delta.watch { color: var(--critical-text); }
-.delta.none { color: var(--text-muted); font-weight: 500; }
-
 .cov { grid-column: 1 / -1; font-size: 11px; color: var(--warning-text); }
 .stale .cov { grid-column: auto; text-align: right; }
 

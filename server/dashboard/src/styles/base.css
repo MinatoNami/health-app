@@ -1,0 +1,44 @@
+/* Reset, document defaults, and the text utilities every screen uses. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--page);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; cursor: pointer; }
+
+.spacer { flex: 1; }
+
+.muted { color: var(--text-muted); font-size: 12px; }
+.error { color: var(--status-critical); font-size: 12px; margin-top: 10px; }
+.empty { padding: 28px 12px; text-align: center; color: var(--text-muted); font-size: 13px; }
+.hero { font-size: 48px; font-weight: 650; letter-spacing: -0.03em; line-height: 1; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-secondary);
+}
+.badge.warn { color: var(--text-primary); border-color: var(--status-warning); }
+
+/* Refetch holds the previous render at reduced opacity — no skeleton flash,
+   no layout jump. */
+.refreshing { opacity: 0.45; transition: opacity 120ms ease; }
+
+/* Charts are focusable so keyboard users can reach the same per-point values
+   the tooltip shows on hover. The ring has to be visible — an invisible focus
+   target is the same as no target. */
+svg[tabindex='0']:focus-visible {
+  outline: 2px solid var(--series-1);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refreshing { transition: none; }
+}

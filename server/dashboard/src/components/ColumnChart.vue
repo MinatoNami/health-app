@@ -213,15 +213,3 @@ function onMove(event) {
   </div>
 </template>
 
-<style scoped>
-.chart { position: relative; }
-svg { width: 100%; display: block; }
-.tip {
-  position: absolute; top: 0; transform: translateX(-50%);
-  background: var(--text-primary); color: var(--surface-1);
-  border-radius: 6px; padding: 5px 9px; font-size: 11px;
-  pointer-events: none; white-space: nowrap; display: flex; gap: 6px; align-items: baseline;
-}
-.tip span { opacity: 0.75; }
-.tip .est { opacity: 1; font-style: italic; }
-</style>

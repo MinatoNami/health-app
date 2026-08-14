@@ -1,0 +1,97 @@
+/* The conversation vocabulary: bubbles, and the parts of a structured answer.
+ *
+ * Namespaced rather than lifted as-is. These rules lived in ChatMessage as
+ * `.row`, `.bubble`, `.summary`, `.meta` — names that are fine inside one
+ * scoped component and a collision waiting to happen in a global sheet, where
+ * `.summary` would also catch anything else that ever calls itself a summary.
+ *
+ * They are shared because two components render them: ChatMessage draws a turn,
+ * and InsightsView draws the opening bubble that precedes the first one. A
+ * bubble that looked slightly different depending on which of those produced it
+ * is the bug this prevents.
+ */
+
+.chat-row { display: flex; margin-bottom: 14px; }
+.chat-row.user { justify-content: flex-end; }
+
+.chat-bubble {
+  max-width: 46em;
+  padding: 12px 15px;
+  border-radius: var(--radius-lg);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.chat-bubble.user {
+  background: var(--bubble-user);
+  border-bottom-right-radius: 5px;
+}
+.chat-bubble.assistant {
+  background: var(--bubble-assistant);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 5px;
+}
+/* The measured opening line, which is context rather than something said. */
+.chat-bubble.opening { color: var(--text-secondary); }
+
+/* --- the parts of a structured answer ----------------------------------- */
+
+.answer-summary { margin: 0; }
+
+.answer-list { margin: 10px 0 0; padding-left: 17px; }
+.answer-list li { margin-bottom: 7px; }
+.answer-list.limits li { margin-bottom: 3px; color: var(--text-secondary); font-size: 13px; }
+
+/* The figures behind a statement, set quieter than it: the claim is what you
+   read, the evidence is what you check it against. */
+.answer-evidence {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.answer-detail { margin-top: 10px; border-top: 1px solid var(--gridline); padding-top: 10px; }
+.answer-detail h4 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted); margin: 0 0 4px; font-weight: 600;
+}
+.answer-detail h4 + ul + h4 { margin-top: 12px; }
+
+.answer-notice { margin: 0 0 8px; font-size: 13px; color: var(--text-secondary); }
+.answer-meta { margin: 0; font-size: 11px; color: var(--text-muted); }
+.answer-review { margin: 10px 0 0; font-size: 12.5px; color: var(--warning-text); }
+.answer-review span { display: block; color: var(--text-secondary); }
+
+/* Status colour plus words, never colour alone. */
+.safety-banner {
+  padding: 9px 11px; border-radius: 9px; margin-bottom: 10px;
+  font-size: 13px; line-height: 1.45;
+}
+.safety-banner strong { display: block; }
+.safety-banner span { display: block; color: var(--text-secondary); font-size: 12px; }
+.safety-banner.urgent {
+  background: color-mix(in srgb, var(--status-critical) 13%, transparent);
+  box-shadow: inset 0 0 0 1px var(--status-critical);
+}
+.safety-banner.review_recommended {
+  background: color-mix(in srgb, var(--status-warning) 15%, transparent);
+  box-shadow: inset 0 0 0 1px var(--status-warning);
+}
+
+/* --- waiting ------------------------------------------------------------ */
+
+.typing { color: var(--text-secondary); display: flex; align-items: center; gap: 9px; }
+.typing-dots { display: inline-flex; gap: 3px; }
+.typing-dots i {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--text-muted); animation: typing-pulse 1.2s infinite ease-in-out;
+}
+.typing-dots i:nth-child(2) { animation-delay: 0.15s; }
+.typing-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-pulse {
+  0%, 60%, 100% { opacity: 0.25; }
+  30% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots i { animation: none; opacity: 0.6; }
+}

@@ -1,0 +1,44 @@
+/* The shell: page frame, top bar, filter row, cards, and the sign-in screen. */
+
+.app { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+
+.topbar {
+  display: flex; align-items: center; gap: 16px;
+  flex-wrap: wrap; margin-bottom: 20px;
+}
+.topbar h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+
+.nav { display: flex; gap: 4px; }
+.nav button {
+  background: none; border: 0; padding: 7px 13px; border-radius: 8px;
+  font-size: 14px; color: var(--text-secondary);
+}
+.nav button:hover { background: var(--surface-1); color: var(--text-primary); }
+.nav button.active {
+  background: var(--surface-1); color: var(--text-primary);
+  font-weight: 600; box-shadow: 0 0 0 1px var(--border);
+}
+
+/* One filter row above everything it scopes — never per-card filters. */
+.filterbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 12px; background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  margin-bottom: 20px;
+}
+.filterbar label { font-size: 12px; color: var(--text-muted); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 16px; }
+
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+}
+.card-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+.card-title { font-size: 14px; font-weight: 600; margin: 0; }
+.card-sub { font-size: 12px; color: var(--text-muted); margin: 0 0 12px; }
+
+.login-wrap { min-height: 100vh; display: grid; place-items: center; padding: 20px; }
+.login { width: 100%; max-width: 340px; }
+.login .card { padding: 24px; }
+.login h1 { font-size: 19px; margin: 0 0 4px; }
