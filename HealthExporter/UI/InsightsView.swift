@@ -15,6 +15,7 @@ struct InsightsView: View {
     @EnvironmentObject private var services: AppServices
 
     @State private var question = ""
+    @State private var showingHistory = false
     @FocusState private var composerFocused: Bool
 
     private static let suggestions = [
@@ -37,9 +38,41 @@ struct InsightsView: View {
                     conversation
                 }
             }
-            .navigationTitle("Insights")
+            .navigationTitle(engine.activeTitle ?? "Insights")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar { if engine.isSignedIn { chatToolbar } }
+            .sheet(isPresented: $showingHistory) { ChatHistoryView() }
             .task { if engine.snapshot == nil { await engine.refreshSnapshot() } }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var chatToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button { showingHistory = true } label: {
+                Label("Chats", systemImage: "list.bullet")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button {
+                    engine.newChat()
+                } label: {
+                    Label("New chat", systemImage: "square.and.pencil")
+                }
+                if engine.activeSessionId != nil {
+                    Button {
+                        Task { await engine.compactActiveChat() }
+                    } label: {
+                        Label("Compact conversation", systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                    // Two exchanges is the least there is any point summarising;
+                    // the server would refuse below that anyway.
+                    .disabled(engine.pendingTurns < 2 || engine.isCompacting || engine.isAsking)
+                }
+            } label: {
+                Label("Options", systemImage: "ellipsis.circle")
+            }
         }
     }
 
@@ -48,24 +81,50 @@ struct InsightsView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
-                        // Opened from the 08:00 alert: lead with the thing the
-                        // alert was about, then the numbers behind it.
-                        if services.showBriefOnOpen, let brief = services.dailyBrief.lastBrief {
-                            BriefBubble(brief: brief) { send("Why did that change?") }
+                        // Only at the head of a new conversation. These are
+                        // *this week's* numbers, and printing them above a chat
+                        // from three weeks ago captions it with figures it never
+                        // mentioned.
+                        if engine.transcript.isEmpty {
+                            // Opened from the 08:00 alert: lead with the thing
+                            // the alert was about, then the numbers behind it.
+                            if services.showBriefOnOpen, let brief = services.dailyBrief.lastBrief {
+                                BriefBubble(brief: brief) { send("Why did that change?") }
+                            }
+
+                            if let snapshot = engine.snapshot {
+                                SnapshotBubble(snapshot: snapshot)
+                            }
                         }
 
-                        if let snapshot = engine.snapshot {
-                            SnapshotBubble(snapshot: snapshot)
+                        ForEach(Array(engine.transcript.enumerated()), id: \.element.id) { index, turn in
+                            UserBubble(text: turn.question)
+
+                            if turn.isPending {
+                                PendingBubble()
+                            } else {
+                                AnswerBubble(turn: turn) { rating, note in
+                                    guard let storedId = turn.storedId else { return }
+                                    Task { await engine.rate(turnId: storedId, rating: rating, note: note) }
+                                }
+                            }
+
+                            // The line where the model's memory of this chat
+                            // becomes a summary. Everything above it is still
+                            // here to read — that is the point of keeping the
+                            // transcript out of compaction.
+                            if engine.activeSummaryTurns > 0, index == engine.activeSummaryTurns - 1 {
+                                CompactionSeam(
+                                    turns: engine.activeSummaryTurns,
+                                    summary: engine.activeSummary
+                                )
+                            }
                         }
 
-                        if let question = engine.lastQuestion {
-                            UserBubble(text: question)
-                        }
-
-                        if engine.isAsking {
-                            PendingBubble()
-                        } else if let result = engine.insight {
-                            AnswerBubble(result: result)
+                        if let notice = engine.chatNotice {
+                            Text(notice)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
 
                         if let error = engine.insightError ?? engine.snapshotError {
@@ -78,7 +137,10 @@ struct InsightsView: View {
                     }
                     .padding(16)
                 }
-                .onChange(of: engine.insight) { _, _ in scroll(proxy) }
+                .overlay {
+                    if engine.isLoadingTranscript { ProgressView() }
+                }
+                .onChange(of: engine.transcript) { _, _ in scroll(proxy) }
                 .onChange(of: engine.isAsking) { _, _ in scroll(proxy) }
             }
 
@@ -98,10 +160,12 @@ struct InsightsView: View {
         VStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 7) {
-                    ForEach(Self.suggestions, id: \.self) { suggestion in
-                        Button(suggestion) { send(suggestion) }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
+                    if engine.transcript.isEmpty {
+                        ForEach(Self.suggestions, id: \.self) { suggestion in
+                            Button(suggestion) { send(suggestion) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
                     }
                     Button("Weekly review") {
                         composerFocused = false
@@ -365,32 +429,37 @@ private struct PendingBubble: View {
 /// Suggestions and limitations are behind a disclosure. They matter, but five
 /// of them under every answer buries the answer itself.
 private struct AnswerBubble: View {
-    let result: InsightResult
+    let turn: ChatTurn
+    /// (rating, note) — either may be nil to leave that half alone.
+    let onFeedback: (Int?, String?) -> Void
+
     @State private var showDetail = false
+    @State private var editingNote = false
+    @State private var draft = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if result.safety.isElevated {
-                Label(result.safety.headline,
-                      systemImage: result.safety.level == "urgent"
+            if let safety = turn.safety, safety.isElevated {
+                Label(safety.headline,
+                      systemImage: safety.level == "urgent"
                         ? "exclamationmark.triangle.fill" : "stethoscope")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(result.safety.level == "urgent" ? Color.red : Color.orange)
-                ForEach(result.safety.reasons, id: \.self) { reason in
+                    .foregroundStyle(safety.level == "urgent" ? Color.red : Color.orange)
+                ForEach(safety.reasons, id: \.self) { reason in
                     Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
             }
 
-            if let error = result.error {
+            if let error = turn.error {
                 Text(error).font(.caption).foregroundStyle(.secondary)
             }
 
-            if let answer = result.answer {
+            if let answer = turn.answer {
                 Text(answer.summary).font(.callout)
 
                 ForEach(answer.observations) { observation in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("• \(observation.statement)").font(.callout)
+                        Text("\u{2022} \(observation.statement)").font(.callout)
                         Text(observation.evidence)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -411,8 +480,8 @@ private struct AnswerBubble: View {
                         Text("TRY").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                         ForEach(answer.actions) { action in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("• \(action.action)").font(.callout)
-                                Text("\(action.reason) · \(action.timeframe)")
+                                Text("\u{2022} \(action.action)").font(.callout)
+                                Text("\(action.reason) \u{b7} \(action.timeframe)")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .padding(.leading, 12)
@@ -422,7 +491,7 @@ private struct AnswerBubble: View {
                     if !answer.limitations.isEmpty {
                         Text("LIMITS").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
                         ForEach(answer.limitations, id: \.self) { limitation in
-                            Text("• \(limitation)").font(.caption).foregroundStyle(.secondary)
+                            Text("\u{2022} \(limitation)").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -434,19 +503,128 @@ private struct AnswerBubble: View {
                 }
             }
 
-            if let model = result.model {
-                Text("\(Int(Double(model.latencyMs) / 1000))s · \(model.name)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else if result.isRuleBased {
-                Text("Reviewed guidance — no model was consulted.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            footer
+
+            if !turn.note.isEmpty && !editingNote {
+                Text(turn.note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 8)
+                    .overlay(alignment: .leading) {
+                        Rectangle().frame(width: 2).foregroundStyle(Color.accentColor)
+                    }
+            }
+
+            if editingNote {
+                TextField("What was wrong or right about this answer?", text: $draft, axis: .vertical)
+                    .lineLimit(1...4)
+                    .font(.caption)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { editingNote = false }.font(.caption)
+                    Button("Save") {
+                        onFeedback(turn.rating, draft)
+                        editingNote = false
+                    }
+                    .font(.caption.weight(.semibold))
+                }
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    /// What produced the answer, and what you made of it.
+    ///
+    /// The rating sits with the answer rather than in a survey afterwards: the
+    /// judgement is worth most while the answer is still on screen and you can
+    /// still see what it got wrong.
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Group {
+                if let name = turn.modelName, let ms = turn.latencyMs {
+                    Text("\(Int(Double(ms) / 1000))s \u{b7} \(name)")
+                } else if turn.isRuleBased {
+                    Text("Reviewed guidance \u{2014} no model was consulted.")
+                } else if turn.answer != nil {
+                    Text("No model ran.")
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+
+            Spacer()
+
+            // Only a stored turn can be rated — a rating needs a row to live
+            // on. A question asked with "don't remember this" has none, which
+            // is correct: there is nothing to attach an opinion to.
+            if turn.storedId != nil {
+                thumb(1, filled: "hand.thumbsup.fill", hollow: "hand.thumbsup")
+                thumb(-1, filled: "hand.thumbsdown.fill", hollow: "hand.thumbsdown")
+                Button {
+                    draft = turn.note
+                    editingNote = true
+                } label: {
+                    Image(systemName: turn.note.isEmpty ? "text.bubble" : "text.bubble.fill")
+                }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func thumb(_ value: Int, filled: String, hollow: String) -> some View {
+        Button {
+            // A second press on the same thumb clears it. People mis-tap, and a
+            // rating you cannot take back is one nobody trusts enough to give.
+            onFeedback(turn.rating == value ? nil : value, nil)
+        } label: {
+            Image(systemName: turn.rating == value ? filled : hollow)
+        }
+        .font(.caption)
+        .buttonStyle(.plain)
+        .foregroundStyle(turn.rating == value ? Color.accentColor : .secondary)
+        .accessibilityLabel(value > 0 ? "Useful" : "Not useful")
+    }
+}
+
+/// Where the model's memory of this conversation becomes a paragraph.
+///
+/// Drawn as a seam rather than a banner: the messages above it are still there
+/// to read, so this should say "folded", not "deleted".
+private struct CompactionSeam: View {
+    let turns: Int
+    let summary: String?
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Rectangle().frame(height: 1).foregroundStyle(.quaternary)
+                Button {
+                    withAnimation { expanded.toggle() }
+                } label: {
+                    Text("\(turns) earlier message\(turns == 1 ? "" : "s") compacted")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                Rectangle().frame(height: 1).foregroundStyle(.quaternary)
+            }
+
+            if expanded, let summary {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.secondarySystemGroupedBackground),
+                                in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
     }
 }

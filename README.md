@@ -6,15 +6,36 @@ a language model running on your own machine.
 
 ## Documentation
 
+**Start here:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the system as
+built, and the invariants everything else is organised around.
+
+*The three components*
+
 | | |
 |---|---|
-| **This file** | The iOS app: running it, the wire format, how syncing works |
-| [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | Startup, caching, and the rules that keep the main thread free |
-| [server/README.md](server/README.md) | The ingest server: deploy, endpoints, backups, the sync contract |
+| [docs/MOBILE.md](docs/MOBILE.md) | The iOS app: what it does, its screens, how it is laid out |
+| [server/README.md](server/README.md) | The server: deploy, operations, backups, the sync contract |
+| [docs/DASHBOARD.md](docs/DASHBOARD.md) | The web dashboard: views, structure, styling |
+
+*Subsystems*
+
+| | |
+|---|---|
 | [docs/ANALYSIS.md](docs/ANALYSIS.md) | What the server computes — baselines, nutrition, correlations, safety |
+| [docs/CHAT.md](docs/CHAT.md) | Conversations: sessions, projects, compaction, feedback |
+| [docs/API.md](docs/API.md) | Every endpoint, and what authenticates it |
 | [docs/LLM-SETUP.md](docs/LLM-SETUP.md) | Pointing the model layer at your machine, and testing it properly |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | The original design rationale |
+
+*Operating it*
+
+| | |
+|---|---|
+| [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | App startup, caching, and the rules that keep the main thread free |
 | [docs/PRIVACY.md](docs/PRIVACY.md) | What is collected, where it goes, how to delete it |
+| [docs/ORIGINAL-PLAN.md](docs/ORIGINAL-PLAN.md) | The design document written before any of it existed |
+
+**This file** covers running the app on your iPhone, the wire format, and how
+syncing works.
 
 ---
 
@@ -292,24 +313,29 @@ data goes unnoticed.
 ## Insights on the phone
 
 The Insights tab shows the server's analysis — every headline metric over the
-last 7 days against the user's own preceding 28, with coverage and a confidence
-grade — and lets you ask questions about it. Behind those questions the model can
-reach nutrition (what was logged, and how far the log covers the window),
-associations between metrics, and weekly rhythms, as well as the headline
-figures — twelve read-only tools in all, each returning numbers that were already
-computed. [docs/ANALYSIS.md](docs/ANALYSIS.md) covers what each one does and what
-it refuses to do.
+last 7 days against your own preceding 28, with coverage and a confidence grade
+— and lets you hold a conversation about it. Chats are kept: the history sheet
+in the toolbar lists past conversations, search reaches the questions inside
+them, and the chat you were in is still there next time you open the app.
+
+Behind those questions the model can reach nutrition, associations between
+metrics, and weekly rhythms as well as the headline figures — twelve read-only
+tools, each returning numbers that were already computed.
 
 Nothing is recomputed on the device. Baselines, coverage grading and the
 deduplication rules underneath them are subtle enough that a second
 implementation would drift, and a phone quietly disagreeing with the dashboard
 about the same week is worse than either number alone.
 
-The measured comparison is rendered first and the generated explanation second,
-which is also the order they arrive: the snapshot is one fast query, an answer is
-a local model working for tens of seconds. When the model server is asleep — it
-lives on a laptop, so it often is — the screen still carries everything that was
-actually recorded.
+The measured comparison renders first and the generated explanation second,
+which is also the order they arrive: the snapshot is one fast query, an answer
+is a local model working for tens of seconds. When the model server is asleep —
+it lives on a laptop, so it often is — the screen still carries everything that
+was actually recorded.
+
+**[docs/MOBILE.md](docs/MOBILE.md)** covers the app in full, and
+**[docs/CHAT.md](docs/CHAT.md)** covers how conversations work across both
+clients.
 
 ---
 

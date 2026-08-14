@@ -664,14 +664,52 @@ final class SyncEngine: ObservableObject {
     /// in doubt.
     @Published private(set) var snapshot: HealthSnapshot?
     @Published private(set) var snapshotError: String?
-    @Published private(set) var insight: InsightResult?
     @Published private(set) var insightError: String?
     @Published private(set) var insightStatus: InsightStatus?
     @Published private(set) var isAsking = false
-    /// Kept so the transcript can show the question beside its answer. Set
-    /// before the request rather than after, so the bubble appears immediately
-    /// instead of arriving with the reply half a minute later.
-    @Published private(set) var lastQuestion: String?
+
+    // MARK: - Conversations
+
+    /// The conversation on screen, oldest turn first.
+    ///
+    /// This replaced a single `insight` and `lastQuestion`. The screen has
+    /// always *looked* like a chat; holding one question and one answer meant
+    /// asking a second thing silently erased the first, and a follow-up reached
+    /// the model with no idea what came before.
+    @Published private(set) var transcript: [ChatTurn] = []
+    /// Which conversation the next question joins. Nil means the next question
+    /// opens one — the session is created by the ask itself, so a question that
+    /// never lands cannot strand an empty chat in the history.
+    @Published private(set) var activeSessionId: String?
+    @Published private(set) var activeTitle: String?
+    @Published private(set) var activeSummary: String?
+    @Published private(set) var activeSummaryTurns = 0
+    @Published private(set) var contextUsed: Double?
+    @Published private(set) var pendingTurns = 0
+
+    @Published private(set) var chats: [ChatSession] = []
+    @Published private(set) var chatProjects: [ChatProject] = []
+    @Published private(set) var totalChats = 0
+    @Published private(set) var isLoadingChats = false
+    @Published private(set) var isLoadingTranscript = false
+    @Published private(set) var isCompacting = false
+    /// Said out loud rather than left to be noticed — a conversation that
+    /// quietly forgets its opening is the failure this replaces.
+    @Published var chatNotice: String?
+
+    /// Which chat was open when the app was last closed.
+    ///
+    /// Persisted because the alternative is arriving on an empty composer every
+    /// morning with yesterday's conversation one tap away but invisible. The id
+    /// is all that is kept; the transcript is refetched, because the server is
+    /// the record and a stale copy on the phone would be a second opinion.
+    private struct ChatState: Codable {
+        var activeSessionId: String?
+    }
+
+    private let chatState = StateStore<ChatState>(
+        filename: "chat-state.json", fallback: ChatState()
+    )
 
     // MARK: - Cached views
 
@@ -706,6 +744,18 @@ final class SyncEngine: ObservableObject {
         if trends == nil { trends = cached.trends }
         if insightStatus == nil { insightStatus = cached.insightStatus }
         cachedAt = cached.savedAt
+
+        // Reopen the conversation that was on screen last time. Only the id is
+        // kept — the transcript is refetched, because the server is the record
+        // and a stale copy here would be a second opinion about what was said.
+        if activeSessionId == nil, transcript.isEmpty {
+            let store = chatState
+            if let sessionId = await Task.detached(priority: .utility, operation: {
+                store.value.activeSessionId
+            }).value {
+                await openChat(sessionId)
+            }
+        }
     }
 
     private func saveCachedViews() {
@@ -739,44 +789,207 @@ final class SyncEngine: ObservableObject {
     }
 
     func ask(_ question: String, context: String = "", remember: Bool = true) async {
+        await run(question) { sink, sessionId in
+            await sink.ask(
+                question: question, context: context, remember: remember, sessionId: sessionId
+            )
+        }
+    }
+
+    func requestWeeklyReview() async {
+        await run("Weekly review") { sink, sessionId in
+            await sink.weeklyReview(sessionId: sessionId)
+        }
+    }
+
+    /// Ask something, and put the answer where it belongs.
+    ///
+    /// The turn is appended before the request so the question appears the
+    /// instant it is sent rather than half a minute later with the reply. It is
+    /// completed in place afterwards, which is why `ChatTurn` carries a stable
+    /// id: SwiftUI animates the bubble filling in instead of swapping one row
+    /// for another.
+    private func run(
+        _ question: String,
+        _ call: @escaping (HTTPSink, String?) async -> Result<InsightResult, Error>
+    ) async {
         guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
         isAsking = true
         insightError = nil
-        lastQuestion = question
-        insight = nil
+        chatNotice = nil
+
+        let pending = ChatTurn(question: question, isPending: true)
+        transcript.append(pending)
         defer { isAsking = false }
 
         let sink = HTTPSink(configuration: settings.sink)
-        switch await sink.ask(question: question, context: context, remember: remember) {
+        switch await call(sink, activeSessionId) {
         case .success(let result):
-            insight = result
+            if let index = transcript.firstIndex(where: { $0.id == pending.id }) {
+                transcript[index].complete(with: result)
+            }
+            // The server says which conversation the turn landed in, including
+            // when it just opened one.
+            if let sessionId = result.sessionId {
+                adopt(sessionId)
+            }
+            if let folded = result.compacted, folded > 0 {
+                chatNotice = "Compacted \(folded) earlier messages to fit the model\u{2019}s context. Nothing was deleted."
+                await refreshActiveTranscript()
+            }
+            await loadChats()
         case .failure(let error):
+            transcript.removeAll { $0.id == pending.id }
             insightError = error.localizedDescription
             Log.shared.error("insight", "Question failed: \(error.localizedDescription)")
         }
     }
 
-    func requestWeeklyReview() async {
-        guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
-        isAsking = true
+    private func adopt(_ sessionId: String) {
+        guard activeSessionId != sessionId else { return }
+        activeSessionId = sessionId
+        chatState.mutate { $0.activeSessionId = sessionId }
+    }
+
+    /// Start a new conversation. Nothing is created server-side until the first
+    /// question — an empty chat in the history is a piece of litter nobody can
+    /// tell apart from a real one.
+    func newChat() {
+        transcript = []
+        activeSessionId = nil
+        activeTitle = nil
+        activeSummary = nil
+        activeSummaryTurns = 0
+        contextUsed = nil
+        pendingTurns = 0
         insightError = nil
-        lastQuestion = "Weekly review"
-        insight = nil
-        defer { isAsking = false }
+        chatNotice = nil
+        chatState.mutate { $0.activeSessionId = nil }
+    }
+
+    func openChat(_ sessionId: String) async {
+        guard settings.sink.endpoint != nil, isSignedIn, !isAsking else { return }
+        isLoadingTranscript = true
+        insightError = nil
+        chatNotice = nil
+        defer { isLoadingTranscript = false }
 
         let sink = HTTPSink(configuration: settings.sink)
-        switch await sink.weeklyReview() {
-        case .success(let result):
-            insight = result
+        switch await sink.chatTranscript(sessionId) {
+        case .success(let body):
+            apply(body)
+            adopt(body.id)
         case .failure(let error):
             insightError = error.localizedDescription
         }
     }
 
-    func clearInsight() {
-        insight = nil
-        insightError = nil
-        lastQuestion = nil
+    private func apply(_ body: ChatTranscript) {
+        transcript = body.messages.map(ChatTurn.init(stored:))
+        activeTitle = body.title
+        activeSummary = body.summary
+        activeSummaryTurns = body.summaryTurns
+        contextUsed = body.context?.used
+        pendingTurns = body.context?.pendingTurns ?? 0
+    }
+
+    private func refreshActiveTranscript() async {
+        guard let sessionId = activeSessionId else { return }
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success(let body) = await sink.chatTranscript(sessionId) {
+            apply(body)
+        }
+    }
+
+    /// The history list. Titles only — the transcript is fetched when a chat is
+    /// opened, and only then.
+    func loadChats(search: String = "", more: Bool = false) async {
+        guard settings.sink.endpoint != nil, isSignedIn else { return }
+        isLoadingChats = true
+        defer { isLoadingChats = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        let offset = more ? chats.count : 0
+        switch await sink.chatSessions(offset: offset, search: search) {
+        case .success(let page):
+            chats = more ? chats + page.sessions : page.sessions
+            totalChats = page.total
+        case .failure(let error):
+            Log.shared.error("insight", "Could not list chats: \(error.localizedDescription)")
+        }
+        if case .success(let list) = await sink.chatProjects() {
+            chatProjects = list.projects
+        }
+    }
+
+    var hasMoreChats: Bool { chats.count < totalChats }
+
+    func renameChat(_ sessionId: String, to title: String) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success = await sink.renameChat(sessionId, title: title) {
+            if sessionId == activeSessionId { activeTitle = title }
+            await loadChats()
+        }
+    }
+
+    func archiveChat(_ sessionId: String) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success = await sink.archiveChat(sessionId, archived: true) {
+            if sessionId == activeSessionId { newChat() }
+            await loadChats()
+        }
+    }
+
+    func deleteChat(_ sessionId: String) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.deleteChat(sessionId) {
+        case .success:
+            if sessionId == activeSessionId { newChat() }
+            await loadChats()
+        case .failure(let error):
+            insightError = error.localizedDescription
+        }
+    }
+
+    /// Fold the older half of this conversation into a written summary.
+    ///
+    /// Affects what the model is sent, never the transcript: destroying what was
+    /// actually said to save room would be a strange trade in a system built
+    /// around answers you can go back and check.
+    func compactActiveChat() async {
+        guard let sessionId = activeSessionId, !isCompacting, !isAsking else { return }
+        isCompacting = true
+        chatNotice = nil
+        defer { isCompacting = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.compactChat(sessionId) {
+        case .success(let result):
+            chatNotice = result.compacted
+                ? "Compacted \(result.turns) earlier messages. The transcript is unchanged."
+                : "Nothing compacted: \(result.reason ?? "not enough conversation yet")."
+            await refreshActiveTranscript()
+        case .failure(let error):
+            insightError = error.localizedDescription
+        }
+    }
+
+    /// Record what you made of one answer.
+    ///
+    /// Updated from the server's reply rather than optimistically: this is the
+    /// data a feedback loop is built on, and a thumb that looks saved but is not
+    /// would poison it quietly.
+    func rate(turnId: Int, rating: Int?, note: String? = nil) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.rateAnswer(turnId, rating: rating, note: note) {
+        case .success(let updated):
+            if let index = transcript.firstIndex(where: { $0.storedId == turnId }) {
+                transcript[index].rating = updated.rating
+                transcript[index].note = updated.note
+            }
+        case .failure(let error):
+            insightError = error.localizedDescription
+        }
     }
 
     func refreshServerStatus(fresh: Bool = false) async {

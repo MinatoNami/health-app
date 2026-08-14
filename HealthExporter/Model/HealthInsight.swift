@@ -263,10 +263,26 @@ struct InsightResult: Codable, Equatable {
     var error: String?
     var source: String?
     var model: ModelInfo?
+    /// The conversation this landed in. The server opens one when asked to, so
+    /// this is how the phone learns the id of a chat it just started. Null when
+    /// nothing was stored — a question asked with "don't remember this".
+    var sessionId: String?
+    /// The stored row, which is what a rating attaches to.
+    var turnId: Int?
+    /// How many earlier turns were folded into a summary to make room for this
+    /// one. Surfaced so the transcript can say it happened rather than leaving
+    /// the conversation to quietly forget its own opening.
+    var compacted: Int?
 
     /// True when the answer came from reviewed guidance instead of the model,
     /// which is what happens for anything the safety rules call urgent.
     var isRuleBased: Bool { source == "safety_rules" }
+
+    enum CodingKeys: String, CodingKey {
+        case question, answer, safety, generated, error, source, model, compacted
+        case sessionId = "session_id"
+        case turnId = "turn_id"
+    }
 }
 
 /// Where health summaries get explained, and whether that is working.

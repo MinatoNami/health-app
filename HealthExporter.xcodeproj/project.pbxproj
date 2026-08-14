@@ -3,10 +3,12 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
+		9A5ECACD160078F7462987E7 /* ChatHistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D18C66509D453FAB7E3F1D71 /* ChatHistoryView.swift */; };
+		B76466EFFF36B5EAA311DEB5 /* ChatHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = E58A1977DB3C5C8369748F84 /* ChatHistory.swift */; };
 		163EFB557A01881B26FCB431 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C00B48FEC50688D63A2846 /* JSONValue.swift */; };
 		23AF3C4D7A6E8A451622F2C7 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08D94D614600296961780DC4 /* SettingsView.swift */; };
 		23BA958B09B2D7233EF57C4C /* StatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 615C3704C61D5DBC0ECF05AF /* StatusView.swift */; };
@@ -50,6 +52,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		D18C66509D453FAB7E3F1D71 /* ChatHistoryView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatHistoryView.swift; sourceTree = "<group>"; };
+		E58A1977DB3C5C8369748F84 /* ChatHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatHistory.swift; sourceTree = "<group>"; };
 		0280659C49CD1215D3607F94 /* CoverageGrid.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CoverageGrid.swift; sourceTree = "<group>"; };
 		08D94D614600296961780DC4 /* SettingsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		0BC9FF4B24F462DC4A56DB15 /* HealthReader.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HealthReader.swift; sourceTree = "<group>"; };
@@ -123,7 +127,6 @@
 				A1AB472A449A4A2DE468D494 /* Paths.swift */,
 				0F81D10CE63E9E3C10EEC083 /* Timestamps.swift */,
 			);
-			name = Core;
 			path = Core;
 			sourceTree = "<group>";
 		};
@@ -139,7 +142,6 @@
 				C471AAF3D881A2D46C9FD60A /* UI */,
 				4F435E275846AE2389369009 /* Resources */,
 			);
-			name = HealthExporter;
 			path = HealthExporter;
 			sourceTree = "<group>";
 		};
@@ -151,7 +153,6 @@
 				3BCE59334806F6F311F413E4 /* Info.plist */,
 				AA0CD6B12A045C75A759DDD9 /* HealthExporter.entitlements */,
 			);
-			name = App;
 			path = App;
 			sourceTree = "<group>";
 		};
@@ -160,7 +161,6 @@
 			children = (
 				D5938F36775BCB61C85EF75E /* Assets.xcassets */,
 			);
-			name = Resources;
 			path = Resources;
 			sourceTree = "<group>";
 		};
@@ -173,7 +173,6 @@
 				EB8912446560B4B147BE033A /* MetricCatalog.swift */,
 				87AF512F04D4BC889F61E9D0 /* UnitResolver.swift */,
 			);
-			name = Health;
 			path = Health;
 			sourceTree = "<group>";
 		};
@@ -184,13 +183,13 @@
 				1E821AD1E80771B8F1202A7E /* DailyBriefScheduler.swift */,
 				8CC73AA8E8A55474F9E651D2 /* SyncEngine.swift */,
 			);
-			name = Sync;
 			path = Sync;
 			sourceTree = "<group>";
 		};
 		C471AAF3D881A2D46C9FD60A /* UI */ = {
 			isa = PBXGroup;
 			children = (
+				D18C66509D453FAB7E3F1D71 /* ChatHistoryView.swift */,
 				8745D422311D3F01896A4295 /* CoverageDetailView.swift */,
 				0280659C49CD1215D3607F94 /* CoverageGrid.swift */,
 				C42BB1370EFE076D03975E41 /* DailyBriefSettingsView.swift */,
@@ -207,7 +206,6 @@
 				C4FD357D75A8A35ACA032249 /* SyncBanner.swift */,
 				E1A94F074D11916BCC2258B1 /* TrendCharts.swift */,
 			);
-			name = UI;
 			path = UI;
 			sourceTree = "<group>";
 		};
@@ -229,18 +227,17 @@
 				7AC4C35B3F6758117B62E0B6 /* ServerStatus.swift */,
 				71840D48E28C011C6F5DD052 /* WorkoutActivityNames.swift */,
 			);
-			name = Export;
 			path = Export;
 			sourceTree = "<group>";
 		};
 		F49C91997B5D8F4F3481F927 /* Model */ = {
 			isa = PBXGroup;
 			children = (
+				E58A1977DB3C5C8369748F84 /* ChatHistory.swift */,
 				0C249E55260915F66A85F946 /* HealthInsight.swift */,
 				917A55887A321895EF79650F /* HealthRecord.swift */,
 				F9C00B48FEC50688D63A2846 /* JSONValue.swift */,
 			);
-			name = Model;
 			path = Model;
 			sourceTree = "<group>";
 		};
@@ -270,8 +267,9 @@
 		D2474FD08DD03883C5A5F9BD /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
+				BuildIndependentTargetsInParallel = YES;
 				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 1600;
+				LastUpgradeCheck = 2660;
 			};
 			buildConfigurationList = 4B5E81F231C48EA3A5E1A22D /* Build configuration list for PBXProject "HealthExporter" */;
 			compatibilityVersion = "Xcode 3.2";
@@ -282,8 +280,6 @@
 				Base,
 			);
 			mainGroup = 32C1B2372DA0A10FC12046C4;
-			minimizedProjectReferenceProxies = 0;
-			preferredProjectObjectVersion = 100;
 			productRefGroup = DD0555BD389E8136B53B2E50 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -309,6 +305,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9A5ECACD160078F7462987E7 /* ChatHistoryView.swift in Sources */,
+				B76466EFFF36B5EAA311DEB5 /* ChatHistory.swift in Sources */,
 				3526F1829EF1264F720DD381 /* AppServices.swift in Sources */,
 				E9D29515E3FE48C578388E10 /* HealthExporterApp.swift in Sources */,
 				4B95B11163C8E324E23585F8 /* Keychain.swift in Sources */,
@@ -388,7 +386,9 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = MNJZZHXWT8;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -404,6 +404,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 5.0;
@@ -421,12 +422,14 @@
 				CODE_SIGN_ENTITLEMENTS = HealthExporter/App/HealthExporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = MNJZZHXWT8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HealthExporter/App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionelchong.HealthExporter;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -475,7 +478,9 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = MNJZZHXWT8;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -498,6 +503,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -515,12 +521,14 @@
 				CODE_SIGN_ENTITLEMENTS = HealthExporter/App/HealthExporter.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = MNJZZHXWT8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = HealthExporter/App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.lionelchong.HealthExporter;

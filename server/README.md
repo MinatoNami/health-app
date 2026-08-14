@@ -109,6 +109,9 @@ be deleted before the first sync ever shipped it.
 
 ## Endpoints
 
+The full reference, with request shapes and every filter, is
+**[docs/API.md](../docs/API.md)**. What follows is the map.
+
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/dashboard/` | session | Vue analytics dashboard |
@@ -429,6 +432,10 @@ correction, pattern discovery, and the twelve tools. What follows here is how to
 run it.
 
 ### Conversations
+
+**[docs/CHAT.md](../docs/CHAT.md) is the full account** — sessions, projects,
+compaction, feedback and retention, across both clients. What follows is why the
+server is shaped the way it is.
 
 A question on its own is a transaction. A conversation is what you get when the
 answer to "why?" knows what the previous answer said, and that is what
