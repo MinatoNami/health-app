@@ -6,6 +6,8 @@
 #   ./deploy.sh user <name>     create/reset a login the app can sign in with
 #   ./deploy.sh admin <name>    create a Django admin account for /admin/
 #   ./deploy.sh token <label>   mint a bearer token directly (shown once)
+#   ./deploy.sh llm <url> [model]  point at a model server, optionally pinning
+#                               which model answers
 #   ./deploy.sh pin             print the certificate pin for the app
 #   ./deploy.sh rotate-cert     reissue the TLS keypair (changes the pin)
 #   ./deploy.sh llm [url]       point the server at your LM Studio and verify it
@@ -595,9 +597,20 @@ cmd_llm() {
       ;;
   esac
 
+  # An optional second argument pins the model. Worth doing: unset, the app
+  # takes whichever model the server happens to list first, so loading anything
+  # else in LM Studio silently moves health questions onto it — including onto a
+  # model loaded with a context window too small to hold the prompt, which fails
+  # as "request exceeds the available context size" and looks like a bug here.
+  local model="${2:-}"
+
   step "Checking the model server is reachable from the container"
   set_env_var "LLM_BASE_URL" "$url"
   set_env_var "LLM_ENABLED" "1"
+  if [ -n "$model" ]; then
+    set_env_var "LLM_MODEL" "$model"
+    info "pinned to $model"
+  fi
   compose "up -d web" >/dev/null 2>&1
   sleep 2
 

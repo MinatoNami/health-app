@@ -843,6 +843,38 @@ def answer(
 
     system = _system_prompt(verdict, snapshot, project=getattr(session, "project", None))
 
+    # Does the prompt fit at all, before anything is sent?
+    #
+    # `history_budget` clamps to zero, so a tight window silently drops the
+    # conversation and carries on — correct, and not enough on its own: the
+    # system prompt alone can exceed the whole window, and then the request goes
+    # out and comes back as "request (8596 tokens) exceeds the available context
+    # size (8192 tokens)". That is the model server describing its own limit, and
+    # it says nothing about which model, why it changed, or what to do.
+    #
+    # It changes without anyone touching this app. With LLM_MODEL unset the
+    # client takes whichever model the server lists first, so loading anything
+    # in LM Studio can move health questions onto it — and a model loaded at 8k
+    # cannot hold this prompt, which is mostly the measured snapshot and does not
+    # shrink to fit.
+    needed = estimate_tokens(system) + OUTPUT_RESERVE_TOKENS
+    limit = context_tokens()
+    if needed > limit:
+        log.warning(
+            "Prompt does not fit: %s needs ~%d tokens of a %d-token window",
+            model,
+            needed,
+            limit,
+        )
+        return stop(
+            error=(
+                f"The loaded model ({model}) has a {limit:,}-token context and this "
+                f"question needs about {needed:,}. Load it with a larger context, or "
+                f"pin a bigger model with LLM_MODEL. The measured summary below is "
+                f"unaffected."
+            )
+        )
+
     # Replayed as real turns rather than pasted into the prompt, so the model
     # treats them as things it said before rather than as evidence. A session
     # carries its own history without being asked: the transcript on screen is

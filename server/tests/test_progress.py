@@ -180,3 +180,27 @@ class ProgressEndpointTests(TestCase):
         response = self.get("not-a-uuid-at-all!!")
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["known"])
+
+
+class ContextFitTests(TestCase):
+    """A prompt that cannot fit should say so, not be sent and rejected.
+
+    The window changes without anyone touching this app: with LLM_MODEL unset
+    the client takes whichever model the server lists first, so loading a model
+    in LM Studio can move questions onto one whose context is too small.
+    """
+
+    def test_a_window_too_small_is_refused_before_anything_is_sent(self):
+        with mock.patch.object(llm_service, "context_tokens", return_value=8192), \
+             mock.patch.object(llm_service, "estimate_tokens", return_value=9000), \
+             mock.patch.object(llm_service.client, "is_enabled", return_value=True), \
+             mock.patch.object(llm_service.client, "resolve_model", return_value="tiny/model"), \
+             mock.patch.object(llm_service.client, "chat") as chat:
+            payload = llm_service.answer("How is my sleep?", persist=False)
+
+        chat.assert_not_called()
+        self.assertFalse(payload["generated"])
+        self.assertIn("8,192", payload["error"])
+        self.assertIn("tiny/model", payload["error"])
+        # The measured half is what the screen falls back to, so it must survive.
+        self.assertIsNotNone(payload["snapshot"])
