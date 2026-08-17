@@ -782,13 +782,20 @@ def answer(
             "\nThis is a follow-up. Earlier answers are in the conversation for "
             "continuity only — re-read the snapshot and the tools for every figure "
             "you quote, and do not treat anything you said before as a measurement.\n"
+            "The final message is the one you are answering, and it sets the "
+            "subject. If it asks about something else, the previous subject is "
+            "finished and does not carry into this answer; if it asks nothing at "
+            "all, neither does. A conversation full of one topic is not a reason to "
+            "answer a new question with that topic, and repeating an earlier answer "
+            "back because it is what the thread contains is the specific failure to "
+            "avoid here. Read the last message before deciding anything.\n"
         )
 
     messages.append({"role": "user", "content": user_message})
 
     try:
         messages, tool_log, usage = _run_tool_loop(messages, model, tz_name)
-        messages.append({"role": "user", "content": prompts.FINALISE})
+        messages.append({"role": "user", "content": prompts.finalise(user_message)})
         final = client.chat(
             messages,
             model=model,

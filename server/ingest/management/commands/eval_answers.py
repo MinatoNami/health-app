@@ -95,7 +95,7 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ running
 
     @staticmethod
-    def _ask(case: dict, tz_name: str | None) -> dict:
+    def _ask(case: dict, tz_name: str | None) -> tuple[dict, tuple]:
         """Ask the case's question, with its earlier turns if it has any.
 
         A case with no `prior` never touches the database. One with `prior` has
@@ -108,25 +108,28 @@ class Command(BaseCommand):
         """
         prior = case.get("prior") or []
         if not prior:
-            return service.answer(case["question"], persist=False, tz_name=tz_name)
+            return service.answer(case["question"], persist=False, tz_name=tz_name), ()
 
         with transaction.atomic():
             try:
                 session = ChatSession.objects.create(title=f"eval:{case['id']}")
+                earlier = []
                 for question in prior:
-                    service.answer(
+                    result = service.answer(
                         question, persist=True, tz_name=tz_name, session=session
                     )
-                return service.answer(
+                    earlier.append((result.get("answer") or {}).get("summary") or "")
+                payload = service.answer(
                     case["question"], persist=True, tz_name=tz_name, session=session
                 )
+                return payload, tuple(earlier)
             finally:
                 transaction.set_rollback(True)
 
     def _run_case(self, case: dict, options: dict) -> dict:
         started = time.monotonic()
         try:
-            payload = self._ask(case, options["tz"])
+            payload, prior_summaries = self._ask(case, options["tz"])
         except Exception as exc:  # noqa: BLE001 — one bad case must not end the run
             return {
                 "id": case["id"],
@@ -138,7 +141,7 @@ class Command(BaseCommand):
                 "seconds": round(time.monotonic() - started, 1),
             }
 
-        failures = golden.check(case, payload)
+        failures = golden.check(case, payload, prior_summaries)
         grade = None
         if not options["no_judge"]:
             grade = judge.grade(

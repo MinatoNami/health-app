@@ -93,6 +93,62 @@ CASES = [
         "food, not to produce a fresh general report. Confirm or correct what was "
         "last said.",
     },
+    # --------------------------------------------- changing the subject mid-chat
+    #
+    # These exist because the set went to production without them and the gap cost
+    # a live regression: after several turns about sleep, every message — "Hi",
+    # "hello", "Lol what are u saying" — came back with the previous sleep answer
+    # word for word. The single-prior follow-up cases above did not reproduce it;
+    # it takes a run of turns on one subject to build the pattern the model then
+    # continues. Hence three.
+    {
+        "id": "topic-change-mid-chat",
+        "question": "How has my eating been?",
+        "tags": ["followup", "topic-change", "nutrition"],
+        "prior": [
+            "How is my sleep?",
+            "How about my sleep last night?",
+            "How about my sleep on 14th August?",
+        ],
+        "expect": {},
+        "rubric": "The subject changed to food. This answer is about what was "
+        "logged, over which days, with the gaps named. Continuing to answer about "
+        "sleep is the failure, and handing back the previous sleep answer is the "
+        "same failure in its worst form.",
+    },
+    {
+        "id": "greeting-mid-chat",
+        "question": "hello",
+        "tags": ["greeting", "topic-change", "conversational"],
+        "prior": [
+            "How is my sleep?",
+            "How about my sleep last night?",
+            "How about my sleep on 14th August?",
+        ],
+        "expect": {"max_observations": 0, "max_actions": 0},
+        "rubric": "A greeting arriving in the middle of a conversation about sleep "
+        "is still a greeting. One short sentence back. Not a sleep report, and "
+        "above all not the previous sleep answer repeated.",
+    },
+    # ------------------------------------------------------ not a data question
+    {
+        "id": "off-topic-request",
+        "question": "Can you help me write an email to my landlord?",
+        "tags": ["conversational", "off-topic"],
+        "expect": {"max_observations": 0, "max_actions": 0},
+        "rubric": "Outside what this does. Say so plainly in a sentence and say "
+        "what it can help with instead. Do not attempt the email, and do not "
+        "answer with health figures nobody asked for.",
+    },
+    {
+        "id": "meta-question",
+        "question": "What can you actually tell me?",
+        "tags": ["conversational", "off-topic"],
+        "expect": {},
+        "rubric": "A question about the assistant rather than about the data. Say "
+        "briefly what it can answer from this person's own recorded data. Listing "
+        "what is recorded is a good answer; a full health report is not.",
+    },
     # ------------------------------------------------------- single day / night
     {
         "id": "sleep-last-night",
@@ -275,12 +331,17 @@ def _text(answer: dict) -> str:
     return "\n".join(parts).lower()
 
 
-def check(case: dict, payload: dict) -> list[str]:
+def check(case: dict, payload: dict, prior_summaries: tuple = ()) -> list[str]:
     """Arithmetic failures for one answer. Empty list means it passed.
 
     Returns every failure rather than the first: one run should tell you
     everything that is wrong with an answer, not send you round the loop once per
     problem.
+
+    `prior_summaries` are the answers already given in this case's conversation.
+    Repeating one of them exactly is always a failure and needs no rubric to say
+    so — it is what the model does when the thread has talked it into continuing
+    a pattern instead of reading the newest message.
     """
     expect = case.get("expect") or {}
     failures = []
@@ -329,6 +390,10 @@ def check(case: dict, payload: dict) -> list[str]:
     summary = answer.get("summary") or ""
     if any(marker in summary for marker in _MARKDOWN):
         failures.append("summary contains markdown, which the clients render literally")
+
+    normalised = summary.strip().lower()
+    if normalised and any(normalised == (p or "").strip().lower() for p in prior_summaries):
+        failures.append("the answer repeats an earlier answer in this chat word for word")
 
     return failures
 

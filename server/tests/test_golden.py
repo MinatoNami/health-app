@@ -152,6 +152,22 @@ class GoldenCheckTests(TestCase):
         failures = golden.check(case, payload(answer))
         self.assertTrue(any("aim for" in f for f in failures), failures)
 
+    def test_repeating_an_earlier_answer_is_caught(self):
+        """The live regression: after several turns on one subject, every message
+        came back with the previous answer word for word."""
+        case = {"id": "greeting-mid-chat", "tags": [], "expect": {}}
+        failures = golden.check(case, payload(), (PASSING["summary"],))
+        self.assertTrue(any("word for word" in f for f in failures), failures)
+
+    def test_a_differently_worded_answer_is_not_a_repeat(self):
+        case = {"id": "x", "tags": [], "expect": {}}
+        self.assertEqual(golden.check(case, payload(), ("Something else entirely.",)), [])
+
+    def test_the_repeat_check_ignores_case_and_spacing(self):
+        case = {"id": "x", "tags": [], "expect": {}}
+        earlier = f"  {PASSING['summary'].upper()}  "
+        self.assertTrue(golden.check(case, payload(), (earlier,)))
+
     def test_a_missing_answer_is_reported_as_a_failure(self):
         case = {"id": "x", "tags": [], "expect": {}}
         failures = golden.check(case, payload(None, error="model unreachable"))

@@ -53,7 +53,20 @@ ANSWER THE QUESTION THAT WAS ASKED
   and then say what you can offer instead. Never substitute a different question
   silently.
 
-WHEN THERE IS NO QUESTION
+WHEN THE MESSAGE IS NOT A DATA QUESTION
+- Every message sets its own subject. Whatever the conversation above was about,
+  answer what the newest message asks. Handing back your previous answer because
+  the thread is full of it is the most common way to get this wrong, and it does
+  not become right by being consistent.
+- Not everything is a question about health data. Small talk, a question about
+  you or about what this app does, a joke, a change of subject, something you
+  cannot help with at all: answer it briefly and plainly in the summary, leave
+  observations and actions empty, and say what you can help with. Do not reach
+  for the health data to fill the space.
+- You explain one person's health data and you are not a general assistant. Say
+  so plainly when asked for something else, rather than either attempting it or
+  answering a health question nobody asked because it is the one you have
+  figures for.
 - Greetings, thanks, and small talk: reply in one short sentence and stop, with
   observations and actions left empty. A health report is not a greeting.
 - "Sure?", "really?", "check again" and the like challenge the previous answer.
@@ -167,10 +180,13 @@ INSIGHT_SCHEMA = {
         # answering every question with the weekly snapshot it was handed.
         "asked_for": {
             "type": "string",
-            "description": "One line: what was actually asked, and the exact dates "
-            "needed to answer it, resolved against RIGHT NOW. e.g. 'sleep on the "
-            "single night of 2026-08-13', 'steps over 2026-08-07 to 2026-08-13', "
-            "'a greeting, no data question'. Everything below answers this.",
+            "description": "One line: what the person's LATEST message asks for, and "
+            "the exact dates needed to answer it, resolved against RIGHT NOW. Read "
+            "that message, not the conversation above it — if it changes the "
+            "subject then the subject changes, and if it asks nothing then say that "
+            "here. e.g. 'sleep on the single night of 2026-08-13', 'steps over "
+            "2026-08-07 to 2026-08-13', 'a greeting, no data question', 'asked what "
+            "this app can do'. Everything below answers this.",
         },
         "summary": {
             "type": "string",
@@ -246,11 +262,21 @@ RESPONSE_FORMAT = {
     "json_schema": {"name": "health_insight", "strict": True, "schema": INSIGHT_SCHEMA},
 }
 
-FINALISE = """Now write the final answer as JSON matching the required schema.
+FINALISE = """This is the message you are answering, in full:
 
-Before writing it, check one thing: does this answer the question that was asked,
-or does it answer the snapshot? If the question named a day, a night, a date or a
-single metric, that is what the answer is about.
+<<<
+{question}
+>>>
+
+Answer that message. Not the subject of the conversation above it, and not the
+question you would rather have been asked. If it is a greeting, greet them back.
+If it changes the subject, the subject has changed. If it asks nothing, say so.
+
+Now write the final answer as JSON matching the required schema.
+
+Before writing it, check one thing: does this answer the message above, or does
+it answer the snapshot? If it named a day, a night, a date or a single metric,
+that is what the answer is about.
 
 Rules for the fields:
 - asked_for: write this first and let it decide everything below. What was asked,
@@ -274,6 +300,27 @@ Rules for the fields:
 
 Empty arrays are correct answers. Use only figures that appeared above. Plain
 text in every field."""
+
+def finalise(message: str) -> str:
+    """`FINALISE` with the message being answered pasted into it.
+
+    The question is repeated at the end because by this point it is no longer the
+    last thing the model has read: its own tool round and this instruction both
+    sit between. That is survivable for "how has my eating been?", where the
+    subject carries its own signal, and not survivable for "hello" — one word,
+    weighed against three replayed exchanges about sleep, loses to the pattern of
+    them, and the model continues the conversation rather than replying to it.
+    Putting the message last makes it the thing in view when generation starts.
+    """
+    text = (message or "").strip() or "(an empty message — nothing was asked)"
+    # Truncated because a question can arrive with a page of pasted context, and
+    # this is the second copy of it in the same prompt.
+    if len(text) > MAX_ECHOED_MESSAGE:
+        text = f"{text[:MAX_ECHOED_MESSAGE]} …"
+    return FINALISE.replace("{question}", text)
+
+
+MAX_ECHOED_MESSAGE = 500
 
 COMPACT = """You are compressing a conversation so it can be carried forward into a
 smaller context window. You are not answering anything.
