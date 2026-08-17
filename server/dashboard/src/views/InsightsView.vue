@@ -14,7 +14,7 @@
  * happens, goals, retention — lives in Settings. It is read once; it was
  * costing a paragraph a day here.
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api } from '../api.js'
 import ChatMessage from '../components/ChatMessage.vue'
 import ChatSidebar from '../components/ChatSidebar.vue'
@@ -27,6 +27,7 @@ const question = ref('')
 const asking = ref(false)
 const error = ref('')
 const transcript = ref(null)
+const messages = ref(null)
 
 const sessions = ref([])
 const projects = ref([])
@@ -82,7 +83,48 @@ const opening = computed(() => {
   return parts.join(' ')
 })
 
-async function scrollDown() {
+/* Following the conversation, or reading back through it.
+ *
+ * A transcript that scrolls itself to the bottom whenever anything changes is
+ * unusable the moment there is anything worth scrolling back to: rating an
+ * answer you had scrolled up to read threw you to the newest message, and the
+ * container's `scroll-behavior: smooth` drew it out as an animation. Both are
+ * gone — nothing here animates, and everything below is conditional on the
+ * reader already being at the bottom.
+ */
+const NEAR_BOTTOM_PX = 120
+const following = ref(true)
+
+function onTranscriptScroll() {
+  const el = transcript.value
+  if (!el) return
+  following.value = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX
+}
+
+/* Content growing is what "pushing up" is.
+ *
+ * A bubble being added should move the conversation up under it. That is not a
+ * scroll to a destination and it must not look like one: watching the viewport
+ * travel to the new message is the thing that reads as wrong, and an animation
+ * makes it worse by drawing it out. So the height is observed, and while the
+ * reader is at the bottom the scroller is pinned there on the same frame the
+ * content changes — the new bubble is simply already in place.
+ *
+ * Scrolled away, this does nothing at all, so reading back through a chat is
+ * never interrupted by an answer landing.
+ */
+let contentObserver = null
+
+function pinToBottom() {
+  if (!following.value) return
+  const el = transcript.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+/* A different conversation is on screen, or the person has just sent something:
+ * follow again from here, at the newest message. */
+async function jumpToBottom() {
+  following.value = true
   await nextTick()
   const el = transcript.value
   if (el) el.scrollTop = el.scrollHeight
@@ -186,14 +228,40 @@ async function rate(turnId, body) {
   }
 }
 
+/* Rows carry their own identity so the list can be keyed by it.
+ *
+ * Keying by array index instead let Vue match a row in one conversation against
+ * the row that happened to sit at the same position in the next, and reuse the
+ * ChatMessage rendering it — along with everything that component holds
+ * privately. Opening a chat with a message expanded left the same message
+ * expanded in the chat you switched to, and an open note editor kept its draft
+ * across the switch, so saving it wrote one conversation's note onto a different
+ * conversation's answer.
+ *
+ * Live rows are numbered from a counter rather than by content: two identical
+ * questions in one chat are two rows, and keying them by their text would make
+ * them one.
+ */
+let liveRows = 0
+const liveRow = () => `live-${(liveRows += 1)}`
+
 function toTranscript(messages) {
   const rows = []
   for (const message of messages) {
     // A blank question means the weekly review, which is asked by instruction
     // rather than by a question. It still needs a bubble, or the answer appears
-    // to have arrived unprompted.
-    rows.push({ role: 'user', text: message.question || 'Weekly review' })
-    rows.push({ role: 'assistant', result: fromStored(message) })
+    // to have arrived unprompted. `/v1/insights/ask` rejects an empty question,
+    // so this cannot be somebody's blank submit.
+    rows.push({
+      id: `q${message.id}`, role: 'user',
+      text: message.question || 'Weekly review', at: message.created_at,
+    })
+    rows.push({
+      id: `a${message.id}`, role: 'assistant', result: fromStored(message),
+      // Carried on the answer so "ask again" has the question without the
+      // bubble having to know what sits above it in the list.
+      question: message.question, at: message.created_at,
+    })
   }
   return rows
 }
@@ -210,7 +278,7 @@ async function openSession(session) {
     activeId.value = body.id
     detail.value = body
     turns.value = toTranscript(body.messages)
-    scrollDown()
+    jumpToBottom()
   } catch (e) {
     error.value = e.message
   } finally {
@@ -299,11 +367,18 @@ function sessionArgs() {
 }
 
 async function run(label, call) {
-  turns.value.push({ role: 'user', text: label })
-  turns.value.push({ role: 'pending' })
+  // The pending row keeps its id when the answer replaces it: it is the same
+  // slot becoming the same conversation's reply, and reusing it avoids the
+  // bubble being torn down and rebuilt under the reader.
+  const pendingId = liveRow()
+  const at = new Date().toISOString()
+  turns.value.push({ id: liveRow(), role: 'user', text: label, at })
+  turns.value.push({ id: pendingId, role: 'pending' })
   asking.value = true
   error.value = ''
-  scrollDown()
+  // Sending is itself a statement that you want to see what comes back, so this
+  // one goes to the bottom whether or not you had scrolled away.
+  jumpToBottom()
   try {
     const result = await call(sessionArgs())
     // The server says which conversation the turn landed in — including when it
@@ -312,7 +387,10 @@ async function run(label, call) {
       activeId.value = result.session_id
       pendingProject.value = null
     }
-    turns.value.splice(-1, 1, { role: 'assistant', result })
+    turns.value.splice(-1, 1, {
+      id: pendingId, role: 'assistant', result, question: label,
+      at: new Date().toISOString(),
+    })
     // Said out loud rather than left to be noticed: the alternative is a
     // conversation that quietly forgets its own opening.
     if (result.compacted) {
@@ -327,7 +405,9 @@ async function run(label, call) {
     error.value = e.message
   } finally {
     asking.value = false
-    scrollDown()
+    // Nothing to scroll here: the answer replacing the pending bubble changes
+    // the content height, and the observer pins the bottom for it — but only if
+    // the reader stayed there while it was being written.
   }
 }
 
@@ -425,8 +505,19 @@ function onSearch(value) {
   loadSessions()
 }
 
-watch(turns, scrollDown, { deep: true })
-onMounted(load)
+/* There is deliberately no watcher on `turns`. It used to be
+ * `watch(turns, scrollDown, { deep: true })`, which meant every change anywhere
+ * in the transcript scrolled it to the bottom — including recording a thumb,
+ * which mutates the rated turn and nothing else. The four places that add or
+ * replace a row now say for themselves whether the view should move, and a deep
+ * traversal of every answer on every change goes away with it.
+ */
+onMounted(() => {
+  load()
+  contentObserver = new ResizeObserver(pinToBottom)
+  if (messages.value) contentObserver.observe(messages.value)
+})
+onBeforeUnmount(() => contentObserver?.disconnect())
 </script>
 
 <template>
@@ -483,13 +574,13 @@ onMounted(load)
         >{{ compacting ? 'Compacting…' : 'Compact' }}</button>
       </div>
 
-      <div ref="transcript" class="transcript">
+      <div ref="transcript" class="transcript" @scroll.passive="onTranscriptScroll">
         <!-- margin-top:auto on this wrapper is what makes a short conversation
              sit against the composer instead of stranded at the top of an empty
              panel. `justify-content: flex-end` on the scroller itself would do
              the same until the content overflows, at which point it clips the
              oldest messages out of reach. -->
-        <div class="messages">
+        <div ref="messages" class="messages">
           <p v-if="loadingChat" class="offline">Loading this conversation…</p>
 
           <div v-if="opening" class="chat-row">
@@ -501,8 +592,8 @@ onMounted(load)
             “{{ activeProject.name }}”.
           </p>
 
-          <template v-for="(turn, i) in turns" :key="i">
-            <ChatMessage :turn="turn" @rate="rate" />
+          <template v-for="(turn, i) in turns" :key="turn.id">
+            <ChatMessage :turn="turn" @rate="rate" @again="ask" />
             <!-- The line where the model's memory of this chat becomes a
                  summary. Everything above it is still here to read — that is
                  the whole point of keeping the transcript out of it. -->
@@ -528,6 +619,15 @@ onMounted(load)
             numbers alongside do not need it.
           </p>
         </div>
+
+        <!-- The way back. Nothing drags the view to the newest message any
+             more, which is right while you are reading and useless once you
+             want to return — sticky rather than fixed so it rides the bottom of
+             the scroller without anything having to measure the composer. -->
+        <button
+          v-if="!following && turns.length" class="jump"
+          @click="jumpToBottom()"
+        >↓ Latest</button>
       </div>
 
       <div class="composer">
@@ -648,13 +748,20 @@ onMounted(load)
 }
 
 .transcript {
-  flex: 1; overflow-y: auto; padding: 18px 18px 6px; scroll-behavior: smooth;
+  flex: 1; overflow-y: auto; padding: 18px 18px 6px;
   display: flex; flex-direction: column;
 }
 .messages { margin-top: auto; }
-@media (prefers-reduced-motion: reduce) { .transcript { scroll-behavior: auto; } }
 
 .projectnote { margin: 0 0 14px; font-size: 12px; color: var(--text-muted); }
+
+.jump {
+  position: sticky; bottom: 6px; align-self: center; flex: none;
+  padding: 5px 13px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--page); color: var(--text-secondary);
+  font-size: 12px; box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+}
+.jump:hover { color: var(--text-primary); }
 
 .ctx {
   flex: none; font-size: 11px; color: var(--text-muted);

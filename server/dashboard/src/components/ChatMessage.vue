@@ -17,11 +17,12 @@ const props = defineProps({
   turn: { type: Object, required: true },
 })
 
-const emit = defineEmits(['rate'])
+const emit = defineEmits(['rate', 'again'])
 
 const showDetail = ref(false)
 const noteOpen = ref(false)
 const draft = ref('')
+const copied = ref(false)
 
 /* Only a stored turn can be rated — a rating needs a row to live on, and the
  * turn id only exists once the answer has been persisted. Questions asked with
@@ -60,6 +61,53 @@ const banner = computed(() => LEVEL[safety.value.level] || null)
 const detailCount = computed(
   () => (answer.value?.actions?.length || 0) + (answer.value?.limitations?.length || 0)
 )
+
+/* Just the time. The date is on the conversation, and a full timestamp under
+ * every bubble is noise on a chat that happened in one sitting. */
+const when = computed(() => {
+  if (!props.turn.at) return ''
+  const moment = new Date(props.turn.at)
+  return Number.isNaN(moment.getTime())
+    ? ''
+    : moment.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+})
+
+/* The answer as something you can paste somewhere that is not this app.
+ *
+ * The caveats travel with it. An answer separated from its confidence and its
+ * limitations is exactly the artefact this system spends its effort not
+ * producing, and the clipboard is the most likely place for that to happen. */
+function asText() {
+  const a = answer.value
+  if (!a) return props.turn.result?.error || ''
+  const lines = [a.summary]
+  if (a.period_examined) lines.push(`Period examined: ${a.period_examined}`)
+  if (a.observations?.length) {
+    lines.push('', 'Observations')
+    for (const o of a.observations) lines.push(`- ${o.statement} (${o.evidence}) [${o.confidence}]`)
+  }
+  if (a.actions?.length) {
+    lines.push('', 'Suggestions')
+    for (const x of a.actions) lines.push(`- ${x.action} — ${x.reason} (${x.timeframe})`)
+  }
+  if (a.limitations?.length) {
+    lines.push('', 'Limits of this answer')
+    for (const l of a.limitations) lines.push(`- ${l}`)
+  }
+  if (a.professional_review_recommended) {
+    lines.push('', `Worth raising with a healthcare professional. ${a.professional_review_reason || ''}`.trim())
+  }
+  lines.push('', 'Wellness guidance generated from recorded data. Not medical advice.')
+  return lines.join('\n')
+}
+
+async function copy() {
+  try {
+    await navigator.clipboard.writeText(asText())
+    copied.value = true
+    setTimeout(() => { copied.value = false }, 1600)
+  } catch { /* denied or unavailable; the button simply does not confirm */ }
+}
 </script>
 
 <template>
@@ -127,6 +175,7 @@ const detailCount = computed(
 
       <div class="footer">
         <p class="answer-meta">
+          <span v-if="when" class="when">{{ when }}</span>
           <template v-if="model">
             {{ (model.latency_ms / 1000).toFixed(0) }}s · {{ model.name }}
           </template>
@@ -135,6 +184,20 @@ const detailCount = computed(
           </template>
           <template v-else-if="turn.result">No model ran.</template>
         </p>
+
+        <!-- Copy, and ask the same question again. "Again" appends rather than
+             replacing: a stored answer is the record of what was said, and
+             being able to reproduce a generated health claim later is the whole
+             reason to keep one. Two answers to one question is also the
+             comparison worth having while a prompt is being tuned. -->
+        <div v-if="answer" class="acts">
+          <button class="linkbtn" @click="copy">{{ copied ? 'Copied' : 'Copy' }}</button>
+          <button
+            v-if="turn.question" class="linkbtn"
+            title="Ask this question again and keep both answers"
+            @click="emit('again', turn.question)"
+          >Again</button>
+        </div>
 
         <!-- Rating sits with the answer, not in a survey afterwards. The
              judgement is worth most while the answer is still on screen and
@@ -196,6 +259,10 @@ const detailCount = computed(
   margin-top: 9px; flex-wrap: wrap;
 }
 .footer .answer-meta { flex: 1; min-width: 0; }
+.when { margin-right: 6px; font-variant-numeric: tabular-nums; }
+
+.acts { display: flex; align-items: center; gap: 10px; flex: none; }
+.acts .linkbtn { font-size: 11px; }
 
 .rate { display: flex; align-items: center; gap: 2px; flex: none; }
 .thumb {
