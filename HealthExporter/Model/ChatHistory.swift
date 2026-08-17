@@ -213,8 +213,20 @@ struct CompactionResult: Codable, Equatable {
 /// are about, on the same row that produced them.
 struct ChatTurn: Identifiable, Equatable {
     /// Stable across the pending → answered transition, so SwiftUI animates the
-    /// bubble filling in rather than replacing one row with another.
-    let id: UUID
+    /// bubble filling in rather than replacing one row with another — and stable
+    /// across a reload of the same conversation, which a fresh UUID per load was
+    /// not. `apply(_:)` rebuilds the transcript whenever a compaction lands, so
+    /// identities minted at load time changed under a chat nobody had navigated
+    /// away from: every bubble was destroyed and rebuilt mid-conversation, losing
+    /// whatever each had open.
+    ///
+    /// A string rather than a UUID because the two sources of a turn have
+    /// genuinely different identities: a stored row is the row, and a live one
+    /// has nothing to be but itself until the server gives it an id.
+    ///
+    /// Settable so a reload can hand a turn back the identity it already had on
+    /// screen; see `SyncEngine.apply(_:)`.
+    var id: String
     var question: String
     var answer: HealthInsight?
     var safety: SafetyVerdict?
@@ -229,9 +241,13 @@ struct ChatTurn: Identifiable, Equatable {
     var storedId: Int?
     var rating: Int?
     var note: String
+    /// When the turn happened. Set locally for a live one and taken from the
+    /// stored row otherwise, so a reopened conversation shows the times it
+    /// actually happened at rather than the time it was reloaded.
+    var createdAt: Date
 
     init(
-        id: UUID = UUID(),
+        id: String = UUID().uuidString,
         question: String,
         answer: HealthInsight? = nil,
         safety: SafetyVerdict? = nil,
@@ -242,7 +258,8 @@ struct ChatTurn: Identifiable, Equatable {
         isRuleBased: Bool = false,
         storedId: Int? = nil,
         rating: Int? = nil,
-        note: String = ""
+        note: String = "",
+        createdAt: Date = Date()
     ) {
         self.id = id
         self.question = question
@@ -256,6 +273,7 @@ struct ChatTurn: Identifiable, Equatable {
         self.storedId = storedId
         self.rating = rating
         self.note = note
+        self.createdAt = createdAt
     }
 
     /// A stored message, as a turn on screen.
@@ -267,6 +285,10 @@ struct ChatTurn: Identifiable, Equatable {
     /// release.
     init(stored: ChatMessage) {
         self.init(
+            // The stored row's own id, so reloading the same conversation
+            // produces the same identities and SwiftUI keeps the bubbles it
+            // already has.
+            id: "stored-\(stored.id)",
             question: stored.question.isEmpty ? "Weekly review" : stored.question,
             answer: stored.answer,
             safety: stored.safety,
@@ -278,8 +300,43 @@ struct ChatTurn: Identifiable, Equatable {
             isRuleBased: stored.safety?.level == "urgent" && stored.modelName.isEmpty,
             storedId: stored.id,
             rating: stored.rating,
-            note: stored.note
+            note: stored.note,
+            createdAt: stored.createdAt
         )
+    }
+
+    /// The answer as something that can be pasted somewhere that is not this app.
+    ///
+    /// The caveats travel with it. An answer separated from its confidence and
+    /// its limitations is exactly the artefact this system spends its effort not
+    /// producing, and a clipboard is the most likely place for that to happen.
+    var plainText: String {
+        guard let answer else { return error ?? "" }
+        var lines = [answer.summary]
+        if !answer.periodExamined.isEmpty {
+            lines.append("Period examined: \(answer.periodExamined)")
+        }
+        if !answer.observations.isEmpty {
+            lines += ["", "Observations"]
+            lines += answer.observations.map {
+                "- \($0.statement) (\($0.evidence)) [\($0.confidence)]"
+            }
+        }
+        if !answer.actions.isEmpty {
+            lines += ["", "Suggestions"]
+            lines += answer.actions.map { "- \($0.action) — \($0.reason) (\($0.timeframe))" }
+        }
+        if !answer.limitations.isEmpty {
+            lines += ["", "Limits of this answer"]
+            lines += answer.limitations.map { "- \($0)" }
+        }
+        if answer.professionalReviewRecommended {
+            let reason = answer.professionalReviewReason ?? ""
+            lines += ["", "Worth raising with a healthcare professional. \(reason)"
+                .trimmingCharacters(in: .whitespaces)]
+        }
+        lines += ["", "Wellness guidance generated from recorded data. Not medical advice."]
+        return lines.joined(separator: "\n")
     }
 
     /// A live answer landing on a turn that was pending.

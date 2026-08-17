@@ -11,6 +11,7 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var services: AppServices
     @EnvironmentObject private var authorization: HealthAuthorization
+    @EnvironmentObject private var engine: SyncEngine
 
     var body: some View {
         // The drawer wraps the tabs rather than living inside one of them. A
@@ -27,8 +28,14 @@ struct RootView: View {
         }
         // Switching tabs is navigating away from the conversation the drawer
         // belongs to, so it should not still be hanging over the next screen.
-        .onChange(of: services.selectedTab) { _, _ in
+        .onChange(of: services.selectedTab) { _, tab in
             services.showingChatHistory = false
+            // Arriving at Insights is arriving with a question, so it opens a
+            // new conversation rather than whatever was last on screen. Nothing
+            // is lost: the previous chat is in the history drawer, which is
+            // where a finished conversation belongs. Not while a question is in
+            // flight — that would discard an answer already being written.
+            if tab == .insights, !engine.isAsking { engine.newChat() }
         }
     }
 

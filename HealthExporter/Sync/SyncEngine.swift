@@ -705,18 +705,6 @@ final class SyncEngine: ObservableObject {
 
     /// Which chat was open when the app was last closed.
     ///
-    /// Persisted because the alternative is arriving on an empty composer every
-    /// morning with yesterday's conversation one tap away but invisible. The id
-    /// is all that is kept; the transcript is refetched, because the server is
-    /// the record and a stale copy on the phone would be a second opinion.
-    private struct ChatState: Codable {
-        var activeSessionId: String?
-    }
-
-    private let chatState = StateStore<ChatState>(
-        filename: "chat-state.json", fallback: ChatState()
-    )
-
     // MARK: - Cached views
 
     /// The last figures the server gave us, kept on disk.
@@ -751,17 +739,12 @@ final class SyncEngine: ObservableObject {
         if insightStatus == nil { insightStatus = cached.insightStatus }
         cachedAt = cached.savedAt
 
-        // Reopen the conversation that was on screen last time. Only the id is
-        // kept — the transcript is refetched, because the server is the record
-        // and a stale copy here would be a second opinion about what was said.
-        if activeSessionId == nil, transcript.isEmpty {
-            let store = chatState
-            if let sessionId = await Task.detached(priority: .utility, operation: {
-                store.value.activeSessionId
-            }).value {
-                await openChat(sessionId)
-            }
-        }
+        // The conversation that was on screen last time is deliberately *not*
+        // reopened. Arriving at the tab is arriving at a new question, and a
+        // chat from days ago presented as though it were still going invites
+        // asking a follow-up to something already answered. The old chat is one
+        // tap away in the history drawer, which is where a finished conversation
+        // belongs.
     }
 
     private func saveCachedViews() {
@@ -854,7 +837,6 @@ final class SyncEngine: ObservableObject {
     private func adopt(_ sessionId: String) {
         guard activeSessionId != sessionId else { return }
         activeSessionId = sessionId
-        chatState.mutate { $0.activeSessionId = sessionId }
     }
 
     /// Start a new conversation. Nothing is created server-side until the first
@@ -870,7 +852,6 @@ final class SyncEngine: ObservableObject {
         pendingTurns = 0
         insightError = nil
         chatNotice = nil
-        chatState.mutate { $0.activeSessionId = nil }
     }
 
     func openChat(_ sessionId: String) async {
@@ -891,7 +872,20 @@ final class SyncEngine: ObservableObject {
     }
 
     private func apply(_ body: ChatTranscript) {
-        transcript = body.messages.map(ChatTurn.init(stored:))
+        // A turn already on screen keeps the identity SwiftUI knows it by. This
+        // runs on every reload, including the one that follows a compaction
+        // *during* a conversation — without it, the answer that had just landed
+        // is a different row to SwiftUI than the one it replaces, so the bubble
+        // the reader is looking at is torn down and rebuilt underneath them.
+        let known = Dictionary(
+            transcript.compactMap { turn in turn.storedId.map { ($0, turn.id) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        transcript = body.messages.map { message in
+            var turn = ChatTurn(stored: message)
+            if let existing = known[message.id] { turn.id = existing }
+            return turn
+        }
         activeTitle = body.title
         activeSummary = body.summary
         activeSummaryTurns = body.summaryTurns

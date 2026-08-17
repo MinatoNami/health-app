@@ -15,6 +15,10 @@ struct InsightsView: View {
     @EnvironmentObject private var services: AppServices
 
     @State private var question = ""
+    /// Whether the transcript is pinned to the newest message. False the moment
+    /// somebody scrolls back through the conversation, and nothing that arrives
+    /// afterwards is allowed to drag them out of it.
+    @State private var isFollowing = true
     @FocusState private var composerFocused: Bool
 
     private static let suggestions = [
@@ -105,10 +109,18 @@ struct InsightsView: View {
                             if turn.isPending {
                                 PendingBubble()
                             } else {
-                                AnswerBubble(turn: turn) { rating, note in
-                                    guard let storedId = turn.storedId else { return }
-                                    Task { await engine.rate(turnId: storedId, rating: rating, note: note) }
-                                }
+                                AnswerBubble(
+                                    turn: turn,
+                                    onFeedback: { rating, note in
+                                        guard let storedId = turn.storedId else { return }
+                                        Task {
+                                            await engine.rate(
+                                                turnId: storedId, rating: rating, note: note
+                                            )
+                                        }
+                                    },
+                                    onAgain: { send($0) }
+                                )
                             }
 
                             // The line where the model's memory of this chat
@@ -142,8 +154,62 @@ struct InsightsView: View {
                 .overlay {
                     if engine.isLoadingTranscript { ProgressView() }
                 }
-                .onChange(of: engine.transcript) { _, _ in scroll(proxy) }
-                .onChange(of: engine.isAsking) { _, _ in scroll(proxy) }
+                // The way back. Nothing drags the view to the newest message any
+                // more, which is right while reading and useless once you want
+                // to return.
+                .overlay(alignment: .bottom) {
+                    if !isFollowing, !engine.transcript.isEmpty {
+                        Button {
+                            isFollowing = true
+                            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                        } label: {
+                            Label("Latest", systemImage: "arrow.down")
+                                .font(.caption)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.regularMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 8)
+                        .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: isFollowing)
+                // A bubble being added should move the conversation up under
+                // it, which is what anchoring the bottom means: the content
+                // grows and the newest row is already in place. Scrolling to it
+                // instead — which is what this did — shows the viewport
+                // travelling to find the message, and that is the part that
+                // reads as wrong.
+                //
+                // Anchoring also opens a conversation at its newest message
+                // without sliding through everything above it.
+                .defaultScrollAnchor(.bottom)
+                // Whether the reader is following or has gone back through the
+                // chat. The anchor handles the bottom; this is only so the two
+                // deliberate jumps below know whether to interrupt.
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y + geometry.containerSize.height
+                        >= geometry.contentSize.height - Self.nearBottom
+                } action: { _, nearBottom in
+                    isFollowing = nearBottom
+                }
+                // Sending is a statement that you want to see the reply, so it
+                // returns to the bottom from wherever you had scrolled to.
+                // Nothing else moves the view: a rating changes the turn it is
+                // recorded against and must not move anything, which is why
+                // this is not `of: engine.transcript`.
+                .onChange(of: engine.isAsking) { _, asking in
+                    if asking {
+                        isFollowing = true
+                        proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                    }
+                }
+                // A different conversation opens at its newest message.
+                .onChange(of: engine.activeSessionId) { _, _ in
+                    isFollowing = true
+                    proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                }
             }
 
             composer
@@ -154,9 +220,8 @@ struct InsightsView: View {
 
     private let bottomAnchor = "bottom"
 
-    private func scroll(_ proxy: ScrollViewProxy) {
-        withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
-    }
+    /// How far from the bottom still counts as following the conversation.
+    private static let nearBottom: CGFloat = 120
 
     private var composer: some View {
         VStack(spacing: 8) {
@@ -434,10 +499,13 @@ private struct AnswerBubble: View {
     let turn: ChatTurn
     /// (rating, note) — either may be nil to leave that half alone.
     let onFeedback: (Int?, String?) -> Void
+    /// Ask this turn's question again, as a new turn.
+    let onAgain: (String) -> Void
 
     @State private var showDetail = false
     @State private var editingNote = false
     @State private var draft = ""
+    @State private var didCopy = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -547,18 +615,53 @@ private struct AnswerBubble: View {
     private var footer: some View {
         HStack(spacing: 10) {
             Group {
+                // Just the time: the date belongs to the conversation, and a
+                // full timestamp under every bubble is noise on a chat that
+                // happened in one sitting.
+                let at = turn.createdAt.formatted(date: .omitted, time: .shortened)
                 if let name = turn.modelName, let ms = turn.latencyMs {
-                    Text("\(Int(Double(ms) / 1000))s \u{b7} \(name)")
+                    Text("\(at) \u{b7} \(Int(Double(ms) / 1000))s \u{b7} \(name)")
                 } else if turn.isRuleBased {
-                    Text("Reviewed guidance \u{2014} no model was consulted.")
+                    Text("\(at) \u{b7} Reviewed guidance \u{2014} no model was consulted.")
                 } else if turn.answer != nil {
-                    Text("No model ran.")
+                    Text("\(at) \u{b7} No model ran.")
                 }
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
 
             Spacer()
+
+            if turn.answer != nil {
+                Button {
+                    UIPasteboard.general.string = turn.plainText
+                    withAnimation { didCopy = true }
+                } label: {
+                    Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .foregroundStyle(didCopy ? Color.accentColor : .secondary)
+                .task(id: didCopy) {
+                    guard didCopy else { return }
+                    try? await Task.sleep(for: .seconds(1.6))
+                    withAnimation { didCopy = false }
+                }
+
+                // Appends rather than replacing: a stored answer is the record
+                // of what was said, and being able to reproduce a generated
+                // health claim later is the whole reason to keep one. Two
+                // answers to one question is also the comparison worth having
+                // while a prompt is being tuned.
+                if !turn.question.isEmpty {
+                    Button { onAgain(turn.question) } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
+            }
 
             // Only a stored turn can be rated — a rating needs a row to live
             // on. A question asked with "don't remember this" has none, which
