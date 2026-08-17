@@ -48,6 +48,17 @@ THINK_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re
 # presented as one day's meal.
 RECENT_DAY_ROWS = 14
 
+# Budget for one compaction. Absurd next to a 150-word summary, and it has to
+# be: this is the only call here that asks for unconstrained prose, so the model
+# thinks in the open first, and on a reasoning model that thinking is most of
+# the response. Measured on qwen3.6-35b-a3b against a twelve-turn conversation,
+# it spent about 2,900 tokens working out before writing a word — so the old
+# 400-token cap could only ever return an empty answer, whatever the
+# conversation. It is a ceiling and not a target: a call that finishes early
+# costs nothing, and one that runs away is a failure worth waiting out rather
+# than a summary worth having.
+COMPACT_MAX_TOKENS = 8000
+
 
 def _condense(snapshot: dict) -> dict:
     """The snapshot, trimmed to what a model can hold and reason about.
@@ -605,7 +616,7 @@ def compact(
             ],
             model=model,
             temperature=0.1,
-            max_tokens=400,
+            max_tokens=COMPACT_MAX_TOKENS,
         )
         text = THINK_BLOCK.sub("", result["message"].get("content") or "").strip()
     except client.LLMUnavailable as exc:
@@ -613,11 +624,35 @@ def compact(
         return {"compacted": False, "turns": 0, "summary": session.summary, "reason": str(exc)}
 
     if not text:
+        # `content` empty with `finish_reason == "length"` is the model having
+        # spent the whole budget thinking and never reaching the summary. Said
+        # plainly, because "the model returned an empty summary" describes the
+        # symptom and points at nothing: the fix is a bigger budget, not a
+        # retry, and every retry will fail the same way.
+        #
+        # Deliberately *not* falling back to `reasoning_content` the way
+        # `_candidate_texts` does for answers. That fallback is correct there —
+        # grammar-constrained output lands in the reasoning channel — but this
+        # call is unconstrained prose, so the reasoning channel holds the
+        # model's working-out, which is full of the figures COMPACT exists to
+        # keep out of a summary that is replayed into every later prompt.
+        ran_out = result.get("finish_reason") == "length"
+        log.warning(
+            "Empty compaction summary for session %s (finish_reason=%s, %s completion tokens)",
+            session.pk,
+            result.get("finish_reason"),
+            result["usage"].get("completion_tokens"),
+        )
         return {
             "compacted": False,
             "turns": 0,
             "summary": session.summary,
-            "reason": "the model returned an empty summary",
+            "reason": (
+                "the model ran out of room while reasoning and never wrote the "
+                "summary — the conversation is unchanged"
+                if ran_out
+                else "the model returned an empty summary"
+            ),
         }
 
     breach = safety.prohibited_claim(text)
