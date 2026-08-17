@@ -132,7 +132,8 @@ cd server
 ```
 
 Then on the phone: Settings tab → *Account* → **Sign In**. The URL and
-certificate pin are pre-filled for that server. Signing in exchanges your
+server URL is pre-filled, and the certificate field is left empty because
+the server presents a publicly trusted certificate. Signing in exchanges your
 password for a bearer token; flip *Upload automatically* once it succeeds.
 **Test Connection** proves the URL, the TLS pin, and the token in one request
 without sending any health data — worth doing, because from then on failures are
@@ -148,26 +149,29 @@ dropping only the local copy would leave a working credential in anyone else's
 hands. Each sign-in mints its own token, so revoking one device doesn't sign out
 the others.
 
-### Why the certificate is pinned
+### Why there is no certificate pin
 
-The server lives on a Tailscale tailnet. A tailnet hostname can't get a
-publicly trusted certificate unless HTTPS Certificates are enabled for the
-tailnet — and for this one, Tailscale refuses. The alternative, installing a CA
-profile on the phone, would make iOS trust that CA for *every* site it visits.
+There used to be one. The server lives on a Tailscale tailnet, and a tailnet
+hostname cannot get a publicly trusted certificate unless HTTPS Certificates are
+enabled for the tailnet — which, for this one, Tailscale refused. Installing a
+CA profile on the phone would have made iOS trust that CA for *every* site it
+visits, so instead the server ran a self-signed certificate and the app trusted
+exactly that one, by SHA-256 of its DER encoding.
 
-So the app trusts exactly one certificate, by SHA-256 of its DER encoding.
-`./deploy.sh pin` prints the current value. An empty pin field means normal
-system validation, so pointing the app at a server with a real certificate needs
-no code change.
+Enabling Tailscale Serve on 2026-08-17 turned HTTPS Certificates on for the
+tailnet, and `alena-server` now presents a genuine Let's Encrypt certificate.
+The pin is gone: `SinkConfiguration.defaultPin` is empty, which means ordinary
+system-trust validation, and the `Info.plist` ATS exception that existed only so
+an untrusted certificate could reach `CertificatePinner` is gone with it. App
+Transport Security is now enforced normally for this host.
 
-**Pinning alone is not sufficient on a device.** App Transport Security rejects
-an untrusted certificate during connection setup and fails with
-`NSURLErrorSecureConnectionFailed (-1200)` *before* the `URLSession` delegate is
-consulted — so however correct the pinning code is, it never runs. `Info.plist`
-therefore carries an `NSExceptionDomains` entry for this one host, which hands
-the trust decision to `CertificatePinner` instead. That is stricter than what
-ATS would have accepted, not weaker: an exact certificate match rather than
-"anything a public CA vouches for".
+The machinery is still there and still works. The Certificate field accepts a
+fingerprint, `CertificatePinner` honours it, and an install carrying a
+superseded pin clears it on next launch rather than failing every upload — so
+pointing this app at a self-signed endpoint remains a supported thing to do. It
+is simply no longer what this deployment needs. `./deploy.sh` falls back to
+generating a self-signed certificate on a host where Tailscale will not issue
+one, and prints the pin only in that case.
 
 Two traps worth knowing:
 

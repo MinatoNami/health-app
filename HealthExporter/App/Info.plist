@@ -31,21 +31,6 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<false/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>alena-server.tail03bec9.ts.net</key>
-			<dict>
-				<key>NSExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-				<key>NSExceptionMinimumTLSVersion</key>
-				<string>TLSv1.2</string>
-				<key>NSIncludesSubdomains</key>
-				<false/>
-			</dict>
-		</dict>
-	</dict>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Health Exporter reads your activity, sleep, vitals, body, and nutrition data so it can be exported to your own server or a file you control. Nothing is sent anywhere you have not configured.</string>
 	<key>UIApplicationSceneManifest</key>

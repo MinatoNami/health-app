@@ -154,16 +154,29 @@ final class SyncEngine: ObservableObject {
         Log.shared.info("sync", "Raised statistics lookback to 90 days for deduplicated daily totals")
     }
 
-    /// Moves a stored pin forward when the server certificate has been rotated.
+    /// Moves a stored pin forward when the server certificate has been rotated,
+    /// and now also clears it when the server has stopped needing one at all.
     ///
     /// The persisted value wins over `defaultPin`, so without this a rotation
     /// would strand every existing install on a pin that no longer matches —
-    /// visible only as uploads that silently stop.
+    /// visible only as uploads that silently stop. `defaultPin` is empty since
+    /// the server moved to a Let's Encrypt certificate, so for an install still
+    /// carrying the self-signed fingerprint this now means "stop pinning and
+    /// validate normally", which is the correct outcome rather than a
+    /// workaround for one.
+    ///
+    /// A pin somebody typed themselves is left alone: only the fingerprints
+    /// this app has actually shipped are recognised here.
     private func migrateSupersededPin() {
         let stored = CertificatePinner.normalize(settings.sink.pinnedCertificateSHA256)
         guard SinkConfiguration.supersededPins.contains(stored) else { return }
         settings.sink.pinnedCertificateSHA256 = SinkConfiguration.defaultPin
-        Log.shared.info("sink", "Updated stored certificate pin after server certificate rotation")
+        Log.shared.info(
+            "sink",
+            SinkConfiguration.defaultPin.isEmpty
+                ? "Cleared the stored certificate pin — the server now presents a publicly trusted certificate"
+                : "Updated stored certificate pin after server certificate rotation"
+        )
     }
 
     /// Metrics worth a deduplicated daily rollup. Deliberately a short list: the

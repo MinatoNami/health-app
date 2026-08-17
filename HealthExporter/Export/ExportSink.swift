@@ -31,11 +31,17 @@ struct SinkConfiguration: Codable, Equatable {
     /// only defaults — both fields are editable in Settings, and uploading
     /// stays off until a token is entered and the toggle is flipped.
     static let defaultBaseURL = "https://alena-server.tail03bec9.ts.net"
-    /// SHA-256 of that server's certificate. `./deploy.sh pin` prints the
-    /// current value; the deploy script never regenerates an existing
-    /// certificate, so this changes only if the keypair is deliberately
-    /// replaced with `./deploy.sh rotate-cert`.
-    static let defaultPin = "a0d5647fcd34c3b465397918534b04c2bc35c986dc166da6a01bd79ccc6e96b2"
+    /// Empty, because the server no longer needs pinning.
+    ///
+    /// It did for as long as `tailscale cert` refused to issue for this tailnet
+    /// — the app requires `https://`, so the server ran a self-signed
+    /// certificate and this app carried its fingerprint. Enabling Tailscale
+    /// Serve on 2026-08-17 turned HTTPS Certificates on tailnet-wide, and
+    /// `alena-server` now serves a genuine Let's Encrypt certificate, so an
+    /// empty pin means ordinary system-trust validation. The field stays
+    /// editable: pointing this app at a self-signed endpoint is still a
+    /// supported thing to do, it is just no longer the default.
+    static let defaultPin = ""
 
     /// Pins this app has shipped before.
     ///
@@ -45,11 +51,16 @@ struct SinkConfiguration: Codable, Equatable {
     /// leave every existing install failing to connect until someone retyped
     /// 64 hex characters by hand on a phone.
     ///
-    /// Superseded by the RSA-4096 → ECDSA P-256 rotation: the old certificate
-    /// was 1431 bytes, and the tailnet MTU is 1280, so its handshake could not
-    /// fit in a single packet and failed on relayed paths.
+    /// The first was superseded by the RSA-4096 → ECDSA P-256 rotation: the old
+    /// certificate was 1431 bytes, and the tailnet MTU is 1280, so its
+    /// handshake could not fit in a single packet and failed on relayed paths.
+    /// The second is the self-signed certificate itself, retired when the
+    /// tailnet started issuing real ones — an install still carrying it clears
+    /// the pin on next launch rather than failing every upload against a
+    /// certificate that is now perfectly valid.
     static let supersededPins: Set<String> = [
         "819aac937513c6b26e7e150c2ba1acb0dfe84d7a45002d858ad2e0bd93c1212c",
+        "a0d5647fcd34c3b465397918534b04c2bc35c986dc166da6a01bd79ccc6e96b2",
     ]
 
     var baseURL: String = SinkConfiguration.defaultBaseURL

@@ -41,6 +41,7 @@ NGINX_SITE="health-exporter"
 # directly, so a long life avoids a silent sync outage on expiry. Nothing here
 # relies on public CA trust or ATS's 825-day ceiling.
 CERT_DAYS=3650
+CERT_CRON="/etc/cron.d/health-cert"
 
 bold=$(tput bold 2>/dev/null || echo); red=$(tput setaf 1 2>/dev/null || echo)
 green=$(tput setaf 2 2>/dev/null || echo); yellow=$(tput setaf 3 2>/dev/null || echo)
@@ -180,15 +181,52 @@ generate_cert() {
     && sudo chmod 600 $CERT_DIR/$CERT_NAME.key && sudo chmod 644 $CERT_DIR/$CERT_NAME.crt"
 }
 
+# Tailscale issues a real certificate for this name, so nothing here is
+# self-signed any more and the app pins nothing.
+#
+# It was until 2026-08-17. `tailscale cert` returned "your Tailscale account
+# does not support getting TLS certs" for this tailnet, and the iOS app requires
+# https://, so the server ran a self-signed certificate whose SHA-256 the app
+# carried. Enabling Tailscale Serve turned HTTPS Certificates on tailnet-wide
+# and the workaround stopped being necessary. `generate_cert` stays for a host
+# that cannot get one — a different tailnet, or the setting turned back off —
+# and is the fallback rather than the default.
 ensure_cert() {
   step "TLS certificate"
   if remote "sudo test -f $CERT_DIR/$CERT_NAME.crt"; then
-    ok "certificate already present (pin unchanged)"
-  else
-    info "generating a self-signed certificate for $SERVER_NAME"
-    generate_cert
-    ok "certificate generated (valid $CERT_DAYS days)"
+    ok "certificate already present"
+    return
   fi
+  info "requesting a certificate for $SERVER_NAME from Tailscale"
+  if remote "sudo tailscale cert --cert-file $CERT_DIR/$CERT_NAME.crt --key-file $CERT_DIR/$CERT_NAME.key $SERVER_NAME >/dev/null 2>&1"; then
+    remote "sudo chmod 600 $CERT_DIR/$CERT_NAME.key && sudo chmod 644 $CERT_DIR/$CERT_NAME.crt"
+    ok "certificate issued by Let's Encrypt via Tailscale"
+  else
+    warn "Tailscale would not issue a certificate for $SERVER_NAME."
+    warn "Falling back to self-signed; the app needs the pin from './deploy.sh pin'."
+    generate_cert
+    ok "self-signed certificate generated (valid $CERT_DAYS days)"
+  fi
+}
+
+install_cert_renewal() {
+  step "Certificate renewal"
+  if ! remote "sudo openssl x509 -in $CERT_DIR/$CERT_NAME.crt -noout -issuer 2>/dev/null | grep -qi \"let's encrypt\""; then
+    info "self-signed certificate — nothing to renew"
+    return
+  fi
+  remote "sudo install -m 755 -o root -g root /dev/stdin /usr/local/bin/renew-health-cert" \
+    < "$LOCAL_DIR/deploy/renew-cert.sh"
+  # Sunday 04:17, away from the 03:20 backup so two things are not competing for
+  # the disk. A no-op most weeks; see deploy/renew-cert.sh for why it exists.
+  remote "sudo tee $CERT_CRON >/dev/null <<'CRON'
+# Weekly Tailscale certificate renewal. Installed by server/deploy.sh.
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+17 4 * * 0 root /usr/local/bin/renew-health-cert >> /var/log/health-cert.log 2>&1
+CRON"
+  ok "weekly renewal installed (Sundays 04:17)"
+  info "→ /var/log/health-cert.log"
 }
 
 configure_nginx() {
@@ -266,7 +304,14 @@ cert_pin() {
 }
 
 print_summary() {
-  local pin; pin="$(cert_pin)"
+  # Only a self-signed certificate needs a pin, and that is now the fallback
+  # rather than the normal case. Printing 64 hex characters under every deploy
+  # of a publicly trusted server invites pasting them into an app that would
+  # then reject a perfectly valid certificate.
+  local cert_note=""
+  if ! remote "sudo openssl x509 -in $CERT_DIR/$CERT_NAME.crt -noout -issuer 2>/dev/null | grep -qi \"let's encrypt\""; then
+    cert_note=" — self-signed here, so paste: $(cert_pin)"
+  fi
   step "Done"
   cat <<EOF
 
@@ -275,13 +320,9 @@ print_summary() {
     Admin       https://$SERVER_NAME/admin/
     Health      https://$SERVER_NAME/healthz
 
-    Certificate pin (SHA-256 of the certificate):
-
-      $bold$pin$reset
-
     In the app: Settings → HTTP destination
       Server URL    https://$SERVER_NAME
-      Certificate   the pin above
+      Certificate   leave empty$cert_note
       Bearer token  ./deploy.sh token <label>
 
 EOF
@@ -298,6 +339,7 @@ cmd_deploy() {
   configure_nginx
   start_services
   install_backups
+  install_cert_renewal
   install_freshness_cron
   run_migrations
   verify

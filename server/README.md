@@ -13,7 +13,7 @@ them in Postgres. Runs on `alena-server` behind nginx, reachable over Tailscale.
 ./deploy.sh                 # build, push, migrate, reload nginx, verify
 ./deploy.sh user lionel     # create a login the app can sign in with
 ./deploy.sh token my-phone  # mint a bearer token directly (shown once)
-./deploy.sh pin             # print the certificate pin for the app
+./deploy.sh pin             # certificate fingerprint (only needed if self-signed)
 ./deploy.sh rotate-cert     # reissue the TLS keypair (changes the pin)
 ./deploy.sh backup          # run a database backup now
 ./deploy.sh backup-verify   # restore the newest backup into a scratch DB
@@ -37,11 +37,13 @@ would take that down too.
 ./deploy.sh user lionel     # prompts for a password
 ```
 
-Then in the app: **Settings → Account → Sign In**. The URL and certificate pin
-are pre-filled for this server. Signing in exchanges the password for a bearer
-token, which is stored in the Keychain — the password itself is never written to
-the device. Then turn on *Upload automatically*; **Test Connection** confirms
-URL, pin, and token before any health data moves.
+Then in the app: **Settings → Account → Sign In**. The URL is pre-filled for
+this server, and the certificate field stays empty — the tailnet issues a real
+certificate, so ordinary system-trust validation applies. Signing in exchanges
+the password for a bearer token, which is stored in the Keychain — the password
+itself is never written to the device. Then turn on *Upload automatically*;
+**Test Connection** confirms the URL, the TLS chain, and the token before any
+health data moves.
 
 `./deploy.sh token <label>` still works if you'd rather paste a token directly;
 those tokens simply have no owner attached.

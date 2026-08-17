@@ -34,7 +34,7 @@ are read today.
 ## Where it goes
 
 ```
-iPhone  ──TLS, pinned certificate──▶  Django + Postgres        (your server, on your tailnet)
+iPhone  ──TLS (Let's Encrypt)──▶        Django + Postgres        (your server, on your tailnet)
                                               │
                                               └──WireGuard──▶  LM Studio  (your laptop)
 ```
@@ -42,8 +42,10 @@ iPhone  ──TLS, pinned certificate──▶  Django + Postgres        (your s
 - **On the phone:** a local SQLite queue and NDJSON batch files in the app's
   container, excluded from iCloud backup. The server credential lives in the
   Keychain, not in `UserDefaults`.
-- **In transit to the server:** HTTPS only, with the server's certificate pinned
-  by SHA-256. The app refuses a non-`https://` destination outright.
+- **In transit to the server:** HTTPS only, validated against system roots — the
+  tailnet issues a real Let's Encrypt certificate for this host. The app refuses
+  a non-`https://` destination outright, and still accepts a pinned fingerprint
+  for a self-signed endpoint if one is ever pointed at.
 - **On the server:** Postgres in a Docker volume, reachable only over the
   tailnet. The database port is bound to loopback, so the only route in is an
   SSH tunnel.
