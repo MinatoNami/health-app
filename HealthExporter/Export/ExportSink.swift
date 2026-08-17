@@ -540,7 +540,8 @@ final class HTTPSink: ExportSink {
         context: String,
         remember: Bool,
         sessionId: String?,
-        projectId: Int? = nil
+        projectId: Int? = nil,
+        progressKey: String? = nil
     ) async -> Result<InsightResult, Error> {
         var payload: [String: Any] = [
             "question": question,
@@ -548,6 +549,10 @@ final class HTTPSink: ExportSink {
             "remember": remember,
             "tz": TimeZone.current.identifier,
         ]
+        // Chosen by the caller so it can start polling before this request
+        // returns — which is the point, since this request is what takes the
+        // time. Ignored by the server unless it looks like a UUID.
+        if let progressKey { payload["progress_key"] = progressKey }
         // Only when the answer is being kept: a question asked with
         // `remember: false` stores nothing, so opening a chat for it would
         // leave a conversation with no messages in it.
@@ -561,6 +566,17 @@ final class HTTPSink: ExportSink {
             timeout: 240,
             method: "POST",
             body: body ?? Data("{}".utf8)
+        )
+    }
+
+    /// Where an in-flight answer has got to. Carries no health data — a label
+    /// and a step count — and is deliberately cheap: it is called every couple
+    /// of seconds for the length of one question.
+    func insightProgress(key: String) async -> Result<InsightProgress, Error> {
+        await fetch(
+            configuration.apiEndpoint("/v1/insights/progress/\(key)"),
+            as: InsightProgress.self,
+            timeout: 10
         )
     }
 

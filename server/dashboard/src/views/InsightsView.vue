@@ -366,6 +366,41 @@ function sessionArgs() {
   }
 }
 
+/* What the server is doing right now, polled while the answer is being written.
+ *
+ * An answer takes fifteen to ninety seconds, and for all of it the transcript
+ * used to say "Reading your summaries…" whether the model was choosing a tool,
+ * reading the food log, or writing prose. The steps were already recorded per
+ * turn — this shows them while they are still true rather than afterwards.
+ *
+ * Every failure here is silent on purpose. This is decoration over a request
+ * that is working perfectly well without it, so a poll that 404s, throttles or
+ * times out leaves the last label on screen and stops; it never surfaces an
+ * error next to an answer that is about to arrive.
+ */
+const PROGRESS_INTERVAL_MS = 1500
+const progressLabel = ref('')
+let progressTimer = null
+
+function stopProgress() {
+  clearInterval(progressTimer)
+  progressTimer = null
+  progressLabel.value = ''
+}
+
+function startProgress(key) {
+  stopProgress()
+  progressTimer = setInterval(async () => {
+    try {
+      const note = await api.insightProgress(key)
+      if (note.done) return stopProgress()
+      if (note.label) progressLabel.value = note.label
+    } catch {
+      stopProgress()
+    }
+  }, PROGRESS_INTERVAL_MS)
+}
+
 async function run(label, call) {
   // The pending row keeps its id when the answer replaces it: it is the same
   // slot becoming the same conversation's reply, and reusing it avoids the
@@ -379,8 +414,12 @@ async function run(label, call) {
   // Sending is itself a statement that you want to see what comes back, so this
   // one goes to the bottom whether or not you had scrolled away.
   jumpToBottom()
+  // Chosen here rather than by the server so polling can start before the ask
+  // returns — which is the whole point, since the ask is what takes the time.
+  const progressKey = crypto.randomUUID()
+  startProgress(progressKey)
   try {
-    const result = await call(sessionArgs())
+    const result = await call({ ...sessionArgs(), progress_key: progressKey })
     // The server says which conversation the turn landed in — including when it
     // just opened one. Null means nothing was stored, so there is no chat.
     if (result.session_id) {
@@ -405,6 +444,7 @@ async function run(label, call) {
     error.value = e.message
   } finally {
     asking.value = false
+    stopProgress()
     // Nothing to scroll here: the answer replacing the pending bubble changes
     // the content height, and the observer pins the bottom for it — but only if
     // the reader stayed there while it was being written.
@@ -517,7 +557,10 @@ onMounted(() => {
   contentObserver = new ResizeObserver(pinToBottom)
   if (messages.value) contentObserver.observe(messages.value)
 })
-onBeforeUnmount(() => contentObserver?.disconnect())
+onBeforeUnmount(() => {
+  contentObserver?.disconnect()
+  stopProgress()
+})
 </script>
 
 <template>
@@ -593,7 +636,7 @@ onBeforeUnmount(() => contentObserver?.disconnect())
           </p>
 
           <template v-for="(turn, i) in turns" :key="turn.id">
-            <ChatMessage :turn="turn" @rate="rate" @again="ask" />
+            <ChatMessage :turn="turn" :progress="progressLabel" @rate="rate" @again="ask" />
             <!-- The line where the model's memory of this chat becomes a
                  summary. Everything above it is still here to read — that is
                  the whole point of keeping the transcript out of it. -->

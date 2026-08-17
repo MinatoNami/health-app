@@ -677,6 +677,9 @@ final class SyncEngine: ObservableObject {
     /// asking a second thing silently erased the first, and a follow-up reached
     /// the model with no idea what came before.
     @Published private(set) var transcript: [ChatTurn] = []
+    /// What the server is doing right now, while a question is in flight. Empty
+    /// between questions and whenever the poll has nothing to report yet.
+    @Published private(set) var askingLabel: String = ""
     /// Which conversation the next question joins. Nil means the next question
     /// opens one — the session is created by the ask itself, so a question that
     /// never lands cannot strand an empty chat in the history.
@@ -778,15 +781,16 @@ final class SyncEngine: ObservableObject {
     }
 
     func ask(_ question: String, context: String = "", remember: Bool = true) async {
-        await run(question) { sink, sessionId in
+        await run(question) { sink, sessionId, progressKey in
             await sink.ask(
-                question: question, context: context, remember: remember, sessionId: sessionId
+                question: question, context: context, remember: remember,
+                sessionId: sessionId, progressKey: progressKey
             )
         }
     }
 
     func requestWeeklyReview() async {
-        await run("Weekly review") { sink, sessionId in
+        await run("Weekly review") { sink, sessionId, _ in
             await sink.weeklyReview(sessionId: sessionId)
         }
     }
@@ -800,7 +804,7 @@ final class SyncEngine: ObservableObject {
     /// for another.
     private func run(
         _ question: String,
-        _ call: @escaping (HTTPSink, String?) async -> Result<InsightResult, Error>
+        _ call: @escaping (HTTPSink, String?, String) async -> Result<InsightResult, Error>
     ) async {
         guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
         isAsking = true
@@ -809,10 +813,20 @@ final class SyncEngine: ObservableObject {
 
         let pending = ChatTurn(question: question, isPending: true)
         transcript.append(pending)
-        defer { isAsking = false }
+
+        // The key is minted here, before the request, so the poll can start
+        // while the answer is still being written — which is the whole point,
+        // since the request is what takes fifteen to ninety seconds.
+        let progressKey = UUID().uuidString
+        let watcher = watchProgress(key: progressKey)
+        defer {
+            watcher.cancel()
+            askingLabel = ""
+            isAsking = false
+        }
 
         let sink = HTTPSink(configuration: settings.sink)
-        switch await call(sink, activeSessionId) {
+        switch await call(sink, activeSessionId, progressKey) {
         case .success(let result):
             if let index = transcript.firstIndex(where: { $0.id == pending.id }) {
                 transcript[index].complete(with: result)
@@ -831,6 +845,30 @@ final class SyncEngine: ObservableObject {
             transcript.removeAll { $0.id == pending.id }
             insightError = error.localizedDescription
             Log.shared.error("insight", "Question failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Polls what the server is doing, for as long as the answer takes.
+    ///
+    /// Every failure is silent and terminal: this is decoration over a request
+    /// that is working perfectly well without it, so a poll that throttles,
+    /// 404s or times out simply stops and leaves the last label on screen. It
+    /// must never be able to surface an error beside an answer that is about to
+    /// arrive.
+    private func watchProgress(key: String) -> Task<Void, Never> {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled, let self else { return }
+                let sink = HTTPSink(configuration: self.settings.sink)
+                switch await sink.insightProgress(key: key) {
+                case .success(let note):
+                    if note.done { return }
+                    if !note.label.isEmpty { self.askingLabel = note.label }
+                case .failure:
+                    return
+                }
+            }
         }
     }
 

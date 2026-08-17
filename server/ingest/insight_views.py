@@ -447,6 +447,9 @@ def ask(request):
             # stays for callers that have no session, which is how the phone asks.
             follow_up=bool(request.data.get("follow_up")),
             session=session,
+            # Optional, and picked by the caller so it can start polling before
+            # this request returns. Ignored unless it looks like a UUID.
+            progress_key=str(request.data.get("progress_key") or "") or None,
         )
     except Exception:
         _discard_if_empty(session, created)
@@ -457,6 +460,38 @@ def ask(request):
         # so there is no conversation to have opened.
         payload["session_id"] = None
     return Response(payload)
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def progress(request, key: str):
+    """Where an in-flight answer has got to.
+
+    Polled rather than streamed. The server runs four sync gunicorn workers, so
+    a streamed answer would hold one open for the ninety seconds it takes and
+    need nginx buffering turned off to arrive at all; a poll costs one cheap
+    query and needs neither. The note lives in the shared cache for the same
+    reason it is not a module-level dict — the poll rarely lands on the worker
+    doing the work.
+
+    Carries no health data, only which tool is being read and how many steps in
+    it is. `done` is true once the answer has been returned by any path,
+    including the safety short-circuit and an unreachable model, so a client
+    that polls forever stops on its own.
+
+    Throttled with the analytics limit rather than the insight one: this is
+    called every second or two during a single question, and the insight
+    throttle exists to protect the GPU from questions, not from polls.
+    """
+    note = llm_service.read_progress(key)
+    if note is None:
+        # Nothing recorded yet is the ordinary case for the first poll — the
+        # answer starts with a snapshot and a safety check before it reaches a
+        # tool — so it is not an error, just nothing to say.
+        return Response({"label": "", "step": 0, "done": False, "known": False})
+    return Response({**note, "known": True})
 
 
 @api_view(["POST"])

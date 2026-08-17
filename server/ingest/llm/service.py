@@ -59,6 +59,52 @@ RECENT_DAY_ROWS = 14
 # than a summary worth having.
 COMPACT_MAX_TOKENS = 8000
 
+# How long a progress note outlives the answer it belongs to. Short: it is only
+# read while somebody is waiting, and a stale one read afterwards would describe
+# a question already answered.
+PROGRESS_TTL_SECONDS = 600
+
+# Progress goes through the shared cache rather than a module-level dict because
+# the server runs four gunicorn workers. The poll asking "where has it got to?"
+# almost never lands on the worker running the answer, so an in-process store
+# would report nothing at all for most of the wait.
+PROGRESS_PREFIX = "insight-progress:"
+
+# The client picks the key, so it is checked rather than trusted: anything that
+# is not a plain UUID is refused instead of being concatenated into a cache key.
+PROGRESS_KEY = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+
+def progress_cache_key(key: str) -> str | None:
+    """The cache key for a client-supplied progress id, or None if it is not one."""
+    key = (key or "").strip()
+    return f"{PROGRESS_PREFIX}{key}" if PROGRESS_KEY.match(key) else None
+
+
+def read_progress(key: str) -> dict | None:
+    """Where an in-flight answer has got to, if anything has been recorded."""
+    cache_key = progress_cache_key(key)
+    return cache.get(cache_key) if cache_key else None
+
+
+def _progress_writer(key: str | None):
+    """A callback that records the current step, or None if nothing asked for one."""
+    cache_key = progress_cache_key(key) if key else None
+    if cache_key is None:
+        return None
+
+    step = {"n": 0}
+
+    def write(label: str):
+        step["n"] += 1
+        cache.set(
+            cache_key,
+            {"label": label, "step": step["n"], "done": False},
+            PROGRESS_TTL_SECONDS,
+        )
+
+    return write
+
 
 def _condense(snapshot: dict) -> dict:
     """The snapshot, trimmed to what a model can hold and reason about.
@@ -359,13 +405,40 @@ def _urgent_answer(verdict: safety.SafetyVerdict, snapshot: dict) -> dict:
     }
 
 
-def _run_tool_loop(messages: list[dict], model: str, tz_name: str | None) -> tuple[list[dict], list[dict], dict]:
-    """Returns (messages, tool_call_log, usage totals)."""
+def _run_tool_loop(
+    messages: list[dict],
+    model: str,
+    tz_name: str | None,
+    on_progress=None,
+) -> tuple[list[dict], list[dict], dict]:
+    """Returns (messages, tool_call_log, usage totals).
+
+    `on_progress(label)` is called as the loop moves, so something can be shown
+    during the twenty to ninety seconds this takes. It is best-effort by
+    construction: a progress report that could fail an answer would be a
+    decoration that breaks the thing it decorates.
+    """
     schema = tools.openai_schema()
     log_entries: list[dict] = []
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0}
 
+    def report(label: str):
+        if on_progress is None:
+            return
+        try:
+            on_progress(label)
+        except Exception:  # noqa: BLE001
+            log.debug("Progress report failed", exc_info=True)
+
     for _round in range(MAX_TOOL_ROUNDS):
+        # Only on the first round. Every round after this one is preceded by a
+        # tool having just run, and that tool's label is the more informative
+        # thing to leave on screen while the model reads the result — which is
+        # the slow part. Tools are database queries and finish in milliseconds,
+        # so a label replaced at the top of the next round would be visible for
+        # an instant and never read.
+        if _round == 0:
+            report("Deciding what to look up")
         # Greedy. Picking a tool and its arguments is a lookup, not a piece of
         # writing: there is one right answer and sampling around it only invents
         # a different metric or a different window. The prose call afterwards
@@ -401,6 +474,7 @@ def _run_tool_loop(messages: list[dict], model: str, tz_name: str | None) -> tup
                 arguments = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw or {})
             except json.JSONDecodeError:
                 arguments = {}
+            report(tools.label_for(name))
             payload = tools.call(name, arguments if isinstance(arguments, dict) else {}, tz_name)
             log_entries.append({"tool": name, "arguments": arguments, "ok": "error" not in payload})
             messages.append(
@@ -697,6 +771,7 @@ def answer(
     follow_up: bool = False,
     session: ChatSession | None = None,
     title_hint: str = "",
+    progress_key: str | None = None,
 ) -> dict:
     """Answer one question about this person's health data.
 
@@ -728,8 +803,17 @@ def answer(
         "compacted": 0,
     }
 
+    progress = _progress_writer(progress_key)
+
     def stop(**fields) -> dict:
         payload.update(fields)
+        # Every exit runs through here, including the safety short-circuit and a
+        # model that was never reachable, so this is the one place that can
+        # promise the note is cleared however the answer ended.
+        if progress is not None:
+            cache_key = progress_cache_key(progress_key)
+            if cache_key:
+                cache.set(cache_key, {"label": "", "done": True}, PROGRESS_TTL_SECONDS)
         _persist(payload, owner, persist, session=session, title_hint=title_hint)
         return payload
 
@@ -829,7 +913,11 @@ def answer(
     messages.append({"role": "user", "content": user_message})
 
     try:
-        messages, tool_log, usage = _run_tool_loop(messages, model, tz_name)
+        messages, tool_log, usage = _run_tool_loop(
+            messages, model, tz_name, on_progress=progress
+        )
+        if progress is not None:
+            progress("Writing the answer")
         messages.append({"role": "user", "content": prompts.finalise(user_message)})
         final = client.chat(
             messages,

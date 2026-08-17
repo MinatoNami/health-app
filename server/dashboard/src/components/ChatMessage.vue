@@ -15,6 +15,10 @@ import { computed, ref } from 'vue'
 
 const props = defineProps({
   turn: { type: Object, required: true },
+  /* What the server is doing right now. Only ever shown on the pending bubble,
+   * and only while it is genuinely current — an answer takes fifteen to ninety
+   * seconds and saying nothing for all of it is the thing this replaces. */
+  progress: { type: String, default: '' },
 })
 
 const emit = defineEmits(['rate', 'again'])
@@ -120,7 +124,7 @@ async function copy() {
   <div v-else-if="turn.role === 'pending'" class="chat-row">
     <div class="chat-bubble assistant typing">
       <span class="typing-dots"><i /><i /><i /></span>
-      Reading your summaries…
+      {{ progress || 'Reading your summaries' }}…
     </div>
   </div>
 

@@ -41,6 +41,9 @@ urlpatterns = [
     path("v1/insights/status", insight_views.llm_status, name="insight-status"),
     path("v1/insights/daily", insight_views.daily, name="insight-daily"),
     path("v1/insights/ask", insight_views.ask, name="insight-ask"),
+    # Where an in-flight answer has got to. Polled while `ask` is still open, so
+    # the fifteen to ninety seconds it takes says something other than nothing.
+    path("v1/insights/progress/<str:key>", insight_views.progress, name="insight-progress"),
     path("v1/insights/weekly", insight_views.weekly_review, name="insight-weekly"),
     path("v1/insights/history", insight_views.insight_history, name="insight-history"),
     # Conversations: the sidebar's list, one chat's transcript, and the flat

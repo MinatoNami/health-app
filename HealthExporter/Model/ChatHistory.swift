@@ -134,6 +134,19 @@ struct ChatMessage: Codable, Equatable, Identifiable {
     }
 }
 
+/// Where an in-flight answer has got to.
+///
+/// `known` is false until the first step is recorded, which is the ordinary
+/// state of the first poll or two — an answer computes its snapshot and runs the
+/// safety check before it reaches a tool. It is not an error and reads as one
+/// only if the client treats a missing note as a missing endpoint.
+struct InsightProgress: Codable, Equatable {
+    var label: String
+    var step: Int
+    var done: Bool
+    var known: Bool
+}
+
 /// One conversation with everything said in it.
 struct ChatTranscript: Codable, Equatable {
     struct Context: Codable, Equatable {

@@ -455,6 +455,35 @@ DEFINITIONS = [
 
 REGISTRY = {definition["name"]: definition["fn"] for definition in DEFINITIONS}
 
+# What each tool is called while somebody is waiting for it.
+#
+# Written out rather than derived from the tool name, because these are the only
+# words a person sees during the twenty to ninety seconds an answer takes, and
+# "get_nutrition_summary" is not a sentence. They say what is being read, not
+# what is being computed: the honest claim during a tool call is that a figure is
+# being looked up, and promising analysis that has not happened yet is how a
+# progress indicator becomes a lie.
+LABELS = {
+    "list_available_metrics": "Checking what you have data for",
+    "get_health_overview": "Reading your health overview",
+    "get_metric_trend": "Reading the trend",
+    "compare_periods": "Comparing the two periods",
+    "get_sleep_summary": "Reading your sleep summary",
+    "get_nutrition_summary": "Reading your food log",
+    "get_recent_workouts": "Reading your recent workouts",
+    "get_data_quality": "Checking how complete the data is",
+    "get_goals": "Reading your goals",
+    "get_correlations": "Looking for associations",
+    "get_patterns": "Looking for weekly patterns",
+    "get_anomalies": "Looking for anything unusual",
+}
+
+
+def label_for(name: str) -> str:
+    """A phrase for one tool. Falls back to the raw name rather than to silence —
+    a tool added without a label should look unfinished, not invisible."""
+    return LABELS.get(name) or f"Running {name}"
+
 
 def openai_schema() -> list[dict]:
     """Tool definitions in the shape LM Studio and the OpenAI API both expect."""

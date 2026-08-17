@@ -107,7 +107,7 @@ struct InsightsView: View {
                             UserBubble(text: turn.question)
 
                             if turn.isPending {
-                                PendingBubble()
+                                PendingBubble(label: engine.askingLabel)
                             } else {
                                 AnswerBubble(
                                     turn: turn,
@@ -478,12 +478,19 @@ private struct UserBubble: View {
 }
 
 private struct PendingBubble: View {
+    /// What the server is doing right now, or empty before the first step is
+    /// reported. An answer takes fifteen to ninety seconds and this line is all
+    /// there is to look at for the length of it.
+    var label: String = ""
+
     var body: some View {
         HStack(spacing: 9) {
             ProgressView()
-            Text("Reading your summaries…")
+            Text("\(label.isEmpty ? "Reading your summaries" : label)…")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .contentTransition(.opacity)
+                .animation(.easeInOut(duration: 0.2), value: label)
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground),

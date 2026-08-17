@@ -100,6 +100,9 @@ export const api = {
   // earlier prose back as a measurement.
   ask: (body) =>
     request('/v1/insights/ask', { method: 'POST', body: JSON.stringify({ tz: tz(), ...body }) }),
+  // Where an in-flight answer has got to. Polled while the ask above is still
+  // open, which is why it is a separate request rather than part of that one.
+  insightProgress: (key) => request(`/v1/insights/progress/${encodeURIComponent(key)}`),
   weeklyReview: (body = {}) =>
     request('/v1/insights/weekly', {
       method: 'POST',
