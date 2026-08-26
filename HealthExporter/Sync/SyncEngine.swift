@@ -387,10 +387,20 @@ final class SyncEngine: ObservableObject {
                                           to: end) ?? end
         var emitted: [HealthRecord] = []
 
+        // Rollups have to follow the same enabled list the raw samples do.
+        // This loop used to walk `statisticsMetrics` unconditionally while the
+        // sample pass walked `enabledSampleTypes`, so turning a group off on the
+        // Metrics tab stopped its samples and left its rollups arriving — and a
+        // discrete metric with only rollups behind it has nothing the server can
+        // read for an average, so it reported as never recorded. Switching a
+        // group off should stop the metric, not half of it.
+        let enabled = authorization.enabledSampleTypes
+
         for name in SyncEngine.statisticsMetrics {
             guard let type = HKObjectType.quantityType(
                 forIdentifier: MetricCatalog.quantityIdentifier(name)
             ) else { continue }
+            guard enabled.contains(type) else { continue }
             guard let unit = UnitResolver.shared.staticUnit(for: type) else { continue }
 
             do {

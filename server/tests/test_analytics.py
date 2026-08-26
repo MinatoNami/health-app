@@ -102,6 +102,71 @@ class AggregationTests(AnalyticsTestCase):
         self.assertEqual(body["points"][0]["value"], 70)
         self.assertFalse(body["may_double_count"])
 
+    def test_discrete_rollup_wins_over_raw_average(self):
+        """The phone ships rollups for discrete metrics too — resting heart
+        rate, HRV, weight — built from `.discreteAverage`, which deduplicates
+        across sources the way the Health app does. Those were read for `sum`
+        only, so every one of them was stored and then ignored."""
+        self.make(id="r1", metric_slug="resting_heart_rate", aggregation="discrete", value=52)
+        self.make(id="r2", metric_slug="resting_heart_rate", aggregation="discrete", value=80)
+        self.make(
+            id="stat:resting_heart_rate:2026-07-15",
+            metric_slug="resting_heart_rate",
+            kind=Record.Kind.STATISTIC,
+            aggregation="discrete",
+            value=58,
+        )
+
+        body = self.client.get(
+            "/v1/analytics/series?metric=resting_heart_rate&agg=avg&from=2026-07-15&to=2026-07-15",
+            headers=self.auth(),
+        ).json()
+
+        self.assertEqual(body["points"][0]["value"], 58)  # not the raw mean of 66
+        self.assertEqual(body["points"][0]["source"], "statistic")
+
+    def test_cumulative_rollup_is_never_served_as_an_average(self):
+        """A cumulative rollup is a day's total. Handing it back for `agg=avg`
+        would report the sum of every reading as if it were a typical one."""
+        self.make(id="s1", value=4000, source_name="iPhone")
+        self.make(id="s2", value=6000, source_name="Apple Watch")
+        self.make(
+            id="stat:step_count:2026-07-15",
+            kind=Record.Kind.STATISTIC,
+            aggregation="cumulative",
+            value=9000,
+        )
+
+        body = self.client.get(
+            "/v1/analytics/series?metric=step_count&agg=avg&from=2026-07-15&to=2026-07-15",
+            headers=self.auth(),
+        ).json()
+
+        self.assertEqual(body["points"][0]["value"], 5000)  # the raw mean, not 9000
+        self.assertEqual(body["points"][0]["source"], "raw_sum")
+
+    def test_min_and_max_ignore_rollups(self):
+        """A rollup carries one number per day, so it can answer `sum` or `avg`
+        and nothing else. Min and max have to come from the samples."""
+        self.make(id="h1", metric_slug="heart_rate", aggregation="discrete", value=48)
+        self.make(id="h2", metric_slug="heart_rate", aggregation="discrete", value=140)
+        self.make(
+            id="stat:heart_rate:2026-07-15",
+            metric_slug="heart_rate",
+            kind=Record.Kind.STATISTIC,
+            aggregation="discrete",
+            value=70,
+        )
+
+        for agg, expected in (("min", 48), ("max", 140)):
+            body = self.client.get(
+                f"/v1/analytics/series?metric=heart_rate&agg={agg}"
+                "&from=2026-07-15&to=2026-07-15",
+                headers=self.auth(),
+            ).json()
+            self.assertEqual(body["points"][0]["value"], expected, agg)
+            self.assertEqual(body["points"][0]["source"], "raw_sum", agg)
+
     def test_tombstoned_records_are_excluded(self):
         self.make(id="s1", value=5000)
         self.make(id="s2", value=3000, deleted_at=self.day)
