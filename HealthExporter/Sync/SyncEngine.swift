@@ -49,6 +49,11 @@ final class SyncEngine: ObservableObject {
         var statisticsLookbackDays: Int = 90
         var sink = SinkConfiguration()
         var lastFullSyncAt: Date?
+        /// When a batch was last *accepted by the server*, as distinct from
+        /// when a sync last ran. A read pass finishing changes nothing about
+        /// whether anything arrived, and conflating the two is what let weeks
+        /// of failed uploads sit behind a recent-looking timestamp.
+        var lastDeliveryAt: Date?
     }
 
     /// Result of the last manual Test Connection.
@@ -577,6 +582,7 @@ final class SyncEngine: ObservableObject {
                 case .success:
                     Outbox.shared.archive(batch)
                     Log.shared.info("deliver", "\(batch.displayName) accepted")
+                    settings.lastDeliveryAt = Date()
                     consecutiveAuthFailures = 0
                     attempt = .max
                 case .failure(let error):

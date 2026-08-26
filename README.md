@@ -312,6 +312,29 @@ it matters. A metric that has *stopped arriving* always warrants one, and leads
 the line — burying that under a reassurance is how five weeks of missing sleep
 data goes unnoticed.
 
+### The other alert
+
+The brief is about the numbers. There is a second, rarer notification about
+whether the numbers are arriving at all.
+
+Everything else here catches data that stopped reaching the *server* — the
+coverage report, the freshness check, metrics reported as not syncing rather
+than as zero. None of it catches the phone failing to send, because a server
+that is never contacted has nothing to notice. `SyncEngine` does notice: three
+rejected uploads trip a circuit breaker and set the sync state. But that is a
+line on a screen, and the whole point of background sync is that nobody is
+looking at the screen.
+
+The gap this closed was specific. `isSignedIn` means "a token is in the
+Keychain", which a *revoked* token still satisfies — so the morning brief kept
+firing every day with the last figures it managed to fetch, while nothing had
+uploaded for weeks. Its `Through <date>` subtitle was the only tell.
+
+So: a rejected token says so immediately, and a queue that has not moved in
+three days says so once. Three days rather than one because a weekend off Wi-Fi
+is an ordinary gap and an alert that fires on those is one you switch off. It
+withdraws itself when delivery recovers.
+
 ---
 
 ## Insights on the phone

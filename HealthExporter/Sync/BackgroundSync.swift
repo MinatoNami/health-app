@@ -131,6 +131,10 @@ final class BackgroundSync {
             // morning alert's text with anything current in it, and it needs
             // the upload above to have landed first.
             await shared.dailyBrief.refresh()
+            // The reason this notifier exists. Every other place it runs, the
+            // app is open and the Summary tab is already saying sync failed —
+            // here nobody is looking, which is exactly when weeks go by.
+            await shared.syncFailure.evaluate()
             if finished.claim() { task.setTaskCompleted(success: true) }
         }
 

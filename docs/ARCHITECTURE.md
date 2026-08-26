@@ -10,9 +10,9 @@ right.
 
 ```
    iPhone                    alena-server                     MacBook
-┌────────────┐   TLS,     ┌──────────────────┐   WireGuard  ┌───────────┐
-│ HealthKit  │  pinned    │ Django + DRF     │  over the    │ LM Studio │
-│    ↓       │  cert      │      ↓           │  tailnet     │  (a model │
+┌────────────┐            ┌──────────────────┐   WireGuard  ┌───────────┐
+│ HealthKit  │   TLS      │ Django + DRF     │  over the    │ LM Studio │
+│    ↓       │            │      ↓           │  tailnet     │  (a model │
 │ Normalizer │ ─────────▶ │  Postgres        │ ───────────▶ │   you own)│
 │    ↓       │            │      ↓           │              └───────────┘
 │  Outbox    │            │  analysis        │

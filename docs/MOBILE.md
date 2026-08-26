@@ -24,6 +24,11 @@ last 7 days against your own preceding 28, with coverage and a confidence grade.
 deterministically server-side, because the alert has to be dependable whether or
 not the laptop running the model is awake.
 
+**The sync alert.** The rarer one: a notification when uploads have stopped
+getting through, because every other check in this system watches data arriving
+at the server and none of them fire when the phone never sends. See
+`SyncFailureNotifier`.
+
 **Diagnostics.** Per-type coverage, the outbox, sync anchors, and a log you can
 read when something stops arriving.
 
@@ -109,7 +114,8 @@ HealthExporter/
 ├── Sync/
 │   ├── SyncEngine.swift      the observable app state; owns the transcript
 │   ├── BackgroundSync.swift
-│   └── DailyBriefScheduler.swift
+│   ├── DailyBriefScheduler.swift
+│   └── SyncFailureNotifier.swift  the alert about the pipe, not the data
 └── UI/
     ├── InsightsView.swift    transcript, composer, bubbles, rating
     ├── ChatHistoryView.swift the history drawer
@@ -150,6 +156,31 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   xcodebuild -project HealthExporter.xcodeproj -scheme HealthExporter \
   -destination 'generic/platform=iOS Simulator' build
 ```
+
+---
+
+## Tests
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild test -project HealthExporter.xcodeproj -scheme HealthExporter \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+```
+
+`HealthExporterTests` is a host-application bundle, so it needs a Simulator
+destination rather than a generic one — the code under test lives in the app
+module and the bundle is loaded into a running host to reach it. The target is
+generated like everything else, so a new test file needs
+`ruby Tools/generate_project.rb` the same way a new source file does.
+
+**What is worth testing here is narrower than it looks.** HealthKit returns
+nothing in the Simulator, so anything downstream of a real query cannot be
+exercised — and the parts most likely to lose data, the anchor advance and the
+outbox, are the parts that need one. What is covered is the pure logic that has
+already been wrong at least once: URL construction, Django's six-digit
+timestamps, and the sync-failure rule. `SyncFailureNotifier.fault(for:now:)` is
+a static function over a plain struct precisely so it can be tested without
+standing up a sync engine to ask it five questions.
 
 ---
 

@@ -131,6 +131,9 @@ final class AppServices: ObservableObject {
     let syncEngine: SyncEngine
     let backgroundSync: BackgroundSync
     let dailyBrief: DailyBriefScheduler
+    /// The other local alert: not about the numbers, about whether they are
+    /// getting anywhere. See `SyncFailureNotifier` for why that needs saying.
+    let syncFailure: SyncFailureNotifier
 
     /// Which tab is showing. Owned here rather than by `RootView` so a
     /// notification tap can change it — the tap arrives at the app delegate,
@@ -159,6 +162,7 @@ final class AppServices: ObservableObject {
         self.syncEngine = engine
         self.backgroundSync = BackgroundSync(authorization: auth, engine: engine)
         self.dailyBrief = DailyBriefScheduler(engine: engine)
+        self.syncFailure = SyncFailureNotifier(engine: engine)
     }
 
     /// Must run inside `didFinishLaunchingWithOptions`. `BGTaskScheduler.register`
@@ -246,6 +250,9 @@ final class AppServices: ObservableObject {
             // After the sync, so the brief describes what was just uploaded
             // rather than the state before it.
             await self.dailyBrief.refresh()
+            // Last, so it judges the state the sync just left behind rather
+            // than the one it started from.
+            await self.syncFailure.evaluate()
             self.launchWork = nil
         }
     }
