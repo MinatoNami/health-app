@@ -1411,7 +1411,15 @@ def snapshot(
                 "metric_slug": comparison["metric_slug"],
                 "label": analytics.display_name(comparison["metric_slug"]),
                 "last_recorded_at": seen.isoformat() if seen else None,
-                "days_since": (as_of - seen.astimezone(analytics.zone(tz_name)).date()).days
+                # Floored at zero. `as_of` is the last *complete* day, so a
+                # sample recorded today sits after it and the subtraction goes
+                # negative — a metric that arrived this morning was reporting
+                # "not syncing, last seen -1 days ago", which reads as a bug in
+                # the clock rather than the fact that today is still running.
+                # Zero is the honest answer: it last arrived within the day.
+                "days_since": max(
+                    0, (as_of - seen.astimezone(analytics.zone(tz_name)).date()).days
+                )
                 if seen
                 else None,
             }

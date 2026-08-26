@@ -597,6 +597,22 @@ class AnalysisEndpointTests(AnalysisTestCase):
         # The useful fact is *when it stopped*, not that it is missing.
         self.assertEqual(stale["sleep_analysis"]["days_since"], 44)
 
+    def test_a_sample_from_today_never_reports_a_negative_age(self):
+        """Windows end yesterday, so a metric whose only sample landed *today*
+        has nothing in either one and falls into the stale list — with a
+        `last_recorded_at` that sits after `as_of`. That subtraction went
+        negative, and the phone rendered "not syncing, last seen -1 days ago"."""
+        self.fill(7, 10_000)
+        self.fill(28, 9_000, offset=7)
+        # A first-ever weigh-in, this morning.
+        self.sample(self.as_of + timedelta(days=1), 74.2, slug="body_mass")
+
+        body = self.client.get("/v1/analysis/snapshot", headers=self.auth()).json()
+
+        stale = {item["metric_slug"]: item for item in body["metrics_not_syncing"]}
+        self.assertIn("body_mass", stale)
+        self.assertEqual(stale["body_mass"]["days_since"], 0)
+
     def test_a_metric_with_data_is_not_called_stale(self):
         self.fill(7, 10_000)
         self.fill(28, 9_000, offset=7)
