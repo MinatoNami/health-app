@@ -26,6 +26,23 @@ struct RootView: View {
         } content: {
             tabs
         }
+        // Stated once, in front of everything, when the server the app is
+        // configured to use did not answer at launch.
+        //
+        // Retry comes first and is the default: the common cause is a laptop
+        // that has not woken up or a tailnet not yet connected, and both fix
+        // themselves in seconds. Continue is what keeps the app's own rule
+        // intact — the cached figures are still on screen behind this, and a
+        // snapshot from yesterday says more than a blank page.
+        .alert("Can't reach the server", isPresented: serverErrorBinding) {
+            Button("Retry") {
+                Task { await services.checkServerReachable() }
+            }
+            Button("Continue Offline") { services.startupServerError = nil }
+            Button("Close App", role: .destructive) { services.closeApp() }
+        } message: {
+            Text(services.startupServerError ?? "")
+        }
         // Switching tabs is navigating away from the conversation the drawer
         // belongs to, so it should not still be hanging over the next screen.
         .onChange(of: services.selectedTab) { _, tab in
@@ -37,6 +54,16 @@ struct RootView: View {
             // flight — that would discard an answer already being written.
             if tab == .insights, !engine.isAsking { engine.newChat() }
         }
+    }
+
+    /// `alert(isPresented:)` wants a `Bool` binding, and the message is a
+    /// `String?`. Writing `false` back clears the error, which is what
+    /// dismissing this should mean.
+    private var serverErrorBinding: Binding<Bool> {
+        Binding(
+            get: { services.startupServerError != nil },
+            set: { if !$0 { services.startupServerError = nil } }
+        )
     }
 
     private var tabs: some View {

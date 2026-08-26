@@ -151,6 +151,20 @@ final class AppServices: ObservableObject {
     /// the brief rather than the general screen.
     @Published var showBriefOnOpen = false
 
+    /// Why the configured server could not be reached at startup, if it could
+    /// not. `RootView` puts this in front of everything as a blocking alert.
+    ///
+    /// Deliberately narrow. It is set once, at launch, and only when the app is
+    /// actually configured to talk to a server — a phone that has never been
+    /// signed in has nothing to be unreachable. The rest of the app keeps its
+    /// own behaviour on a failed request: the last figures stay on screen with
+    /// a line saying they are stale, because a snapshot from yesterday is worth
+    /// more than a blank page.
+    @Published var startupServerError: String?
+    /// True while the startup probe is in flight, so the alert's Retry button
+    /// can show that something is happening.
+    @Published var isCheckingServer = false
+
     enum Tab: Hashable {
         case status, insights, metrics, server, settings
     }
@@ -219,6 +233,7 @@ final class AppServices: ObservableObject {
         }
 
         await dailyBrief.refreshAuthorizationStatus()
+        await checkServerReachable()
         guard authorization.hasRequested else { return }
 
         // Registering ~130 observers takes real time on a first run and the
@@ -285,6 +300,56 @@ final class AppServices: ObservableObject {
         // Anything the observers flagged while the app was away. Already
         // debounced and serialised by the engine.
         syncEngine.requestDirtyDrain()
+    }
+
+    // MARK: - Server reachability
+
+    /// Proves the configured server answers before the app settles into using
+    /// it, and reports it in front of everything if it does not.
+    ///
+    /// `probe()` is the same round trip behind Test Connection: it checks the
+    /// URL, TLS and the token in one authenticated request and ships no health
+    /// data. Doing it at launch means a revoked token or a server that is down
+    /// is stated plainly, once, rather than discovered later from a queue that
+    /// silently stopped draining.
+    ///
+    /// **Nothing here is a fault when uploading was never set up.** No token,
+    /// no server, uploading switched off — those are configuration states with
+    /// their own screens, and putting a modal error over a phone that is
+    /// working exactly as configured would be wrong.
+    func checkServerReachable() async {
+        guard syncEngine.settings.sink.isUsable else {
+            startupServerError = nil
+            return
+        }
+        isCheckingServer = true
+        defer { isCheckingServer = false }
+
+        switch await HTTPSink(configuration: syncEngine.settings.sink).probe() {
+        case .success(let message):
+            startupServerError = nil
+            Log.shared.info("sink", "Startup check: \(message)")
+        case .failure(let error):
+            let detail = error.localizedDescription
+            startupServerError = detail
+            Log.shared.error("sink", "Startup check failed: \(detail)")
+        }
+    }
+
+    /// Quits.
+    ///
+    /// iOS has no supported way to do this — the Human Interface Guidelines say
+    /// an app should never terminate itself, and App Store Review Guideline
+    /// 2.5.4 treats a programmatic quit as a defect, because to the person
+    /// holding the phone it is indistinguishable from a crash. `exit(0)` is
+    /// what there is.
+    ///
+    /// It is suspended first so the OS captures a normal-looking snapshot and
+    /// the app animates away rather than vanishing mid-frame.
+    func closeApp() {
+        Log.shared.warn("app", "Closing at the user's request: server unreachable")
+        UIApplication.shared.perform(#selector(NSXPCConnection.suspend))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { exit(0) }
     }
 
     /// A tap on the morning alert.
