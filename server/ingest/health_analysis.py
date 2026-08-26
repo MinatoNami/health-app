@@ -25,9 +25,9 @@ import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from django.db.models import Count, Max, Min
+from django.db.models import Avg, Count, Max, Min
 
-from . import analytics, nutrition
+from . import analytics, nutrition, units
 from .models import Record
 
 # Confidence grades, weakest first. Ordered so callers can compare.
@@ -128,6 +128,73 @@ METRICS: dict[str, MetricSpec] = {
         ),
         MetricSpec("distance_walking_running", "Walking + running distance", "km", "sum", "higher_better", decimals=2),
         MetricSpec("heart_rate", "Heart rate", "count/min", "avg", "neutral"),
+        # Exercise detail. The phone has uploaded all of this since the metric
+        # catalog covered ~107 types; none of it was analysable, because
+        # `available_metrics` filters through this dict and nothing here named
+        # them. Stored and invisible — the model could not see a power meter.
+        #
+        # Every one of these carries a low `expected_cadence`. Coverage is
+        # scored against it, and the freshness check derives its stale threshold
+        # from it, so leaving them at the default 1.0 would grade a perfectly
+        # normal week of not cycling as missing data and then alert about it.
+        MetricSpec(
+            "distance_cycling", "Cycling distance", "km", "sum", "higher_better",
+            decimals=2, min_current_days=1, min_baseline_days=2, expected_cadence=0.3,
+        ),
+        MetricSpec(
+            "distance_swimming", "Swimming distance", "km", "sum", "higher_better",
+            decimals=2, min_current_days=1, min_baseline_days=2, expected_cadence=0.15,
+        ),
+        MetricSpec(
+            "flights_climbed", "Flights climbed", "count", "sum", "higher_better",
+            expected_cadence=0.8,
+        ),
+        # Power and cadence only exist on days with the right sensor attached,
+        # which is why the day thresholds are as low as they are. Two rides is a
+        # thin comparison and is graded as one; no comparison at all would be
+        # less useful than a thin one that says so.
+        MetricSpec(
+            "cycling_power", "Cycling power", "W", "avg", "higher_better",
+            min_current_days=1, min_baseline_days=2, expected_cadence=0.3,
+        ),
+        MetricSpec(
+            "cycling_cadence", "Cycling cadence", "count/min", "avg", "neutral",
+            min_current_days=1, min_baseline_days=2, expected_cadence=0.3,
+        ),
+        MetricSpec(
+            "cycling_speed", "Cycling speed", "m/s", "avg", "higher_better",
+            decimals=2, min_current_days=1, min_baseline_days=2, expected_cadence=0.3,
+        ),
+        MetricSpec(
+            "running_power", "Running power", "W", "avg", "higher_better",
+            min_current_days=1, min_baseline_days=2, expected_cadence=0.3,
+        ),
+        MetricSpec(
+            "running_speed", "Running speed", "m/s", "avg", "higher_better",
+            decimals=2, min_current_days=1, min_baseline_days=2, expected_cadence=0.3,
+        ),
+        # Apple's effort rating, 1–10. `neutral` on purpose: a hard session is
+        # not better or worse than an easy one, and framing a high score as an
+        # improvement is how a rest day reads as a failure.
+        #
+        # Both variants, because they are different evidence. The plain one is
+        # rated by hand and most people never do; the estimated one is derived
+        # by watchOS and is the one that will actually have data. Listing both
+        # costs nothing — `available_metrics` drops whichever is empty.
+        MetricSpec(
+            "workout_effort_score", "Workout effort (rated)", "score", "avg", "neutral",
+            decimals=1, min_current_days=1, min_baseline_days=2, expected_cadence=0.4,
+        ),
+        MetricSpec(
+            "estimated_workout_effort_score", "Workout effort (estimated)", "score", "avg",
+            "neutral", decimals=1, min_current_days=1, min_baseline_days=2, expected_cadence=0.4,
+        ),
+        # Cardio fitness. Apple writes it every few weeks from outdoor walks and
+        # runs, so a 28-day baseline may hold one or two readings.
+        MetricSpec(
+            "vo2_max", "Cardio fitness (VO₂ max)", "mL/kg·min", "avg", "higher_better",
+            decimals=1, min_current_days=1, min_baseline_days=1, expected_cadence=0.1,
+        ),
     ]
     + _NUTRITION_SPECS
 }
@@ -210,6 +277,12 @@ def day_values(
     spec = spec_for(slug)
     start, end = _bounds(start_day, end_day, tz_name)
 
+    # Only the general path needs converting. Sleep is summed from stage
+    # durations straight into hours, and nutrition converts per row inside its
+    # own module because a food log really does mix units within one nutrient.
+    # Scaling either of those again multiplies the conversion twice.
+    scale = 1.0
+
     if slug == "sleep_analysis":
         payload = analytics.sleep_hours(start, end, tz_name)
     elif nutrition.is_nutrient(slug):
@@ -228,6 +301,7 @@ def day_values(
         )
     else:
         payload = analytics.daily_series(slug, start, end, spec.daily, tz_name=tz_name)
+        scale = _unit_scale(slug, spec, start, end)
 
     # Cross-source overlap only inflates a *sum*. `daily_series` marks every day
     # without an Apple rollup as raw, and for an average metric that is every
@@ -242,12 +316,50 @@ def day_values(
         out.append(
             DayValue(
                 day=date.fromisoformat(point["date"]),
-                value=float(point["value"]),
+                value=float(point["value"]) * scale,
                 estimated=inflatable and point.get("source") == analytics.SOURCE_RAW,
             )
         )
     out.sort(key=lambda d: d.day)
     return out
+
+
+def _unit_scale(slug: str, spec: MetricSpec, start, end) -> float:
+    """What to multiply a stored value by to get `spec.unit`.
+
+    The phone resolves a unit per HealthKit type from the sample itself, so what
+    arrives is a property of the data. `UnitResolver` resolves every distance
+    type to **metres**, and this module labels those metrics kilometres — so
+    until this existed, an 8.5 km walk was reported as "8500 km". Plausible
+    enough to survive review, wrong by a thousand.
+
+    Sleep and nutrition do not come through here: sleep is summed from stage
+    durations into hours, and nutrition converts per row in its own module
+    because a food log genuinely mixes units within one nutrient.
+
+    Returns 1.0 whenever there is nothing to do — a dimensionless metric, an
+    empty window, a unit already canonical. Also returns 1.0 when the units
+    cannot be converted, which leaves the previous behaviour rather than
+    inventing a number; `data_quality` is where an unreadable unit gets said out
+    loud.
+    """
+    if not units.known(spec.unit):
+        return 1.0  # counts, percentages, scores — nothing to convert to.
+
+    stored = [
+        unit
+        for unit in analytics.live_records()
+        .filter(metric_slug=slug, start__gte=start, start__lt=end)
+        .values_list("unit", flat=True)
+        .distinct()
+        if unit
+    ]
+    # One unit is the ordinary case: `UnitResolver` caches a single unit per
+    # type, so a metric only holds two if it was written by two app versions or
+    # two devices that disagreed.
+    if len(stored) != 1:
+        return 1.0
+    return units.factor(stored[0], spec.unit) or 1.0
 
 
 # --------------------------------------------------------------------------
@@ -938,6 +1050,129 @@ def sleep_summary(
 # --------------------------------------------------------------------------
 
 
+# What to summarise inside a session, and the key it is reported under. The
+# unit is part of the key for the same reason `spec.unit` exists: a bare
+# "cadence" tells the model nothing about whether 85 is fast.
+#
+# These are the fields a training log is expected to have — the ones people
+# reach for Strava to see. All of it is already in the store as ordinary
+# samples; nothing here is new data, it is the same data attached to the
+# session it belongs to instead of floating in a day-long average.
+_SESSION_METRICS = {
+    "heart_rate": ("heart_rate_bpm", "count/min"),
+    "cycling_power": ("cycling_power_w", "W"),
+    "running_power": ("running_power_w", "W"),
+    "cycling_cadence": ("cycling_cadence_rpm", "count/min"),
+    "cycling_speed": ("cycling_speed_mps", "m/s"),
+    "running_speed": ("running_speed_mps", "m/s"),
+}
+
+# HKWorkoutEventType. Only the four that bear on whether the clock was running.
+_PAUSE_EVENTS = {1, 5}   # pause, motionPaused
+_RESUME_EVENTS = {2, 6}  # resume, motionResumed
+
+
+def _moment(raw) -> datetime | None:
+    """One ISO8601 timestamp out of a workout event, or None.
+
+    Naive values are rejected rather than assumed to be local. These are
+    compared against `Record.start`, which Django hands back timezone-aware, and
+    mixing the two raises — so a missing offset has to be a None here rather
+    than a TypeError several frames away.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _paused_seconds(events: list, start: datetime, end: datetime) -> float | None:
+    """How long a session was stopped for, from its workout events.
+
+    Two shapes have to be handled, because HealthKit produces both. A pause
+    event may carry an interval covering the whole stoppage, in which case its
+    duration is the answer; or it may be instantaneous and closed by a later
+    resume, in which case the gap between them is. Counting a closed interval
+    *and* pairing it with the next resume would double it.
+
+    Returns None when there are no pause events at all, which is not the same as
+    zero: an activity recorded by something that never emits them looks
+    identical to one that was never paused, and only the second is a fact.
+    """
+    if not isinstance(events, list):
+        return None
+
+    parsed = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind not in _PAUSE_EVENTS and kind not in _RESUME_EVENTS:
+            continue
+        began = _moment(event.get("start"))
+        ended = _moment(event.get("end")) or began
+        if began is None:
+            continue
+        parsed.append((began, ended, kind))
+
+    if not any(kind in _PAUSE_EVENTS for _, _, kind in parsed):
+        return None
+
+    parsed.sort(key=lambda e: e[0])
+    total = 0.0
+    open_pause: datetime | None = None
+    for began, ended, kind in parsed:
+        if kind in _PAUSE_EVENTS:
+            span = (ended - began).total_seconds()
+            if span > 0:
+                total += span      # a self-describing interval; nothing to pair
+                open_pause = None
+            elif open_pause is None:
+                open_pause = began
+        elif open_pause is not None:
+            total += max(0.0, (began - open_pause).total_seconds())
+            open_pause = None
+
+    # A pause never closed — the session ended stopped.
+    if open_pause is not None:
+        total += max(0.0, (end - open_pause).total_seconds())
+
+    return min(total, max(0.0, (end - start).total_seconds()))
+
+
+def _session_metrics(start: datetime, end: datetime) -> dict:
+    """Average and peak of each sensor stream inside one session's window.
+
+    One query, not one per metric. Averaging in the database rather than pulling
+    the samples back: a heart-rate stream is a reading every few seconds, so an
+    hour's ride is several hundred rows and there is no reason for any of them
+    to cross the wire.
+    """
+    rows = (
+        analytics.live_records()
+        .filter(metric_slug__in=list(_SESSION_METRICS), start__gte=start, start__lte=end)
+        .exclude(kind=Record.Kind.STATISTIC)  # a daily rollup is not a session figure
+        .values("metric_slug", "unit")
+        .annotate(average=Avg("value"), peak=Max("value"), samples=Count("id"))
+    )
+
+    out: dict = {}
+    for row in rows:
+        slug = row["metric_slug"]
+        key, canonical = _SESSION_METRICS[slug]
+        if row["average"] is None:
+            continue
+        scale = units.factor(row["unit"], canonical) if row["unit"] else 1.0
+        if scale is None:
+            continue  # an unconvertible unit is not reported as if it converted
+        out[f"avg_{key}"] = round(float(row["average"]) * scale, 1)
+        out[f"max_{key}"] = round(float(row["peak"]) * scale, 1)
+    return out
+
+
 def workouts(
     days: int = BASELINE_DAYS,
     as_of: date | None = None,
@@ -949,6 +1184,13 @@ def workouts(
     Energy figures are carried through as HealthKit reported them and labelled
     as estimates — a wearable's calorie number is a model output, not a
     measurement, and presenting it as exact is on the prohibited list in §7.
+
+    Each returned session also carries what the sensors recorded *during* it —
+    average and peak heart rate, power, cadence and speed — plus moving time
+    and pace where the data supports them. That detail was always in the store
+    as ordinary samples; until this it was only ever reachable as a day-long
+    average, which for a 45-minute ride is mostly a measurement of sitting
+    still.
     """
     tz = analytics.zone(tz_name)
     as_of = as_of or last_complete_day(tz_name)
@@ -980,20 +1222,46 @@ def workouts(
         if len(sessions) < limit:
             energy = extra.get("active_energy_kcal")
             distance = extra.get("distance_m")
-            sessions.append(
-                {
-                    "started_at": row["start"].astimezone(tz).isoformat() if row["start"] else None,
-                    "activity": activity,
-                    "minutes": round(seconds / 60, 1),
-                    "active_energy_kcal_estimated": round(float(energy), 1)
-                    if isinstance(energy, (int, float))
-                    else None,
-                    "distance_km": round(float(distance) / 1000, 2)
-                    if isinstance(distance, (int, float))
-                    else None,
-                    "source": row["source_name"] or "unknown",
-                }
-            )
+            km = float(distance) / 1000 if isinstance(distance, (int, float)) else None
+
+            paused = None
+            moving_seconds = seconds
+            if row["start"] and row["end"]:
+                paused = _paused_seconds(extra.get("events"), row["start"], row["end"])
+                if paused is not None:
+                    moving_seconds = max(0.0, seconds - paused)
+
+            session = {
+                "started_at": row["start"].astimezone(tz).isoformat() if row["start"] else None,
+                "activity": activity,
+                "minutes": round(seconds / 60, 1),
+                # Only when the events say so. No pause events is not evidence
+                # of no pauses — see `_paused_seconds`.
+                "moving_minutes": round(moving_seconds / 60, 1) if paused is not None else None,
+                "active_energy_kcal_estimated": round(float(energy), 1)
+                if isinstance(energy, (int, float))
+                else None,
+                "distance_km": round(km, 2) if km is not None else None,
+                # Minutes per kilometre, against moving time where it is known.
+                # Guarded on a real distance: a 3-metre GPS twitch on a strength
+                # session yields a pace per kilometre in the thousands.
+                "pace_min_per_km": round((moving_seconds / 60) / km, 2)
+                if km and km >= 0.1 and moving_seconds > 0
+                else None,
+                "source": row["source_name"] or "unknown",
+            }
+            if row["start"] and row["end"]:
+                session.update(_session_metrics(row["start"], row["end"]))
+            # The phone ships HealthKit's own summary of the session, which is
+            # deduplicated across sources the way the Health app does it. Where
+            # it exists it beats re-deriving the same figure from the sample
+            # stream, so it wins — same reasoning as preferring a daily rollup
+            # over a raw sum.
+            for key in ("avg_heart_rate_bpm", "max_heart_rate_bpm"):
+                reported = extra.get(key)
+                if isinstance(reported, (int, float)):
+                    session[key] = round(float(reported), 1)
+            sessions.append(session)
 
     count = len(rows)
     return {

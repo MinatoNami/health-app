@@ -51,6 +51,37 @@ goal. That is deliberate: `blood_glucose` is uploaded and charted, and nothing
 here knows how to baseline it, so a goal against it would report progress it
 cannot measure.
 
+It is also a trap, because "not analysable" looks exactly like "not collected".
+Cycling and running power, cadence, speed, cycling and swimming distance, VO₂
+max and the workout effort scores were all being uploaded and stored for as long
+as the metric catalog has covered ~107 types, and none of them appeared here —
+so `available_metrics` filtered them out and the model could not see a power
+meter. Adding a spec is what makes an existing column visible.
+
+### Units are a property of the data, not the metric
+
+`UnitResolver` on the phone resolves a unit per HealthKit type *from the sample
+itself*, so what arrives is whatever that type happened to resolve to. Every
+distance type resolves to **metres**, while `MetricSpec` labels those metrics
+kilometres — and until `units.py` existed, nothing converted between the two. An
+8.5 km walk reached the model as "8500 km".
+
+`day_values` now scales stored values into `spec.unit` before anything else sees
+them. Three rules, all of which have a test:
+
+- **A factor, or nothing.** An unconvertible unit leaves the value alone rather
+  than scaling it by a guess. Wrong units beat invented ones.
+- **Mixed units are not scaled at all.** Two units for one metric means the SQL
+  aggregate already added metres to kilometres; picking either factor would make
+  a broken number look precise.
+- **Sleep and nutrition do not pass through it.** Sleep is summed from stage
+  durations straight into hours, and nutrition converts per row in its own
+  module because a food log genuinely mixes units within one nutrient. Scaling
+  either again applies the conversion twice.
+
+Temperature is deliberately absent from the tables: °C to °F is an offset as
+well as a scale and cannot be a factor.
+
 ## Confidence grading
 
 `insufficient` → `low` → `moderate` → `high`, decided by coverage against
@@ -158,6 +189,37 @@ down and leave every answer about steps hedged about coverage that is fine.
 
 ---
 
+## Workouts
+
+`workouts()` returns frequency and a list of recent sessions. Each session
+carries what the sensors recorded **inside its own window**: average and peak
+heart rate, power, cadence and speed, plus distance, pace and moving time.
+
+That windowing is the point. All of this was already in the store as ordinary
+samples, reachable only as a day-long average — and a day-long average over a
+45-minute ride is mostly a measurement of sitting still.
+
+Three things it is careful about:
+
+**A rollup is not a session figure.** `kind=statistic` rows are excluded. A
+deduplicated daily average of heart rate says nothing about one ride.
+
+**HealthKit's own summary wins.** The phone ships `avg_heart_rate_bpm` and
+`max_heart_rate_bpm` from `HKWorkout.statistics(for:)`, deduplicated across
+sources the way the Health app does it. Where present it beats re-deriving the
+figure from the sample stream — the same reasoning that prefers a daily rollup
+over a raw sum. The sample-derived figure fills in when it is absent.
+
+**Moving time is reported only when the events say so.** HealthKit emits pause
+events in two shapes: an interval covering the whole stoppage, or an
+instantaneous marker closed by a later resume. Both are handled, and counting a
+closed interval *and* pairing it with the next resume would subtract the stop
+twice. A recorder that emits no pause events at all looks identical to a session
+that was never paused, so `moving_minutes` is `null` rather than a guess.
+
+Pace is guarded on a real distance — a three-metre GPS twitch during a strength
+session otherwise yields a pace per kilometre in the thousands.
+
 ## Correlations
 
 `correlations.py`. The hard part is not the arithmetic: thirteen metrics make
@@ -250,7 +312,7 @@ exactly the arithmetic this design exists to prevent.
 | `compare_periods` | Two arbitrary ranges, with a refusal when either is thin |
 | `get_sleep_summary` | Duration, bedtime, wake time, consistency |
 | `get_nutrition_summary` | Logged intake, day-counts, macros, energy balance |
-| `get_recent_workouts` | Sessions and frequency |
+| `get_recent_workouts` | Sessions and frequency, plus per-session sensor detail — see [Workouts](#workouts) |
 | `get_correlations` | Pre-registered pairs, Holm-corrected |
 | `get_patterns` | Weekend and weekday rhythms |
 | `get_data_quality` | What can and cannot be concluded per metric |

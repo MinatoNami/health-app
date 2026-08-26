@@ -378,7 +378,13 @@ DEFINITIONS = [
     {
         "name": "get_recent_workouts",
         "description": "Recorded workouts: how many, how often per week, which activities, "
-        "and the most recent sessions.",
+        "and the most recent sessions. Each session also carries what the sensors "
+        "recorded during it — average and peak heart rate, power, cadence and speed — "
+        "plus distance, pace, and moving time where the data supports them. Use this "
+        "rather than get_metric_trend for questions about a particular session: a "
+        "day-long average over a 45-minute ride is mostly a measurement of sitting "
+        "still. Fields are absent when the sensor was not present, which is not the "
+        "same as zero.",
         "parameters": {
             "type": "object",
             "properties": {

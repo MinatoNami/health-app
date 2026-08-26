@@ -117,9 +117,38 @@ enum Normalizer {
            let sum = workout.statistics(for: energyType)?.sumQuantity() {
             extra["active_energy_kcal"] = .number(sum.doubleValue(for: .kilocalorie()))
         }
-        if let distanceType = HKObjectType.quantityType(forIdentifier: .distanceWalkingRunning),
-           let sum = workout.statistics(for: distanceType)?.sumQuantity() {
+        // Every distance type, not just walking and running.
+        //
+        // This asked `distanceWalkingRunning` and nothing else, so a ride or a
+        // swim shipped with no distance at all — and the server's session
+        // detail, which derives pace from it, had nothing to work with for the
+        // two activities where pace is most of the point. The first type that
+        // reports a sum wins; a workout only accumulates one of these.
+        let distanceTypes: [HKQuantityTypeIdentifier] = [
+            .distanceWalkingRunning, .distanceCycling, .distanceSwimming,
+            .distanceWheelchair, .distanceDownhillSnowSports, .distanceCrossCountrySkiing,
+            .distancePaddleSports, .distanceRowing, .distanceSkatingSports
+        ]
+        for identifier in distanceTypes {
+            guard let type = HKObjectType.quantityType(forIdentifier: identifier),
+                  let sum = workout.statistics(for: type)?.sumQuantity() else { continue }
             extra["distance_m"] = .number(sum.doubleValue(for: .meter()))
+            extra["distance_type"] = .string(identifier.rawValue.healthKitSlug)
+            break
+        }
+
+        // Heart rate over the session, which HealthKit has already summarised.
+        // Cheaper and more accurate than the server re-deriving it from the
+        // sample stream, and it survives even when the raw samples are not
+        // enabled for export.
+        if let hrType = HKObjectType.quantityType(forIdentifier: .heartRate) {
+            let bpm = HKUnit.count().unitDivided(by: .minute())
+            if let average = workout.statistics(for: hrType)?.averageQuantity() {
+                extra["avg_heart_rate_bpm"] = .number(average.doubleValue(for: bpm))
+            }
+            if let peak = workout.statistics(for: hrType)?.maximumQuantity() {
+                extra["max_heart_rate_bpm"] = .number(peak.doubleValue(for: bpm))
+            }
         }
         if let events = workout.workoutEvents, !events.isEmpty {
             extra["events"] = .array(events.map { event in
