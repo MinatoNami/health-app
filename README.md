@@ -4,6 +4,13 @@ An iOS app that reads Apple Health data and exports it as NDJSON to your own
 server, which computes health analysis from it and can explain that analysis with
 a language model running on your own machine.
 
+| Summary | Insights | Server |
+|---|---|---|
+| ![The Summary tab](docs/screenshots/01-summary.png) | ![The Insights tab](docs/screenshots/02-insights.png) | ![The Server tab](docs/screenshots/04-server.png) |
+
+*Generated data, not a real health record. Captured by a UI test —
+[docs/SCREENSHOTS.md](docs/SCREENSHOTS.md).*
+
 ## Documentation
 
 **Start here:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the system as
@@ -32,6 +39,7 @@ built, and the invariants everything else is organised around.
 |---|---|
 | [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | App startup, caching, and the rules that keep the main thread free |
 | [docs/PRIVACY.md](docs/PRIVACY.md) | What is collected, where it goes, how to delete it |
+| [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) | Regenerating the screenshots, and the traps in doing so |
 | [docs/ORIGINAL-PLAN.md](docs/ORIGINAL-PLAN.md) | The design document written before any of it existed |
 
 **This file** covers running the app on your iPhone, the wire format, and how

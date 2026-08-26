@@ -36,6 +36,14 @@ read when something stops arriving.
 
 ## Screens
 
+| Summary | Insights | Metrics | Server | Settings |
+|---|---|---|---|---|
+| ![Summary](screenshots/01-summary.png) | ![Insights](screenshots/02-insights.png) | ![Metrics](screenshots/03-metrics.png) | ![Server](screenshots/04-server.png) | ![Settings](screenshots/05-settings.png) |
+
+Generated data on a throwaway server, captured by
+`HealthExporterUITests/ScreenshotTests` — see [SCREENSHOTS.md](SCREENSHOTS.md)
+for how to refresh them and why they are never taken by hand.
+
 | Tab | What it is |
 |---|---|
 | **Status** | Sync state, the outbox, last upload, the morning brief |

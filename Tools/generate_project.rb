@@ -19,6 +19,8 @@ BUNDLE_ID   = 'com.lionelchong.HealthExporter'
 SOURCE_DIR  = File.join(ROOT, APP_NAME)
 TEST_NAME   = "#{APP_NAME}Tests"
 TEST_DIR    = File.join(ROOT, TEST_NAME)
+UITEST_NAME = "#{APP_NAME}UITests"
+UITEST_DIR  = File.join(ROOT, UITEST_NAME)
 PROJECT_PATH = File.join(ROOT, "#{APP_NAME}.xcodeproj")
 
 FileUtils.rm_rf(PROJECT_PATH)
@@ -150,6 +152,42 @@ project.build_configurations.each do |config|
   config.build_settings['CLANG_ENABLE_OBJC_ARC'] = 'YES'
 end
 
+# --- UI tests ---------------------------------------------------------------
+# A separate bundle from the unit tests because it is a different kind of thing:
+# it drives the app from outside through the accessibility tree rather than
+# linking against its module. It is also what captures the documentation
+# screenshots — see HealthExporterUITests/ScreenshotTests.swift — which is the
+# only way to produce them reproducibly rather than by hand on somebody's phone.
+uitest_target = nil
+uitest_files = Dir.glob(File.join(UITEST_DIR, '**', '*.swift')).sort
+unless uitest_files.empty?
+  uitest_target = project.new_target(:ui_test_bundle, UITEST_NAME, :ios, '18.0')
+  uitest_group = project.new_group(UITEST_NAME, UITEST_NAME)
+  uitest_files.each do |path|
+    uitest_target.add_file_references([uitest_group.new_reference(path)])
+  end
+  uitest_target.add_dependency(target)
+
+  uitest_target.build_configurations.each do |config|
+    config.build_settings.merge!(
+      'PRODUCT_NAME' => '$(TARGET_NAME)',
+      'PRODUCT_BUNDLE_IDENTIFIER' => "#{BUNDLE_ID}UITests",
+      'IPHONEOS_DEPLOYMENT_TARGET' => '18.0',
+      'SWIFT_VERSION' => '5.0',
+      'GENERATE_INFOPLIST_FILE' => 'YES',
+      'CODE_SIGN_STYLE' => 'Automatic',
+      'DEVELOPMENT_TEAM' => ENV.fetch('DEVELOPMENT_TEAM', 'MNJZZHXWT8'),
+      'TARGETED_DEVICE_FAMILY' => '1',
+      'SUPPORTED_PLATFORMS' => 'iphoneos iphonesimulator',
+      'SDKROOT' => 'iphoneos',
+      # No TEST_HOST: a UI test bundle launches the app as a separate process
+      # rather than loading into it.
+      'TEST_TARGET_NAME' => APP_NAME,
+      'ALWAYS_SEARCH_USER_PATHS' => 'NO'
+    )
+  end
+end
+
 # --- Frameworks -------------------------------------------------------------
 # HealthKit, BackgroundTasks, SwiftUI and OSLog all ship with the SDK and are
 # linked automatically by the Swift importer, so no explicit link phase is
@@ -173,6 +211,7 @@ scheme.set_launch_target(target)
 # In the shared scheme, so `xcodebuild test -scheme HealthExporter` works on a
 # fresh clone without anyone opening Xcode to tick a box.
 scheme.add_test_target(test_target) if test_target
+scheme.add_test_target(uitest_target) if uitest_target
 scheme.save_as(PROJECT_PATH, APP_NAME, true)
 
 # xcodeproj does not write the implicit workspace, and `rm -rf` above removes
@@ -194,6 +233,7 @@ XML
 puts "Generated #{PROJECT_PATH}"
 puts "  #{swift_files.count} Swift files across #{grouped.keys.count} groups"
 puts "  #{test_files.count} test files in #{TEST_NAME}" unless test_files.empty?
+puts "  #{uitest_files.count} UI test files in #{UITEST_NAME}" unless uitest_files.empty?
 puts "  Deployment target: iOS 18.0, Swift 5 language mode"
 puts ''
 puts 'Next: open in Xcode, set your Team under Signing & Capabilities, and Run.'
