@@ -686,6 +686,31 @@ class CoverageTests(IngestTestCase):
         self.assertEqual(body["metrics"]["heart_rate"]["count"], 2)
         self.assertTrue(body["metrics"]["heart_rate"]["latest_sample_at"].startswith("2026-07-31"))
 
+    def test_it_reports_both_ends_of_the_newest_sample(self):
+        """The client's high-water mark is an end date.
+
+        A sample that spans a period has an end well past its start — Apple's
+        walking steadiness covers exactly seven days — so a client comparing its
+        end against this start concludes the server is a week behind and re-reads
+        the whole type. Every launch, for ever, on data that was never missing.
+        """
+        cache.clear()
+        self.post(
+            ndjson(
+                header_line(record_count=1),
+                quantity(
+                    metric_slug="apple_walking_steadiness",
+                    start="2026-07-30T08:00:00+08:00",
+                    end="2026-08-06T08:00:00+08:00",
+                ),
+            )
+        )
+
+        metric = self.get(fresh=1).json()["metrics"]["apple_walking_steadiness"]
+
+        self.assertTrue(metric["latest_sample_at"].startswith("2026-07-30"))
+        self.assertTrue(metric["latest_sample_end"].startswith("2026-08-06"))
+
     def test_is_not_capped_at_sixty_metrics(self):
         """The reason this endpoint exists. /stats slices to 60 for display; a
         client reconciling against that would rewind every metric beyond it."""

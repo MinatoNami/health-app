@@ -92,6 +92,17 @@ enum Normalizer {
 
     // MARK: - Workout
 
+    /// The slug a sample type's records are actually uploaded under.
+    ///
+    /// Almost always the derived one, and for workouts it is not: those ship as
+    /// `workout` rather than `hk_workout_type_identifier`. Anything comparing
+    /// local state against the server has to ask this rather than derive it
+    /// itself — reconciliation derived it, never matched, concluded the server
+    /// held no workouts at all, and rewound the anchor on every single launch.
+    static func uploadSlug(for type: HKSampleType) -> String {
+        type is HKWorkoutType ? "workout" : type.identifier.healthKitSlug
+    }
+
     private static func workoutRecord(_ workout: HKWorkout) -> HealthRecord {
         let zone = Timestamps.timeZone(fromMetadata: workout.metadata)
         var extra: [String: JSONValue] = [

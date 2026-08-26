@@ -1,6 +1,7 @@
 import hashlib
 import os
 import secrets
+import uuid
 from datetime import timedelta
 
 from django.conf import settings
@@ -273,6 +274,171 @@ class AlertState(models.Model):
         return f"{self.key} ({'resolved' if self.resolved_at else 'open'})"
 
 
+class ChatProject(models.Model):
+    """A folder of related conversations, with instructions they all inherit.
+
+    The grouping is the cheap half. The reason a project is a database row
+    rather than a label on the sidebar is `instructions`: standing context that
+    is prepended to the system prompt for every session inside it, so "I am
+    training for a half marathon in October" is typed once instead of at the top
+    of every chat. That is the only thing here the model actually reads, and it
+    is deliberately free text the user wrote about themselves — never anything
+    derived from their health records.
+    """
+
+    name = models.CharField(max_length=120)
+    instructions = models.TextField(
+        blank=True,
+        help_text="Standing context prepended to the system prompt for every session "
+        "in this project.",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="chat_projects",
+        null=True,
+        blank=True,
+    )
+    archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name",)
+
+    def as_dict(self, session_count: int | None = None) -> dict:
+        payload = {
+            "id": self.pk,
+            "name": self.name,
+            "instructions": self.instructions,
+            "archived": self.archived,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+        }
+        if session_count is not None:
+            payload["session_count"] = session_count
+        return payload
+
+    def __str__(self):
+        return self.name
+
+
+class ChatSession(models.Model):
+    """One conversation: an ordered run of turns that share a context window.
+
+    The primary key is a UUID rather than a sequence. Session ids travel in URLs
+    the browser keeps and in the export endpoint's filters, and a guessable
+    integer over health conversations is an enumeration invitation for no gain.
+
+    `last_message_at` is set at creation and touched on every stored turn, so
+    the sidebar can order by recency without a subquery and a brand-new empty
+    chat still sorts to the top where the person just clicked. Ordering on
+    `updated_at` instead would reshuffle the list every time a title was edited.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(
+        ChatProject,
+        on_delete=models.SET_NULL,
+        related_name="sessions",
+        null=True,
+        blank=True,
+        help_text="Null means the chat sits outside any project.",
+    )
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="chat_sessions",
+        null=True,
+        blank=True,
+    )
+    title = models.CharField(max_length=200, blank=True)
+    # Set once somebody renames a chat by hand, which stops the first-question
+    # autotitle from overwriting their name on the next message.
+    title_locked = models.BooleanField(default=False)
+    archived = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_message_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    # Compaction. `summary` stands in for every turn up to `summary_through_at`
+    # when the conversation is replayed, so a long chat keeps its thread instead
+    # of losing its opening to a turn cap.
+    #
+    # It replaces those turns *in the prompt only*. The transcript on screen and
+    # in the export is never rewritten — compaction exists to fit a context
+    # window, and destroying what was actually said to save room would be a
+    # strange trade in a system built around auditable answers.
+    summary = models.TextField(blank=True)
+    # A timestamp rather than a foreign key to the last folded turn: retention
+    # deletes turns, and a FK would go null and leave a summary covering an
+    # unknown range. A timestamp still answers "what comes after this".
+    summary_through_at = models.DateTimeField(null=True, blank=True)
+    summary_turns = models.IntegerField(default=0)
+    summarised_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ("-last_message_at",)
+        indexes = [models.Index(fields=["owner", "-last_message_at"])]
+
+    TITLE_CHARS = 60
+
+    def pending_turns(self):
+        """Turns not yet folded into the summary, oldest first."""
+        queryset = self.turns.order_by("created_at")
+        if self.summary_through_at:
+            queryset = queryset.filter(created_at__gt=self.summary_through_at)
+        return queryset
+
+    def clear_summary(self) -> None:
+        self.summary = ""
+        self.summary_through_at = None
+        self.summary_turns = 0
+        self.summarised_at = None
+
+    def autotitle(self, question: str) -> None:
+        """Name an untitled chat after its first question.
+
+        Deterministic on purpose. Asking the model for a title would mean a
+        second generation — tens of seconds on a local GPU — to produce
+        something the first line of the question already says.
+        """
+        if self.title_locked or self.title:
+            return
+        text = " ".join((question or "").split())
+        if not text:
+            return
+        self.title = text if len(text) <= self.TITLE_CHARS else text[: self.TITLE_CHARS - 1] + "…"
+
+    def touch(self, when=None) -> None:
+        self.last_message_at = when or timezone.now()
+
+    def as_dict(self, *, message_count: int | None = None, preview: str | None = None) -> dict:
+        payload = {
+            "id": str(self.pk),
+            "title": self.title or "New chat",
+            "project_id": self.project_id,
+            "archived": self.archived,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "last_message_at": self.last_message_at.isoformat(),
+            "summary": self.summary or None,
+            "summary_turns": self.summary_turns,
+            "summary_through_at": (
+                self.summary_through_at.isoformat() if self.summary_through_at else None
+            ),
+            "summarised_at": self.summarised_at.isoformat() if self.summarised_at else None,
+        }
+        if message_count is not None:
+            payload["message_count"] = message_count
+        if preview is not None:
+            payload["preview"] = preview
+        return payload
+
+    def __str__(self):
+        return self.title or f"chat {self.pk}"
+
+
 class InsightTurn(models.Model):
     """One question and the answer that came back.
 
@@ -284,8 +450,20 @@ class InsightTurn(models.Model):
     second copy would only widen what a deletion request has to reach. §8 of the
     integration notes also asks that prompts and responses not be retained
     indefinitely, which `prune` enforces.
+
+    `session` is nullable because turns predate sessions and because the phone
+    and the `weekly_review` command both ask questions without opening a chat.
+    A turn with no session is still a stored question subject to retention; it
+    simply does not appear in the sidebar.
     """
 
+    session = models.ForeignKey(
+        ChatSession,
+        on_delete=models.CASCADE,
+        related_name="turns",
+        null=True,
+        blank=True,
+    )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -298,12 +476,47 @@ class InsightTurn(models.Model):
     safety = models.JSONField(null=True, blank=True)
     tool_calls = models.JSONField(null=True, blank=True)
     model_name = models.CharField(max_length=128, blank=True)
+    # Digest of the prompt text this build sent. Without it, answers written
+    # before and after a prompt edit are indistinguishable in the export, and
+    # "did my change help?" can only ever be answered about a single undated
+    # blur of every answer ever given.
+    prompt_version = models.CharField(max_length=16, blank=True, db_index=True)
     latency_ms = models.IntegerField(default=0)
+    # Reported by the model server, so exact rather than estimated. Kept for two
+    # reasons: a feedback loop wants to know what an answer cost, and the
+    # compaction budget calibrates its own character-based estimate against the
+    # last turn's real figure.
+    prompt_tokens = models.IntegerField(default=0)
+    completion_tokens = models.IntegerField(default=0)
     error = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
+    # What the person thought of the answer.
+    #
+    # The only field on this model somebody sets by hand, and the only one that
+    # can be changed after the fact — everything else is a record of what
+    # happened and editing it would destroy the reason to keep it. This is the
+    # signal a feedback loop is actually built on: the rest of the row says what
+    # the system did, and this says whether it was any good.
+    #
+    # `note` matters more than the thumb. "Used the wrong sleep window" is
+    # something you can act on; a bare thumbs-down over a hundred answers tells
+    # you the score and not the reason.
+    class Rating(models.IntegerChoices):
+        DOWN = -1, "Not useful"
+        UP = 1, "Useful"
+
+    rating = models.SmallIntegerField(
+        null=True, blank=True, choices=Rating.choices, db_index=True
+    )
+    note = models.TextField(blank=True)
+    rated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ("-created_at",)
+        indexes = [models.Index(fields=["session", "created_at"])]
+
+    NOTE_CHARS = 2000
 
     @staticmethod
     def retention_days() -> int:
@@ -312,24 +525,93 @@ class InsightTurn(models.Model):
         except ValueError:
             return 30
 
+    @staticmethod
+    def keep_rated() -> bool:
+        """Whether a turn you rated outlives the retention window.
+
+        On by default, and that is a deliberate softening of §8 rather than an
+        oversight. Retention exists so health questions are not kept
+        indefinitely *by default*; a thumb or a note is the data subject — the
+        only person involved — explicitly marking one as worth keeping. Without
+        this the feedback loop can never hold more than thirty days of judged
+        answers, which caps it at roughly nothing.
+
+        `INSIGHT_KEEP_RATED=0` restores the stricter behaviour, and the
+        retention table in docs/PRIVACY.md says which is in force.
+        """
+        return os.environ.get("INSIGHT_KEEP_RATED", "1").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+        )
+
     @classmethod
     def prune(cls) -> int:
+        """Delete expired turns, then the chats left holding nothing.
+
+        The second half is not tidiness. Retention deletes the messages but the
+        session row survives it, so a sidebar built on sessions alone would list
+        month-old conversations that open empty — which reads as data loss
+        rather than as the retention policy working. Sessions younger than the
+        cutoff are left alone even when empty: that is a chat someone just
+        opened and has not typed in yet.
+        """
         cutoff = timezone.now() - timedelta(days=cls.retention_days())
-        deleted, _ = cls.objects.filter(created_at__lt=cutoff).delete()
+        expired = cls.objects.filter(created_at__lt=cutoff)
+        if cls.keep_rated():
+            expired = expired.filter(rating__isnull=True, note="")
+        deleted, _ = expired.delete()
+
+        # A compaction is generated *from* questions. Once the newest turn it
+        # folded in has aged out, every question behind it is gone and the
+        # summary is the only surviving description of them — which would make
+        # retention a thing you can read around. Clear it.
+        for session in ChatSession.objects.filter(summary_through_at__lt=cutoff).exclude(summary=""):
+            session.clear_summary()
+            session.save(
+                update_fields=[
+                    "summary",
+                    "summary_through_at",
+                    "summary_turns",
+                    "summarised_at",
+                    "updated_at",
+                ]
+            )
+
+        ChatSession.objects.filter(turns__isnull=True, created_at__lt=cutoff).delete()
         return deleted
 
     def as_dict(self) -> dict:
         return {
             "id": self.pk,
+            "session_id": str(self.session_id) if self.session_id else None,
             "question": self.question,
             "answer": self.answer,
             "safety": self.safety,
             "tool_calls": self.tool_calls,
             "model_name": self.model_name,
+            "prompt_version": self.prompt_version,
             "latency_ms": self.latency_ms,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
             "error": self.error,
             "created_at": self.created_at.isoformat(),
+            "rating": self.rating,
+            "note": self.note,
+            "rated_at": self.rated_at.isoformat() if self.rated_at else None,
         }
+
+    def set_feedback(self, rating, note: str) -> None:
+        """Record what somebody thought of this answer.
+
+        Clearing is a first-class outcome rather than an oversight: people
+        mis-tap, and a rating you cannot take back is one nobody trusts enough
+        to give. `rated_at` goes with it, so an un-rated turn does not look like
+        one that was rated at some point and then blanked.
+        """
+        self.rating = rating
+        self.note = (note or "")[: self.NOTE_CHARS]
+        self.rated_at = timezone.now() if (rating is not None or self.note) else None
 
     def __str__(self):
         return f"{self.created_at:%Y-%m-%d %H:%M} {self.question[:60]}"

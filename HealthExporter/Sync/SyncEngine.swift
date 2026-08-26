@@ -49,6 +49,11 @@ final class SyncEngine: ObservableObject {
         var statisticsLookbackDays: Int = 90
         var sink = SinkConfiguration()
         var lastFullSyncAt: Date?
+        /// When a batch was last *accepted by the server*, as distinct from
+        /// when a sync last ran. A read pass finishing changes nothing about
+        /// whether anything arrived, and conflating the two is what let weeks
+        /// of failed uploads sit behind a recent-looking timestamp.
+        var lastDeliveryAt: Date?
     }
 
     /// Result of the last manual Test Connection.
@@ -96,11 +101,50 @@ final class SyncEngine: ObservableObject {
     private var rerunRequested = false
     private var debounceTask: Task<Void, Never>?
 
+    /// When the last progress update was published, for the throttle below.
+    private var lastPhasePublish = DispatchTime.now()
+
+    /// Minimum gap between two *progress* updates.
+    ///
+    /// `phase` is `@Published` on an object seven views observe, and
+    /// `ObservableObject` has no per-property tracking: every assignment
+    /// invalidates all of them, re-evaluating bodies that draw charts and read
+    /// disk-backed state. A full sync assigns it once per type — around 130
+    /// times — and delivery once per batch. Nobody can read 130 updates a
+    /// second, so the UI is given five and the main thread keeps the rest.
+    private static let progressPublishInterval: Double = 0.2
+
+    /// The only way `phase` is set for progress. Terminal states go through it
+    /// too and are never throttled — a swallowed `.idle` leaves a spinner
+    /// turning over a sync that finished, which is worse than a coarse progress
+    /// readout.
+    private func report(_ next: Phase) {
+        guard next != phase else { return }
+
+        let sameKind: Bool
+        switch (phase, next) {
+        case (.syncing, .syncing), (.delivering, .delivering): sameKind = true
+        default: sameKind = false
+        }
+
+        let now = DispatchTime.now()
+        if sameKind {
+            let elapsed = Double(now.uptimeNanoseconds - lastPhasePublish.uptimeNanoseconds)
+                / 1_000_000_000
+            guard elapsed >= Self.progressPublishInterval else { return }
+        }
+        lastPhasePublish = now
+        phase = next
+    }
+
     init(authorization: HealthAuthorization) {
         self.authorization = authorization
         self.reader = HealthReader(healthStore: authorization.healthStore)
         self.settings = settingsStore.value
-        self.pendingBatches = Outbox.shared.pendingCount
+        // Not `Outbox.shared.pendingCount`: that is a directory listing, and an
+        // initialiser on the launch path is the worst place to do one. It is
+        // filled in by `refreshCounts()` a moment later, off the main thread.
+        self.pendingBatches = 0
         migrateSupersededPin()
         migrateStatisticsLookback()
     }
@@ -115,16 +159,29 @@ final class SyncEngine: ObservableObject {
         Log.shared.info("sync", "Raised statistics lookback to 90 days for deduplicated daily totals")
     }
 
-    /// Moves a stored pin forward when the server certificate has been rotated.
+    /// Moves a stored pin forward when the server certificate has been rotated,
+    /// and now also clears it when the server has stopped needing one at all.
     ///
     /// The persisted value wins over `defaultPin`, so without this a rotation
     /// would strand every existing install on a pin that no longer matches —
-    /// visible only as uploads that silently stop.
+    /// visible only as uploads that silently stop. `defaultPin` is empty since
+    /// the server moved to a Let's Encrypt certificate, so for an install still
+    /// carrying the self-signed fingerprint this now means "stop pinning and
+    /// validate normally", which is the correct outcome rather than a
+    /// workaround for one.
+    ///
+    /// A pin somebody typed themselves is left alone: only the fingerprints
+    /// this app has actually shipped are recognised here.
     private func migrateSupersededPin() {
         let stored = CertificatePinner.normalize(settings.sink.pinnedCertificateSHA256)
         guard SinkConfiguration.supersededPins.contains(stored) else { return }
         settings.sink.pinnedCertificateSHA256 = SinkConfiguration.defaultPin
-        Log.shared.info("sink", "Updated stored certificate pin after server certificate rotation")
+        Log.shared.info(
+            "sink",
+            SinkConfiguration.defaultPin.isEmpty
+                ? "Cleared the stored certificate pin — the server now presents a publicly trusted certificate"
+                : "Updated stored certificate pin after server certificate rotation"
+        )
     }
 
     /// Metrics worth a deduplicated daily rollup. Deliberately a short list: the
@@ -175,9 +232,9 @@ final class SyncEngine: ObservableObject {
         var failures = 0
 
         for (index, type) in types.enumerated() {
-            phase = .syncing(metric: type.identifier.healthKitSlug,
-                             progress: index + 1,
-                             total: types.count)
+            report(.syncing(metric: type.identifier.healthKitSlug,
+                            progress: index + 1,
+                            total: types.count))
             do {
                 totalEmitted += try await drain(type: type)
             } catch let error as HealthReader.ReadError {
@@ -196,14 +253,14 @@ final class SyncEngine: ObservableObject {
         }
 
         totalEmitted += await syncStatistics()
-        totalEmitted += emitCharacteristicsIfNeeded()
+        totalEmitted += await emitCharacteristicsIfNeeded()
 
         await deliverPending()
 
         settings.lastFullSyncAt = Date()
         let elapsed = Int(Date().timeIntervalSince(started))
         lastSummary = "\(totalEmitted) records in \(elapsed)s" + (failures > 0 ? ", \(failures) failed" : "")
-        pendingBatches = Outbox.shared.pendingCount
+        refreshCounts()
         // Preserve both terminal states rather than flattening to idle. The
         // read half of a run can finish perfectly while delivery is dead — an
         // expired token stops the upload circuit breaker, and overwriting that
@@ -216,7 +273,10 @@ final class SyncEngine: ObservableObject {
         default: phase = .idle
         }
         Log.shared.info("sync", "Finished: \(lastSummary ?? "")")
-        Outbox.shared.pruneArchive()
+        // Housekeeping, so nothing waits on it. The archive has been measured
+        // at 640MB after a first sync, and enumerating and deleting that on the
+        // main actor is a stall for work no one is looking at.
+        Task.detached(priority: .background) { await Outbox.shared.pruneArchiveOffMain() }
 
         isSyncing = false
         if rerunRequested {
@@ -267,7 +327,7 @@ final class SyncEngine: ObservableObject {
             }
         }
         await deliverPending()
-        pendingBatches = Outbox.shared.pendingCount
+        refreshCounts()
         Log.shared.info("sync", "Flagged drain emitted \(emitted) records")
 
         isSyncing = false
@@ -284,51 +344,27 @@ final class SyncEngine: ObservableObject {
         let cutoff = settings.backfillStartDate
 
         while true {
+            // Reading, filtering and normalising all happen on HealthKit's own
+            // queue now; what comes back is plain values. Nothing per-sample
+            // touches the main actor in this loop.
             let page = try await reader.anchoredPage(type: type,
                                                      anchor: anchor,
-                                                     limit: settings.pageSize)
-            var records: [HealthRecord] = []
-            records.reserveCapacity(page.added.count)
-            var newestEnd: Date?
+                                                     limit: settings.pageSize,
+                                                     cutoff: cutoff)
 
-            for (offset, sample) in page.added.enumerated() {
-                // HealthKit samples are Objective-C objects that pile up in the
-                // autorelease pool. Without draining it per sample, a page of
-                // 2,000 (times hundreds of pages) is a steady climb to a jetsam
-                // kill rather than flat memory use.
-                autoreleasepool {
-                    // Read but don't emit pre-cutoff samples: the anchor still
-                    // advances past them, so history is consumed without paying
-                    // to normalize and ship data the user didn't ask for.
-                    guard sample.endDate >= cutoff else { return }
-                    if let record = Normalizer.record(from: sample) {
-                        records.append(record)
-                        if sample.endDate > (newestEnd ?? .distantPast) {
-                            newestEnd = sample.endDate
-                        }
-                    }
-                }
-                // Normalization runs on the main actor, so yield periodically to
-                // keep the UI responsive instead of hanging for seconds at a time.
-                if offset % 200 == 199 { await Task.yield() }
-            }
-            // Tombstones carry no type or date, only a UUID. Emitting them is
-            // what keeps the destination from diverging permanently.
-            for deleted in page.deleted {
-                records.append(HealthRecord.deletion(uuid: deleted.uuid))
-            }
-
-            if !records.isEmpty {
-                Outbox.shared.write(records)
-                emitted += records.count
+            if !page.records.isEmpty {
+                // Encode and write happen off the main actor too; the await is
+                // what keeps the ordering below honest.
+                await Outbox.shared.write(page.records)
+                emitted += page.records.count
             }
 
             // Anchor advances only now that the page is durably on disk. Doing
             // this earlier turns any failure into silent, undetectable data loss.
-            AnchorStore.shared.setAnchor(page.newAnchor,
-                                         for: identifier,
-                                         lastSampleEnd: newestEnd,
-                                         added: records.count)
+            await AnchorStore.shared.setAnchor(page.newAnchor,
+                                               for: identifier,
+                                               lastSampleEnd: page.newestEnd,
+                                               added: page.records.count)
             anchor = page.newAnchor
             pages += 1
 
@@ -356,10 +392,20 @@ final class SyncEngine: ObservableObject {
                                           to: end) ?? end
         var emitted: [HealthRecord] = []
 
+        // Rollups have to follow the same enabled list the raw samples do.
+        // This loop used to walk `statisticsMetrics` unconditionally while the
+        // sample pass walked `enabledSampleTypes`, so turning a group off on the
+        // Metrics tab stopped its samples and left its rollups arriving — and a
+        // discrete metric with only rollups behind it has nothing the server can
+        // read for an average, so it reported as never recorded. Switching a
+        // group off should stop the metric, not half of it.
+        let enabled = authorization.enabledSampleTypes
+
         for name in SyncEngine.statisticsMetrics {
             guard let type = HKObjectType.quantityType(
                 forIdentifier: MetricCatalog.quantityIdentifier(name)
             ) else { continue }
+            guard enabled.contains(type) else { continue }
             guard let unit = UnitResolver.shared.staticUnit(for: type) else { continue }
 
             do {
@@ -375,7 +421,7 @@ final class SyncEngine: ObservableObject {
         }
 
         guard !emitted.isEmpty else { return 0 }
-        Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
+        await Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
         Log.shared.info("stats", "Emitted \(emitted.count) daily rollups")
         return emitted.count
     }
@@ -395,12 +441,12 @@ final class SyncEngine: ObservableObject {
 
     /// Static profile data — re-emitted monthly rather than every sync, since it
     /// changes approximately never.
-    private func emitCharacteristicsIfNeeded() -> Int {
+    private func emitCharacteristicsIfNeeded() async -> Int {
         let last = characteristicsStore.value.lastEmittedAt ?? .distantPast
         guard Date().timeIntervalSince(last) > 30 * 86_400 else { return 0 }
         let records = reader.characteristics()
         guard !records.isEmpty else { return 0 }
-        Outbox.shared.write(records)
+        await Outbox.shared.write(records)
         characteristicsStore.mutate { $0.lastEmittedAt = Date() }
         return records.count
     }
@@ -437,7 +483,7 @@ final class SyncEngine: ObservableObject {
         // Reconciling then would rewind an anchor, re-read history that is
         // already queued, spool more of it, and keep the outbox non-empty —
         // a loop that never settles.
-        let queued = Outbox.shared.pendingCount
+        let queued = await Outbox.shared.pendingCountOffMain()
         guard queued == 0 else {
             Log.shared.debug("reconcile", "Skipped: \(queued) batch(es) still queued")
             return
@@ -458,17 +504,28 @@ final class SyncEngine: ObservableObject {
                   local.totalRecords > 0,
                   let localEnd = local.lastSampleEnd else { continue }
 
-            let slug = identifier.healthKitSlug
+            // The slug these records were *uploaded* under, which is not always
+            // the one derived from the identifier.
+            let slug = Normalizer.uploadSlug(for: type)
             let remote = coverage.metrics[slug]
             let cause: String?
 
             if remote == nil || remote?.count == 0 {
                 cause = "server holds nothing for it, local delivered \(local.totalRecords)"
-            } else if let remoteEnd = remote?.latestSampleDate,
+            } else if let remoteEnd = remote?.latestSampleEndDate,
                       localEnd.timeIntervalSince(remoteEnd) > SyncEngine.coverageTolerance {
-                cause = "server's newest is \(Timestamps.iso8601(remoteEnd)), "
+                // Both sides are now describing the same instant. Comparing this
+                // end against the server's newest *start* — which is what the
+                // only available field used to mean — put a metric whose samples
+                // span a week permanently a week behind itself, and rewound its
+                // entire history on every launch.
+                cause = "server's newest ends \(Timestamps.iso8601(remoteEnd)), "
                     + "local reached \(Timestamps.iso8601(localEnd))"
             } else {
+                // A server too old to report the end date gets no date check at
+                // all. The count check above still catches real loss, and a
+                // wrong comparison is worse than a missing one: it re-reads
+                // years of history to fix data that was never missing.
                 cause = nil
             }
 
@@ -494,13 +551,16 @@ final class SyncEngine: ObservableObject {
             ? HTTPSink(configuration: settings.sink)
             : FileSink()
 
-        let pending = Outbox.shared.pendingBatches()
+        // A directory listing plus a stat() per file. Cheap with ten batches
+        // queued and not obviously cheap with several hundred, which is what a
+        // stalled upload leaves behind.
+        let pending = await Outbox.shared.pendingBatchesOffMain()
         guard !pending.isEmpty else { return }
 
         // FileSink is a no-op: the files stay put for the share sheet, which is
         // exactly the v1 behaviour. Nothing to deliver, nothing to archive.
         guard !(sink is FileSink) else {
-            pendingBatches = pending.count
+            publishPendingBatches(pending.count)
             return
         }
 
@@ -512,7 +572,7 @@ final class SyncEngine: ObservableObject {
         let authFailureLimit = 3
 
         for (index, batch) in pending.enumerated() {
-            phase = .delivering(remaining: pending.count - index)
+            report(.delivering(remaining: pending.count - index))
             var attempt = 0
             var delay: UInt64 = 2_000_000_000 // 2s
 
@@ -522,6 +582,7 @@ final class SyncEngine: ObservableObject {
                 case .success:
                     Outbox.shared.archive(batch)
                     Log.shared.info("deliver", "\(batch.displayName) accepted")
+                    settings.lastDeliveryAt = Date()
                     consecutiveAuthFailures = 0
                     attempt = .max
                 case .failure(let error):
@@ -554,11 +615,11 @@ final class SyncEngine: ObservableObject {
                 Log.shared.error("deliver",
                     "Stopped after \(consecutiveAuthFailures) authentication failures; "
                     + "\(pending.count - index - 1) batch(es) left queued. Sign in again in Settings.")
-                pendingBatches = Outbox.shared.pendingCount
+                refreshCounts()
                 return
             }
         }
-        pendingBatches = Outbox.shared.pendingCount
+        refreshCounts()
     }
 
     /// True once a token is held, whether it was pasted in or obtained by
@@ -613,6 +674,7 @@ final class SyncEngine: ObservableObject {
         let sink = HTTPSink(configuration: settings.sink)
         if case .success(let overview) = await sink.fetchOverview() {
             trends = overview
+            saveCachedViews()
         }
         // Deliberately silent on failure: the charts are a nicety, and the
         // Server tab already surfaces connection problems properly. Throwing an
@@ -631,14 +693,100 @@ final class SyncEngine: ObservableObject {
     /// in doubt.
     @Published private(set) var snapshot: HealthSnapshot?
     @Published private(set) var snapshotError: String?
-    @Published private(set) var insight: InsightResult?
     @Published private(set) var insightError: String?
     @Published private(set) var insightStatus: InsightStatus?
     @Published private(set) var isAsking = false
-    /// Kept so the transcript can show the question beside its answer. Set
-    /// before the request rather than after, so the bubble appears immediately
-    /// instead of arriving with the reply half a minute later.
-    @Published private(set) var lastQuestion: String?
+
+    // MARK: - Conversations
+
+    /// The conversation on screen, oldest turn first.
+    ///
+    /// This replaced a single `insight` and `lastQuestion`. The screen has
+    /// always *looked* like a chat; holding one question and one answer meant
+    /// asking a second thing silently erased the first, and a follow-up reached
+    /// the model with no idea what came before.
+    @Published private(set) var transcript: [ChatTurn] = []
+    /// What the server is doing right now, while a question is in flight. Empty
+    /// between questions and whenever the poll has nothing to report yet.
+    @Published private(set) var askingLabel: String = ""
+    /// Which conversation the next question joins. Nil means the next question
+    /// opens one — the session is created by the ask itself, so a question that
+    /// never lands cannot strand an empty chat in the history.
+    @Published private(set) var activeSessionId: String?
+    @Published private(set) var activeTitle: String?
+    @Published private(set) var activeSummary: String?
+    @Published private(set) var activeSummaryTurns = 0
+    @Published private(set) var contextUsed: Double?
+    @Published private(set) var pendingTurns = 0
+
+    @Published private(set) var chats: [ChatSession] = []
+    @Published private(set) var chatProjects: [ChatProject] = []
+    @Published private(set) var totalChats = 0
+    @Published private(set) var isLoadingChats = false
+    /// Why the history list is empty, when the reason is not "there are none".
+    ///
+    /// Worth its own field: a failed request and an empty history look
+    /// identical on screen otherwise, and "No chats yet" is a confident,
+    /// wrong answer to give somebody whose token has just expired.
+    @Published private(set) var chatsError: String?
+    @Published private(set) var isLoadingTranscript = false
+    @Published private(set) var isCompacting = false
+    /// Said out loud rather than left to be noticed — a conversation that
+    /// quietly forgets its opening is the failure this replaces.
+    @Published var chatNotice: String?
+
+    /// Which chat was open when the app was last closed.
+    ///
+    // MARK: - Cached views
+
+    /// The last figures the server gave us, kept on disk.
+    ///
+    /// Everything on the first screen used to come from a network round trip, so
+    /// every launch showed placeholder text until it landed — on a slow
+    /// connection, or none, that was the whole experience of opening the app.
+    /// None of it is secret from the person holding the phone and none of it
+    /// changes minute to minute, so the honest default is to show what was true
+    /// last time immediately, and correct it when the network answers.
+    struct CachedViews: Codable {
+        var snapshot: HealthSnapshot?
+        var trends: AnalyticsOverview?
+        var insightStatus: InsightStatus?
+        var savedAt: Date?
+    }
+
+    private let viewCache = StateStore<CachedViews>(
+        filename: "view-cache.json", fallback: CachedViews()
+    )
+
+    /// When the cached figures were written, so the UI can say how old they are
+    /// rather than presenting them as current.
+    @Published private(set) var cachedAt: Date?
+
+    /// Publishes the cached figures. Anything already fetched this session wins.
+    func restoreCachedViews() async {
+        let store = viewCache
+        let cached = await Task.detached(priority: .userInitiated) { store.value }.value
+        if snapshot == nil { snapshot = cached.snapshot }
+        if trends == nil { trends = cached.trends }
+        if insightStatus == nil { insightStatus = cached.insightStatus }
+        cachedAt = cached.savedAt
+
+        // The conversation that was on screen last time is deliberately *not*
+        // reopened. Arriving at the tab is arriving at a new question, and a
+        // chat from days ago presented as though it were still going invites
+        // asking a follow-up to something already answered. The old chat is one
+        // tap away in the history drawer, which is where a finished conversation
+        // belongs.
+    }
+
+    private func saveCachedViews() {
+        let payload = CachedViews(
+            snapshot: snapshot, trends: trends, insightStatus: insightStatus, savedAt: Date()
+        )
+        cachedAt = payload.savedAt
+        let store = viewCache
+        Task { await store.mutateOffMain { $0 = payload } }
+    }
 
     func refreshSnapshot() async {
         guard settings.sink.endpoint != nil, isSignedIn else {
@@ -658,47 +806,259 @@ final class SyncEngine: ObservableObject {
         if case .success(let status) = await sink.fetchInsightStatus() {
             insightStatus = status
         }
+        saveCachedViews()
     }
 
     func ask(_ question: String, context: String = "", remember: Bool = true) async {
+        await run(question) { sink, sessionId, progressKey in
+            await sink.ask(
+                question: question, context: context, remember: remember,
+                sessionId: sessionId, progressKey: progressKey
+            )
+        }
+    }
+
+    func requestWeeklyReview() async {
+        await run("Weekly review") { sink, sessionId, _ in
+            await sink.weeklyReview(sessionId: sessionId)
+        }
+    }
+
+    /// Ask something, and put the answer where it belongs.
+    ///
+    /// The turn is appended before the request so the question appears the
+    /// instant it is sent rather than half a minute later with the reply. It is
+    /// completed in place afterwards, which is why `ChatTurn` carries a stable
+    /// id: SwiftUI animates the bubble filling in instead of swapping one row
+    /// for another.
+    private func run(
+        _ question: String,
+        _ call: @escaping (HTTPSink, String?, String) async -> Result<InsightResult, Error>
+    ) async {
         guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
         isAsking = true
         insightError = nil
-        lastQuestion = question
-        insight = nil
-        defer { isAsking = false }
+        chatNotice = nil
+
+        let pending = ChatTurn(question: question, isPending: true)
+        transcript.append(pending)
+
+        // The key is minted here, before the request, so the poll can start
+        // while the answer is still being written — which is the whole point,
+        // since the request is what takes fifteen to ninety seconds.
+        let progressKey = UUID().uuidString
+        let watcher = watchProgress(key: progressKey)
+        defer {
+            watcher.cancel()
+            askingLabel = ""
+            isAsking = false
+        }
 
         let sink = HTTPSink(configuration: settings.sink)
-        switch await sink.ask(question: question, context: context, remember: remember) {
+        switch await call(sink, activeSessionId, progressKey) {
         case .success(let result):
-            insight = result
+            if let index = transcript.firstIndex(where: { $0.id == pending.id }) {
+                transcript[index].complete(with: result)
+            }
+            // The server says which conversation the turn landed in, including
+            // when it just opened one.
+            if let sessionId = result.sessionId {
+                adopt(sessionId)
+            }
+            if let folded = result.compacted, folded > 0 {
+                chatNotice = "Compacted \(folded) earlier messages to fit the model\u{2019}s context. Nothing was deleted."
+                await refreshActiveTranscript()
+            }
+            await loadChats()
         case .failure(let error):
+            transcript.removeAll { $0.id == pending.id }
             insightError = error.localizedDescription
             Log.shared.error("insight", "Question failed: \(error.localizedDescription)")
         }
     }
 
-    func requestWeeklyReview() async {
-        guard !isAsking, settings.sink.endpoint != nil, isSignedIn else { return }
-        isAsking = true
+    /// Polls what the server is doing, for as long as the answer takes.
+    ///
+    /// Every failure is silent and terminal: this is decoration over a request
+    /// that is working perfectly well without it, so a poll that throttles,
+    /// 404s or times out simply stops and leaves the last label on screen. It
+    /// must never be able to surface an error beside an answer that is about to
+    /// arrive.
+    private func watchProgress(key: String) -> Task<Void, Never> {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled, let self else { return }
+                let sink = HTTPSink(configuration: self.settings.sink)
+                switch await sink.insightProgress(key: key) {
+                case .success(let note):
+                    if note.done { return }
+                    if !note.label.isEmpty { self.askingLabel = note.label }
+                case .failure:
+                    return
+                }
+            }
+        }
+    }
+
+    private func adopt(_ sessionId: String) {
+        guard activeSessionId != sessionId else { return }
+        activeSessionId = sessionId
+    }
+
+    /// Start a new conversation. Nothing is created server-side until the first
+    /// question — an empty chat in the history is a piece of litter nobody can
+    /// tell apart from a real one.
+    func newChat() {
+        transcript = []
+        activeSessionId = nil
+        activeTitle = nil
+        activeSummary = nil
+        activeSummaryTurns = 0
+        contextUsed = nil
+        pendingTurns = 0
         insightError = nil
-        lastQuestion = "Weekly review"
-        insight = nil
-        defer { isAsking = false }
+        chatNotice = nil
+    }
+
+    func openChat(_ sessionId: String) async {
+        guard settings.sink.endpoint != nil, isSignedIn, !isAsking else { return }
+        isLoadingTranscript = true
+        insightError = nil
+        chatNotice = nil
+        defer { isLoadingTranscript = false }
 
         let sink = HTTPSink(configuration: settings.sink)
-        switch await sink.weeklyReview() {
-        case .success(let result):
-            insight = result
+        switch await sink.chatTranscript(sessionId) {
+        case .success(let body):
+            apply(body)
+            adopt(body.id)
         case .failure(let error):
             insightError = error.localizedDescription
         }
     }
 
-    func clearInsight() {
-        insight = nil
-        insightError = nil
-        lastQuestion = nil
+    private func apply(_ body: ChatTranscript) {
+        // A turn already on screen keeps the identity SwiftUI knows it by. This
+        // runs on every reload, including the one that follows a compaction
+        // *during* a conversation — without it, the answer that had just landed
+        // is a different row to SwiftUI than the one it replaces, so the bubble
+        // the reader is looking at is torn down and rebuilt underneath them.
+        let known = Dictionary(
+            transcript.compactMap { turn in turn.storedId.map { ($0, turn.id) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        transcript = body.messages.map { message in
+            var turn = ChatTurn(stored: message)
+            if let existing = known[message.id] { turn.id = existing }
+            return turn
+        }
+        activeTitle = body.title
+        activeSummary = body.summary
+        activeSummaryTurns = body.summaryTurns
+        contextUsed = body.context?.used
+        pendingTurns = body.context?.pendingTurns ?? 0
+    }
+
+    private func refreshActiveTranscript() async {
+        guard let sessionId = activeSessionId else { return }
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success(let body) = await sink.chatTranscript(sessionId) {
+            apply(body)
+        }
+    }
+
+    /// The history list. Titles only — the transcript is fetched when a chat is
+    /// opened, and only then.
+    func loadChats(search: String = "", more: Bool = false) async {
+        guard settings.sink.endpoint != nil, isSignedIn else { return }
+        isLoadingChats = true
+        defer { isLoadingChats = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        let offset = more ? chats.count : 0
+        switch await sink.chatSessions(offset: offset, search: search) {
+        case .success(let page):
+            chats = more ? chats + page.sessions : page.sessions
+            totalChats = page.total
+            chatsError = nil
+        case .failure(let error):
+            chatsError = error.localizedDescription
+            Log.shared.error("insight", "Could not list chats: \(error.localizedDescription)")
+        }
+        if case .success(let list) = await sink.chatProjects() {
+            chatProjects = list.projects
+        }
+    }
+
+    var hasMoreChats: Bool { chats.count < totalChats }
+
+    func renameChat(_ sessionId: String, to title: String) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success = await sink.renameChat(sessionId, title: title) {
+            if sessionId == activeSessionId { activeTitle = title }
+            await loadChats()
+        }
+    }
+
+    func archiveChat(_ sessionId: String) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        if case .success = await sink.archiveChat(sessionId, archived: true) {
+            if sessionId == activeSessionId { newChat() }
+            await loadChats()
+        }
+    }
+
+    func deleteChat(_ sessionId: String) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.deleteChat(sessionId) {
+        case .success:
+            if sessionId == activeSessionId { newChat() }
+            await loadChats()
+        case .failure(let error):
+            insightError = error.localizedDescription
+        }
+    }
+
+    /// Fold the older half of this conversation into a written summary.
+    ///
+    /// Affects what the model is sent, never the transcript: destroying what was
+    /// actually said to save room would be a strange trade in a system built
+    /// around answers you can go back and check.
+    func compactActiveChat() async {
+        guard let sessionId = activeSessionId, !isCompacting, !isAsking else { return }
+        isCompacting = true
+        chatNotice = nil
+        defer { isCompacting = false }
+
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.compactChat(sessionId) {
+        case .success(let result):
+            chatNotice = result.compacted
+                ? "Compacted \(result.turns) earlier messages. The transcript is unchanged."
+                : "Nothing compacted: \(result.reason ?? "not enough conversation yet")."
+            await refreshActiveTranscript()
+        case .failure(let error):
+            insightError = error.localizedDescription
+        }
+    }
+
+    /// Record what you made of one answer.
+    ///
+    /// Updated from the server's reply rather than optimistically: this is the
+    /// data a feedback loop is built on, and a thumb that looks saved but is not
+    /// would poison it quietly.
+    func rate(turnId: Int, rating: Int?, note: String? = nil) async {
+        let sink = HTTPSink(configuration: settings.sink)
+        switch await sink.rateAnswer(turnId, rating: rating, note: note) {
+        case .success(let updated):
+            if let index = transcript.firstIndex(where: { $0.storedId == turnId }) {
+                transcript[index].rating = updated.rating
+                transcript[index].note = updated.note
+            }
+        case .failure(let error):
+            insightError = error.localizedDescription
+        }
     }
 
     func refreshServerStatus(fresh: Bool = false) async {
@@ -747,7 +1107,31 @@ final class SyncEngine: ObservableObject {
         lastSummary = "Anchors cleared"
     }
 
+    /// Fire-and-forget: callers are views appearing, and none of them should
+    /// wait on a directory listing to draw.
+    ///
+    /// The request token is what makes that safe. Counting the queue moved off
+    /// the main thread, which means a read can still be in flight when delivery
+    /// finishes and publishes zero — and the older read then lands last and puts
+    /// the number back up. That is a queue reported as stuck with an empty
+    /// outbox behind it: uploads working perfectly, and a UI saying otherwise.
     func refreshCounts() {
-        pendingBatches = Outbox.shared.pendingCount
+        pendingCountRequest += 1
+        let request = pendingCountRequest
+        Task {
+            let count = await Outbox.shared.pendingCountOffMain()
+            // Somebody published a newer figure while this was reading. They
+            // know something this read does not.
+            guard request == pendingCountRequest else { return }
+            pendingBatches = count
+        }
     }
+
+    /// Publishes a count directly, invalidating any read still in flight.
+    private func publishPendingBatches(_ value: Int) {
+        pendingCountRequest += 1
+        pendingBatches = value
+    }
+
+    private var pendingCountRequest = 0
 }

@@ -47,15 +47,28 @@ struct StatusView: View {
                 .padding(.bottom, 28)
             }
             .background(Color(.systemGroupedBackground))
+            // Nothing on this screen takes text input, so it has no reason to
+            // respond to the keyboard — and responding is expensive. Keyboard
+            // avoidance is a scene-wide geometry change, so a keyboard raised on
+            // the Insights tab was re-laying out this screen's charts too, which
+            // is what the "falling back to a fixed dimension size" warning
+            // appearing beside those hangs was telling us.
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .navigationTitle("Summary")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) { syncButton }
             }
             .task { await load() }
+            // Anchors only move during a sync, so that is the only moment the
+            // coverage line can have changed.
+            .onChange(of: engine.phase.isRunning) { _, running in
+                if !running { refreshCoverageSummary() }
+            }
         }
     }
 
     private func load() async {
+        refreshCoverageSummary()
         if engine.snapshot == nil { await engine.refreshSnapshot() }
         if engine.trends == nil { await engine.refreshTrends() }
     }
@@ -202,20 +215,40 @@ struct StatusView: View {
         .contentShape(Rectangle())
     }
 
-    private var coverageSummary: String {
+    /// Cached rather than computed in `body`.
+    ///
+    /// It reads the anchor store — a lock, a dictionary of ~130 states, and a
+    /// filter over all of them — and `body` re-runs on every published change
+    /// from the sync engine. Recomputing a line that changes once a sync,
+    /// hundreds of times a sync, is the kind of cost that never shows up as a
+    /// single slow frame and is felt on every one of them.
+    @State private var coverageSummary = "—"
+
+    private func refreshCoverageSummary() {
         let states = AnchorStore.shared.all
-        guard !states.isEmpty else { return "Not tracked yet" }
+        guard !states.isEmpty else {
+            coverageSummary = "Not tracked yet"
+            return
+        }
+        let now = Date()
         let fresh = states.values.filter {
             guard let last = $0.lastSampleEnd else { return false }
-            return Date().timeIntervalSince(last) < 24 * 3600
+            return now.timeIntervalSince(last) < 24 * 3600
         }.count
-        return "\(fresh) of \(states.count) fresh"
+        coverageSummary = "\(fresh) of \(states.count) fresh"
     }
 
+    /// Says which of the two things on this screen is being described.
+    ///
+    /// The figures now come from a cache on launch, so "updated" has to mean the
+    /// figures rather than the sync — otherwise a screen full of yesterday's
+    /// numbers can sit under a line claiming everything happened a minute ago,
+    /// which is the specific dishonesty a cache invites.
     private var lastSyncLine: String {
-        guard let last = engine.settings.lastFullSyncAt else { return "Never synced" }
-        if Date().timeIntervalSince(last) < 90 { return "Updated just now" }
-        return "Updated \(last.formatted(.relative(presentation: .named)))"
+        let reference = engine.cachedAt ?? engine.settings.lastFullSyncAt
+        guard let reference else { return "Never synced" }
+        if Date().timeIntervalSince(reference) < 90 { return "Updated just now" }
+        return "Updated \(reference.formatted(.relative(presentation: .named)))"
     }
 
     private var grantAccessCard: some View {

@@ -42,6 +42,13 @@ enum MetricName {
         "headphone_audio_exposure": "Headphone Audio Levels",
         "dietary_energy_consumed": "Dietary Energy",
         "dietary_water": "Water",
+        // Only the fats need a line each: dropping the `dietary_` prefix leaves
+        // the words in the wrong order, and Health calls these "Total Fat", not
+        // "Fat Total". Every other nutrient reads correctly once it is gone.
+        "dietary_fat_total": "Total Fat",
+        "dietary_fat_saturated": "Saturated Fat",
+        "dietary_fat_monounsaturated": "Monounsaturated Fat",
+        "dietary_fat_polyunsaturated": "Polyunsaturated Fat",
         "number_of_times_fallen": "Number of Falls",
         "high_heart_rate_event": "High Heart Rate Notifications",
         "low_heart_rate_event": "Low Heart Rate Notifications",
@@ -82,6 +89,10 @@ enum MetricName {
         // part of the measurement's name. Anything still carrying it after the
         // override table reads better without it.
         if parts.count > 1, parts[0] == "apple" { parts.removeFirst() }
+        // Nor is "dietary" a word anyone says. Health lists these as "Protein"
+        // and "Calcium"; the prefix is a HealthKit namespace, and stripping it
+        // here is what keeps forty nutrients out of the override table.
+        if parts.count > 1, parts[0] == "dietary" { parts.removeFirst() }
 
         let words = parts.enumerated().map { index, part -> String in
             if uppercased.contains(part) { return part.uppercased() }

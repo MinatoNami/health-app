@@ -17,6 +17,7 @@ import logging
 from datetime import date
 
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from rest_framework import status
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import (
@@ -28,12 +29,14 @@ from rest_framework.decorators import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from . import health_analysis
+from . import correlations, health_analysis, patterns
 from .analytics_views import AUTH, AnalyticsThrottle, _FixedScopeThrottle
+from .auth import owner_of as _owner
 from .llm import client as llm_client
+from .llm import prompts as llm_prompts
 from .llm import service as llm_service
 from .llm import tools as llm_tools
-from .models import Goal, InsightTurn
+from .models import ChatProject, ChatSession, Goal, InsightTurn
 
 log = logging.getLogger(__name__)
 
@@ -57,21 +60,6 @@ def _as_of(request) -> date | None:
         return date.fromisoformat(raw)
     except ValueError:
         return None
-
-
-def _owner(request):
-    """The person behind the request, session or token.
-
-    A bearer token authenticates a *device*, not a person, so `request.user` is
-    a `TokenUser` with no primary key. But a token obtained by signing in
-    records who signed in — and using that is what stops a question asked on the
-    phone from being invisible in the dashboard's own history.
-    """
-    user = getattr(request, "user", None)
-    if getattr(user, "pk", None):
-        return user
-    token = getattr(request, "auth", None)
-    return getattr(token, "owner", None)
 
 
 # --------------------------------------------------------------------------
@@ -160,8 +148,65 @@ def sleep(request):
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
 @throttle_classes([AnalyticsThrottle])
+def nutrition(request):
+    """What was logged to eat and drink, and what that can support.
+
+    Deterministic, like every other `/v1/analysis` endpoint: the day-counts, the
+    averages over fully logged days, and the comparison against estimated energy
+    burned are all computed here. No model is involved, and none of it is a
+    recommendation about what to eat.
+    """
+    try:
+        days = min(90, max(1, int(request.query_params.get("days") or 14)))
+    except ValueError:
+        return Response({"detail": "days must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(
+        health_analysis.nutrition_summary(days=days, as_of=_as_of(request), tz_name=_tz(request))
+    )
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
 def anomalies(request):
     return Response({"anomalies": health_analysis.anomalies(as_of=_as_of(request), tz_name=_tz(request))})
+
+
+def _window(request, default: int, maximum: int):
+    try:
+        return min(maximum, max(14, int(request.query_params.get("days") or default)))
+    except ValueError:
+        return None
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def correlation_report(request):
+    """Which signals move together, with every pair that was tested.
+
+    Deterministic. The pairs are a fixed list decided in advance, corrected for
+    how many were asked, and reported as associations — this endpoint never
+    claims one metric causes another.
+    """
+    days = _window(request, correlations.DEFAULT_DAYS, correlations.MAX_DAYS)
+    if days is None:
+        return Response({"detail": "days must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(correlations.discover(days=days, as_of=_as_of(request), tz_name=_tz(request)))
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def pattern_report(request):
+    """Weekly rhythms: weekends, and any weekday that stands out."""
+    days = _window(request, patterns.DEFAULT_DAYS, patterns.MAX_DAYS)
+    if days is None:
+        return Response({"detail": "days must be a number"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(patterns.discover(days=days, as_of=_as_of(request), tz_name=_tz(request)))
 
 
 # --------------------------------------------------------------------------
@@ -298,10 +343,78 @@ def llm_status(request):
     """
     info = llm_client.status()
     info["retention_days"] = InsightTurn.retention_days()
+    # What a conversation has to fit into, and how much of it history may use
+    # before older turns are folded into a summary. Reported here rather than
+    # left to be inferred: "why did my chat just compact?" is otherwise
+    # unanswerable from the UI.
+    info["context_tokens"] = llm_service.context_tokens()
+    info["history_turns"] = llm_service.session_turns()
+    # Which prompt this build sends, so a rating can be attributed to it.
+    info["prompt_version"] = llm_prompts.VERSION
     return Response(info)
 
 
 MAX_QUESTION_CHARS = 1000
+
+
+class UnknownSession(Exception):
+    pass
+
+
+def _session(request) -> tuple[ChatSession | None, bool]:
+    """(conversation, did_this_request_create_it).
+
+    Resolved through the caller's own scope, so a session id that belongs to
+    somebody else is indistinguishable from one that does not exist. Absent
+    entirely is fine and stays the default: the phone asks one-off questions and
+    should not have to invent a chat to do it.
+
+    `start_session` is how a client opens a new chat. It creates the session
+    *here*, in the same request that will store the first turn, rather than
+    having the client create one and then ask — that ordering leaves an empty
+    chat in the sidebar forever whenever the question behind it never lands,
+    which the insight throttle alone makes a routine occurrence.
+    """
+    raw = request.data.get("session_id")
+    if raw:
+        session = (
+            llm_service.scoped(ChatSession.objects.all(), _owner(request))
+            .filter(pk=raw)
+            .first()
+        )
+        if session is None:
+            raise UnknownSession
+        return session, False
+
+    if not request.data.get("start_session"):
+        return None, False
+
+    project = None
+    project_id = request.data.get("project_id")
+    if project_id:
+        project = (
+            llm_service.scoped(ChatProject.objects.all(), _owner(request))
+            .filter(pk=project_id)
+            .first()
+        )
+    return (
+        ChatSession.objects.create(owner=_owner(request), project=project),
+        True,
+    )
+
+
+def _discard_if_empty(session, created: bool) -> bool:
+    """Undo a session this request opened but never wrote to.
+
+    The remaining orphan window after `start_session` is narrow — the throttle
+    rejects before the view runs, and `answer` stores a turn even when the model
+    is unreachable — but "narrow" is not "closed", and an empty chat is a piece
+    of litter nobody can tell apart from a real one.
+    """
+    if created and session is not None and not session.turns.exists():
+        session.delete()
+        return True
+    return False
 
 
 @api_view(["POST"])
@@ -318,16 +431,67 @@ def ask(request):
             {"detail": f"question is longer than {MAX_QUESTION_CHARS} characters"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    try:
+        session, created = _session(request)
+    except (UnknownSession, ValidationError):
+        return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
 
-    payload = llm_service.answer(
-        question,
-        context=str(request.data.get("context") or "")[:1000],
-        tz_name=_tz(request) or request.data.get("tz"),
-        owner=_owner(request),
-        persist=request.data.get("remember") is not False,
-        follow_up=bool(request.data.get("follow_up")),
-    )
+    try:
+        payload = llm_service.answer(
+            question,
+            context=str(request.data.get("context") or "")[:1000],
+            tz_name=_tz(request) or request.data.get("tz"),
+            owner=_owner(request),
+            persist=request.data.get("remember") is not False,
+            # A session carries its own history without being asked; `follow_up`
+            # stays for callers that have no session, which is how the phone asks.
+            follow_up=bool(request.data.get("follow_up")),
+            session=session,
+            # Optional, and picked by the caller so it can start polling before
+            # this request returns. Ignored unless it looks like a UUID.
+            progress_key=str(request.data.get("progress_key") or "") or None,
+        )
+    except Exception:
+        _discard_if_empty(session, created)
+        raise
+
+    if _discard_if_empty(session, created):
+        # `remember: false` is the ordinary way to get here: nothing was stored,
+        # so there is no conversation to have opened.
+        payload["session_id"] = None
     return Response(payload)
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def progress(request, key: str):
+    """Where an in-flight answer has got to.
+
+    Polled rather than streamed. The server runs four sync gunicorn workers, so
+    a streamed answer would hold one open for the ninety seconds it takes and
+    need nginx buffering turned off to arrive at all; a poll costs one cheap
+    query and needs neither. The note lives in the shared cache for the same
+    reason it is not a module-level dict — the poll rarely lands on the worker
+    doing the work.
+
+    Carries no health data, only which tool is being read and how many steps in
+    it is. `done` is true once the answer has been returned by any path,
+    including the safety short-circuit and an unreachable model, so a client
+    that polls forever stops on its own.
+
+    Throttled with the analytics limit rather than the insight one: this is
+    called every second or two during a single question, and the insight
+    throttle exists to protect the GPU from questions, not from polls.
+    """
+    note = llm_service.read_progress(key)
+    if note is None:
+        # Nothing recorded yet is the ordinary case for the first poll — the
+        # answer starts with a snapshot and a safety check before it reaches a
+        # tool — so it is not an error, just nothing to say.
+        return Response({"label": "", "step": 0, "done": False, "known": False})
+    return Response({**note, "known": True})
 
 
 @api_view(["POST"])
@@ -335,28 +499,41 @@ def ask(request):
 @permission_classes([IsAuthenticated])
 @throttle_classes([InsightThrottle])
 def weekly_review(request):
-    return Response(
-        llm_service.weekly_review(
-            tz_name=_tz(request) or request.data.get("tz"), owner=_owner(request)
+    try:
+        session, created = _session(request)
+    except (UnknownSession, ValidationError):
+        return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        payload = llm_service.weekly_review(
+            tz_name=_tz(request) or request.data.get("tz"),
+            owner=_owner(request),
+            session=session,
         )
-    )
+    except Exception:
+        _discard_if_empty(session, created)
+        raise
+
+    if _discard_if_empty(session, created):
+        payload["session_id"] = None
+    return Response(payload)
 
 
-@api_view(["GET", "DELETE"])
+@api_view(["DELETE"])
 @authentication_classes([SessionAuthentication])
 @permission_classes([IsAuthenticated])
 @throttle_classes([AnalyticsThrottle])
 def insight_history(request):
-    """Stored questions and answers, and a way to delete all of them.
+    """Delete every stored question and answer.
 
-    Session-only: this is a person's question history, and the phone's device
-    token authenticates a device rather than a person.
+    Reading them moved to `/v1/chat/messages`, which does the same job with the
+    conversation, the safety verdict, the tools and the feedback attached, and
+    can be paged. Two endpoints returning overlapping views of one table is how
+    they drift apart, so this one kept only the half that has no equivalent
+    anywhere else.
+
+    Session-only, unlike the rest of `/v1/chat`: this is irreversible deletion
+    of a person's whole question history, and the phone's device token
+    authenticates a device rather than a person.
     """
-    if request.method == "DELETE":
-        return Response({"deleted": llm_service.forget(_owner(request))})
-    return Response(
-        {
-            "turns": llm_service.history(_owner(request)),
-            "retention_days": InsightTurn.retention_days(),
-        }
-    )
+    return Response({"deleted": llm_service.forget(_owner(request))})

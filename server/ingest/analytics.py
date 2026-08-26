@@ -69,6 +69,13 @@ _METRIC_NAMES = {
     "headphone_audio_exposure": "Headphone Audio Levels",
     "dietary_energy_consumed": "Dietary Energy",
     "dietary_water": "Water",
+    # Only the fats need a line each: dropping the `dietary_` prefix leaves the
+    # words in the wrong order, and Health calls these "Total Fat", not "Fat
+    # Total". Every other nutrient reads correctly once the prefix is gone.
+    "dietary_fat_total": "Total Fat",
+    "dietary_fat_saturated": "Saturated Fat",
+    "dietary_fat_monounsaturated": "Monounsaturated Fat",
+    "dietary_fat_polyunsaturated": "Polyunsaturated Fat",
     "workout": "Workouts",
     "unknown": "Unknown",
 }
@@ -93,6 +100,11 @@ def display_name(slug: str) -> str:
     parts = slug.split("_")
     # "Apple" is branding on the identifier, not part of the measurement's name.
     if len(parts) > 1 and parts[0] == "apple":
+        parts = parts[1:]
+    # Nor is "dietary" a word anyone says. Health lists these as "Protein" and
+    # "Calcium"; the prefix is a HealthKit namespace, and stripping it here is
+    # what keeps forty nutrients out of the table above.
+    if len(parts) > 1 and parts[0] == "dietary":
         parts = parts[1:]
 
     words = []
@@ -159,11 +171,36 @@ def metric_catalog() -> list[dict]:
     return catalog
 
 
-def _rollup_series(metric: str, start, end, tz) -> dict[date, float]:
-    """Apple-deduplicated daily totals, where the app has shipped them."""
+# Which question a rollup row answers, keyed by the `aggregation` the phone
+# stamped on it. A cumulative type goes through `.cumulativeSum` and its rollup
+# is the day's total; a discrete type goes through `.discreteAverage` and its
+# rollup is the day's average. One row, one meaning — serving a discrete rollup
+# as a sum would report the total of every reading taken that day as a resting
+# heart rate.
+ROLLUP_ANSWERS = {"cumulative": "sum", "discrete": "avg"}
+
+
+def _rollup_series(metric: str, start, end, tz, agg: str) -> dict[date, float]:
+    """Apple-deduplicated daily values, where the app has shipped them.
+
+    Restricted to rollups that answer the aggregation being asked for. This used
+    to serve `sum` only, which quietly discarded every discrete rollup the phone
+    uploads — resting heart rate, HRV, weight, blood oxygen, respiratory rate and
+    VO2 max. Those rows were stored and never read by anything, and a metric
+    left with only rollups read as never recorded at all.
+    """
+    styles = [style for style, answers in ROLLUP_ANSWERS.items() if answers == agg]
+    if not styles:
+        return {}
     rows = (
         live_records()
-        .filter(kind=Record.Kind.STATISTIC, metric_slug=metric, start__gte=start, start__lt=end)
+        .filter(
+            kind=Record.Kind.STATISTIC,
+            metric_slug=metric,
+            start__gte=start,
+            start__lt=end,
+            aggregation__in=styles,
+        )
         .annotate(day=TruncDate("start", tzinfo=tz))
         .values("day")
         .annotate(value=Max("value"))
@@ -200,15 +237,17 @@ def daily_series(
 ) -> dict:
     """Daily points for one metric.
 
-    For a `sum` over a cumulative metric, per-day rollups win where they exist
-    and a raw sum fills the gaps. Each point says which it was, so the UI can be
-    honest about the difference rather than presenting an inflated estimate as
-    fact.
+    Per-day rollups win where they exist and raw samples fill the gaps — for a
+    `sum` over a cumulative metric and for an `avg` over a discrete one, which
+    are the two questions a rollup can answer. `min`, `max` and `count` have no
+    rollup to draw on and are always computed from raw samples. Each point says
+    which it was, so the UI can be honest about the difference rather than
+    presenting an inflated estimate as fact.
     """
     tz = zone(tz_name)
     rollups: dict[date, float] = {}
-    if prefer_rollups and agg == "sum":
-        rollups = _rollup_series(metric, start, end, tz)
+    if prefer_rollups:
+        rollups = _rollup_series(metric, start, end, tz, agg)
 
     raw = _raw_series(metric, start, end, tz, agg)
 

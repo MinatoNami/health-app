@@ -8,28 +8,74 @@ import SwiftUI
 /// make visible. Never colour alone: the legend names each state, cells carry
 /// an accessibility label, and tapping one names the metric.
 struct CoverageGrid: View {
-    let states: [String: AnchorStore.TypeState]
-    @State private var selected: (slug: String, state: AnchorStore.TypeState)?
+    /// One cell, fully resolved.
+    ///
+    /// Built once in `init` rather than derived in `body`, and that is the whole
+    /// optimisation. Sorting ~170 metrics, formatting a relative date for each,
+    /// and asking `Date()` for the time once per cell used to happen on every
+    /// body evaluation — including every tap, since selecting a cell changes
+    /// `@State`. Tapping one square re-sorted the entire grid.
+    private struct Cell: Identifiable {
+        var id: String { slug }
+        let slug: String
+        let name: String
+        let color: Color
+        let label: String
+        /// Kept so the ordering stays exactly what it was — freshest first.
+        /// Deriving it from `color` instead would have quietly re-sorted the grid
+        /// while claiming to be a performance change.
+        let lastSampleEnd: Date?
+    }
+
+    private let cells: [Cell]
+    @State private var selectedSlug: String?
 
     private let columns = Array(repeating: GridItem(.flexible(minimum: 12), spacing: 4), count: 14)
+
+    init(states: [String: AnchorStore.TypeState]) {
+        // One `now` for the whole grid. Per-cell `Date()` also meant two cells
+        // could in principle disagree about which side of a threshold they were.
+        let now = Date()
+        cells = states
+            .map { identifier, state in
+                let slug = identifier.healthKitSlug
+                return Cell(
+                    slug: slug,
+                    name: slug.metricDisplayName,
+                    color: Self.color(for: state, now: now),
+                    label: Self.label(for: state),
+                    lastSampleEnd: state.lastSampleEnd
+                )
+            }
+            // Freshest first, so the healthy block is contiguous and any decay
+            // shows as a growing tail rather than scattered noise.
+            .sorted {
+                ($0.lastSampleEnd ?? .distantPast) > ($1.lastSampleEnd ?? .distantPast)
+            }
+    }
+
+    private var selected: Cell? {
+        guard let selectedSlug else { return nil }
+        return cells.first { $0.slug == selectedSlug }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             LazyVGrid(columns: columns, spacing: 4) {
-                ForEach(entries, id: \.slug) { entry in
+                ForEach(cells) { cell in
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(color(for: entry.state))
+                        .fill(cell.color)
                         .frame(height: 16)
                         .overlay {
-                            if selected?.slug == entry.slug {
+                            if selectedSlug == cell.slug {
                                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                                     .strokeBorder(Color.primary, lineWidth: 1.5)
                             }
                         }
-                        .accessibilityLabel("\(entry.slug.metricDisplayName), \(label(for: entry.state))")
+                        .accessibilityLabel("\(cell.name), \(cell.label)")
                         .onTapGesture {
                             withAnimation(.easeOut(duration: 0.15)) {
-                                selected = selected?.slug == entry.slug ? nil : entry
+                                selectedSlug = selectedSlug == cell.slug ? nil : cell.slug
                             }
                         }
                 }
@@ -37,10 +83,10 @@ struct CoverageGrid: View {
 
             if let selected {
                 HStack(spacing: 6) {
-                    Circle().fill(color(for: selected.state)).frame(width: 7, height: 7)
-                    Text(selected.slug.metricDisplayName)
+                    Circle().fill(selected.color).frame(width: 7, height: 7)
+                    Text(selected.name)
                         .font(.caption.weight(.medium))
-                    Text(label(for: selected.state))
+                    Text(selected.label)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -63,26 +109,16 @@ struct CoverageGrid: View {
         }
     }
 
-    private var entries: [(slug: String, state: AnchorStore.TypeState)] {
-        states
-            .map { (slug: $0.key.healthKitSlug, state: $0.value) }
-            .sorted { lhs, rhs in
-                // Freshest first, so the healthy block is contiguous and any
-                // decay shows as a growing tail rather than scattered noise.
-                (lhs.state.lastSampleEnd ?? .distantPast) > (rhs.state.lastSampleEnd ?? .distantPast)
-            }
-    }
-
-    private func color(for state: AnchorStore.TypeState) -> Color {
+    private static func color(for state: AnchorStore.TypeState, now: Date) -> Color {
         if state.lastError != nil { return .orange }
         guard let last = state.lastSampleEnd else { return .secondary.opacity(0.18) }
-        let age = Date().timeIntervalSince(last)
+        let age = now.timeIntervalSince(last)
         if age < 24 * 3600 { return .green }
         if age < 72 * 3600 { return .yellow }
         return .secondary.opacity(0.28)
     }
 
-    private func label(for state: AnchorStore.TypeState) -> String {
+    private static func label(for state: AnchorStore.TypeState) -> String {
         if let error = state.lastError { return error }
         guard let last = state.lastSampleEnd else { return "no data yet" }
         return last.formatted(.relative(presentation: .named))

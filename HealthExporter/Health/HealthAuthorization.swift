@@ -99,7 +99,21 @@ final class HealthAuthorization: ObservableObject {
         }
     }
 
+    /// Cached, because resolving it is not free and it changes about once a year.
+    ///
+    /// `MetricCatalog.sampleTypes` walks ~170 identifier strings and asks
+    /// HealthKit to resolve each one, building a fresh `Set` every time. This was
+    /// a computed property, so every caller — the sync entry points, the observer
+    /// registration, the views — paid the whole cost on each access, on the main
+    /// actor. Invalidated wherever the enabled groups change.
+    private var cachedSampleTypes: (groups: Set<String>, types: Set<HKSampleType>)?
+
     var enabledSampleTypes: Set<HKSampleType> {
-        MetricCatalog.sampleTypes(groupIDs: enabledGroupIDs)
+        if let cached = cachedSampleTypes, cached.groups == enabledGroupIDs {
+            return cached.types
+        }
+        let resolved = MetricCatalog.sampleTypes(groupIDs: enabledGroupIDs)
+        cachedSampleTypes = (enabledGroupIDs, resolved)
+        return resolved
     }
 }

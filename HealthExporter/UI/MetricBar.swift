@@ -21,6 +21,7 @@ struct MetricBar: View {
                     Image(systemName: "moon.zzz")
                         .font(.caption2)
                         .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
                 }
                 Spacer()
                 Text(Self.compact(count))
@@ -38,6 +39,17 @@ struct MetricBar: View {
             .frame(height: 5)
         }
         .padding(.vertical, 2)
+        // Combined by hand rather than left to SwiftUI. Read as separate
+        // elements this row is a name, a number, and a decorative capsule — and
+        // the one thing it exists to flag, that a metric has stopped arriving,
+        // was a bare `Image` with no label at all. Staleness is the whole point
+        // of the orange bar, so it has to be spoken, not only coloured.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(slug.metricDisplayName)
+        .accessibilityValue(
+            "\(count.formatted()) records"
+                + (isStale ? ", nothing new in the last 48 hours" : "")
+        )
     }
 
     private var fraction: Double {

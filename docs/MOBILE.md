@@ -1,0 +1,204 @@
+# The iOS app
+
+Reads Apple Health, ships it to your server, and is the everyday way in to what
+the server makes of it.
+
+Deploying and running it is in the [root README](../README.md). This is what it
+does and how it is put together.
+
+---
+
+## What it does
+
+**Sync.** Reads whichever HealthKit types you enable, normalises them, and
+uploads NDJSON batches to your own server. Anchored, so a sync sends what
+changed rather than everything. Retries on failure and reconciles against the
+server's coverage report, so a server that silently lost data gets it re-sent.
+
+**Summary.** The server's analysis, rendered: every headline metric over the
+last 7 days against your own preceding 28, with coverage and a confidence grade.
+
+**Insights.** A conversation about that analysis — see below.
+
+**The morning brief.** An 08:00 notification with what actually moved. Computed
+deterministically server-side, because the alert has to be dependable whether or
+not the laptop running the model is awake.
+
+**The sync alert.** The rarer one: a notification when uploads have stopped
+getting through, because every other check in this system watches data arriving
+at the server and none of them fire when the phone never sends. See
+`SyncFailureNotifier`.
+
+**Diagnostics.** Per-type coverage, the outbox, sync anchors, and a log you can
+read when something stops arriving.
+
+---
+
+## Screens
+
+| Summary | Insights | Metrics | Server | Settings |
+|---|---|---|---|---|
+| ![Summary](screenshots/01-summary.png) | ![Insights](screenshots/02-insights.png) | ![Metrics](screenshots/03-metrics.png) | ![Server](screenshots/04-server.png) | ![Settings](screenshots/05-settings.png) |
+
+Generated data on a throwaway server, captured by
+`HealthExporterUITests/ScreenshotTests` — see [SCREENSHOTS.md](SCREENSHOTS.md)
+for how to refresh them and why they are never taken by hand.
+
+And the startup check, when the configured server does not answer:
+
+<img src="screenshots/06-unreachable.png" alt="Can't reach the server" width="280">
+
+Retry first, because the usual cause is a laptop that has not woken up.
+*Continue Offline* carries the cancel role — the cached figures are already on
+screen behind it.
+
+| Tab | What it is |
+|---|---|
+| **Status** | Sync state, the outbox, last upload, the morning brief |
+| **Metrics** | Which HealthKit types are enabled, and per-type coverage |
+| **Insights** | The conversation, chat history, the measured week |
+| **Exports** | Manual file export |
+| **Settings** | Server, account, brief, diagnostics, privacy |
+
+---
+
+## Insights, in detail
+
+The tab opens on the measured week and a composer. Ask something and the
+question appears immediately — the bubble is appended before the request, so it
+is not waiting half a minute to show what you just typed.
+
+**It is a real conversation.** The transcript is a list of turns, the session id
+is persisted, and a follow-up carries what came before. Until recently this
+screen held one question and one answer: asking a second thing silently erased
+the first, and "what about last month?" reached the model with no idea what
+"that" was.
+
+- **Chats** (toolbar, left) slides in the history drawer from the left, with the
+  conversation dimmed behind it: tap the dimmed area or drag it away to close.
+  A drawer rather than a sheet because a chat list is *navigation* — you open it
+  to glance, change your mind and put it back — where a sheet is modal and says
+  "finish with me first". Projects first, then loose conversations under Today /
+  Yesterday / Previous 7 days. Search reaches the questions inside a chat, not
+  just titles. Swipe a row to rename, archive or delete. "Load older chats"
+  pages.
+
+  The close-drag lives on the scrim, not the drawer: the panel is a list whose
+  rows carry swipe actions, and a container-level horizontal drag would eat them
+  — swiping a chat to rename it would close the drawer instead.
+- **⋯** (toolbar, right) starts a new chat or compacts the current one.
+- **Thumbs and a note** sit under every stored answer.
+- **A compaction seam** marks where the model's memory of the conversation
+  became a paragraph — every message above it is still there to read.
+
+The last-open chat is remembered across launches. Only the id is kept; the
+transcript is refetched, because the server is the record and a stale copy on
+the phone would be a second opinion about what was said.
+
+**Nothing is recomputed on the device.** Baselines, coverage grading and the
+deduplication rules underneath them are subtle enough that a second
+implementation would drift, and a phone quietly disagreeing with the dashboard
+about the same week is worse than either number alone. The same goes for the
+safety verdict and for which turns belong to a conversation.
+
+**The measured comparison renders first, the generated explanation second** —
+which is also the order they arrive. The snapshot is one fast query; an answer
+is a local model working for tens of seconds. When the model server is asleep,
+the screen still carries everything that was actually recorded.
+
+---
+
+## Layout
+
+```
+HealthExporter/
+├── App/            HealthExporterApp, AppServices (composition root)
+├── Core/           Keychain, Paths + StateStore, Log, Timestamps, MetricName
+├── Health/         HealthAuthorization, HealthReader, MetricCatalog,
+│                   AnchorStore, UnitResolver
+├── Model/
+│   ├── HealthRecord.swift    the wire format
+│   ├── HealthInsight.swift   snapshot, insight, safety verdict, daily brief
+│   ├── ChatHistory.swift     sessions, projects, transcripts, ChatTurn
+│   └── JSONValue.swift
+├── Export/
+│   ├── ExportSink.swift      HTTP client: ingest, analysis, insights, chat
+│   ├── Normalizer.swift      HealthKit sample → HealthRecord
+│   ├── Outbox.swift          durable queue of pending batches
+│   ├── CertificatePinner.swift
+│   └── ServerStatus.swift
+├── Sync/
+│   ├── SyncEngine.swift      the observable app state; owns the transcript
+│   ├── BackgroundSync.swift
+│   ├── DailyBriefScheduler.swift
+│   └── SyncFailureNotifier.swift  the alert about the pipe, not the data
+└── UI/
+    ├── InsightsView.swift    transcript, composer, bubbles, rating
+    ├── ChatHistoryView.swift the history drawer
+    ├── StatusView.swift, MetricsView.swift, SettingsView.swift, …
+    └── TrendCharts.swift, MetricStyle.swift, CoverageGrid.swift
+```
+
+`SyncEngine` is the single `@Published` surface the views observe. Adding a new
+piece of server state means adding it there, not fetching from a view.
+
+---
+
+## Three things that will bite you
+
+**Dates.** Django emits six fractional digits and `ISO8601DateFormatter` is only
+dependable for three — and it returns `nil` rather than throwing, so the failure
+surfaces as a decode error on an unrelated field. `ServerDate` in
+`ChatHistory.swift` tries the formatter, then strips the fractional part and
+retries. Everything older in `HealthInsight.swift` decodes dates as strings and
+is unaffected.
+
+**Query strings.** `apiEndpoint` takes them as `[URLQueryItem]`, not glued onto
+the path. `URLComponents.path` percent-encodes everything illegal in a path —
+`?` included — so passing `"/v1/chat/sessions?limit=40"` as one string yields
+`/v1/chat/sessions%3Flimit=40` and a 404. Every endpoint before the chat list
+was query-free, so nothing had ever stepped on it.
+
+**New files need Xcode project entries.** The project uses explicit file
+references, not synchronised folders, so a new `.swift` file needs four entries
+in `project.pbxproj` (build file, file reference, group child, sources phase) or
+it simply will not compile.
+
+Building from the command line needs the toolchain pointed at Xcode rather than
+the Command Line Tools:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild -project HealthExporter.xcodeproj -scheme HealthExporter \
+  -destination 'generic/platform=iOS Simulator' build
+```
+
+---
+
+## Tests
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  xcodebuild test -project HealthExporter.xcodeproj -scheme HealthExporter \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+```
+
+`HealthExporterTests` is a host-application bundle, so it needs a Simulator
+destination rather than a generic one — the code under test lives in the app
+module and the bundle is loaded into a running host to reach it. The target is
+generated like everything else, so a new test file needs
+`ruby Tools/generate_project.rb` the same way a new source file does.
+
+**What is worth testing here is narrower than it looks.** HealthKit returns
+nothing in the Simulator, so anything downstream of a real query cannot be
+exercised — and the parts most likely to lose data, the anchor advance and the
+outbox, are the parts that need one. What is covered is the pure logic that has
+already been wrong at least once: URL construction, Django's six-digit
+timestamps, and the sync-failure rule. `SyncFailureNotifier.fault(for:now:)` is
+a static function over a plain struct precisely so it can be tested without
+standing up a sync engine to ask it five questions.
+
+---
+
+See also: [LIFECYCLE.md](LIFECYCLE.md) for startup, caching and the main-thread
+rules, and [CHAT.md](CHAT.md) for how conversations work across both clients.

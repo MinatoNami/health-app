@@ -119,12 +119,49 @@ final class UnitResolver {
             return .count()
         case HKQuantityTypeIdentifier.dietaryWater.rawValue:
             return .literUnit(with: .milli)
+        // Everything below is a nutrient, and every one of them needs a line.
+        // Without a preference the ladder picks the first compatible mass unit,
+        // which is kilograms — so a 90 mg vitamin C sample uploaded as
+        // 0.00009 kg. Correct, unreadable, and a thousandfold trap for anything
+        // that later sums it beside a gram row.
         case HKQuantityTypeIdentifier.dietaryCaffeine.rawValue,
-             HKQuantityTypeIdentifier.dietarySodium.rawValue:
+             HKQuantityTypeIdentifier.dietarySodium.rawValue,
+             HKQuantityTypeIdentifier.dietaryCholesterol.rawValue,
+             HKQuantityTypeIdentifier.dietaryPotassium.rawValue,
+             HKQuantityTypeIdentifier.dietaryCalcium.rawValue,
+             HKQuantityTypeIdentifier.dietaryIron.rawValue,
+             HKQuantityTypeIdentifier.dietaryMagnesium.rawValue,
+             HKQuantityTypeIdentifier.dietaryPhosphorus.rawValue,
+             HKQuantityTypeIdentifier.dietaryZinc.rawValue,
+             HKQuantityTypeIdentifier.dietaryChloride.rawValue,
+             HKQuantityTypeIdentifier.dietaryCopper.rawValue,
+             HKQuantityTypeIdentifier.dietaryManganese.rawValue,
+             HKQuantityTypeIdentifier.dietaryVitaminC.rawValue,
+             HKQuantityTypeIdentifier.dietaryVitaminB6.rawValue,
+             HKQuantityTypeIdentifier.dietaryVitaminE.rawValue,
+             HKQuantityTypeIdentifier.dietaryThiamin.rawValue,
+             HKQuantityTypeIdentifier.dietaryRiboflavin.rawValue,
+             HKQuantityTypeIdentifier.dietaryNiacin.rawValue,
+             HKQuantityTypeIdentifier.dietaryPantothenicAcid.rawValue:
             return HKUnit.gramUnit(with: .milli)
+        // Micronutrients, where even milligrams read as a string of zeroes.
+        case HKQuantityTypeIdentifier.dietaryVitaminA.rawValue,
+             HKQuantityTypeIdentifier.dietaryVitaminD.rawValue,
+             HKQuantityTypeIdentifier.dietaryVitaminB12.rawValue,
+             HKQuantityTypeIdentifier.dietaryVitaminK.rawValue,
+             HKQuantityTypeIdentifier.dietaryFolate.rawValue,
+             HKQuantityTypeIdentifier.dietaryBiotin.rawValue,
+             HKQuantityTypeIdentifier.dietaryIodine.rawValue,
+             HKQuantityTypeIdentifier.dietarySelenium.rawValue,
+             HKQuantityTypeIdentifier.dietaryChromium.rawValue,
+             HKQuantityTypeIdentifier.dietaryMolybdenum.rawValue:
+            return HKUnit.gramUnit(with: .micro)
         case HKQuantityTypeIdentifier.dietaryCarbohydrates.rawValue,
              HKQuantityTypeIdentifier.dietaryProtein.rawValue,
              HKQuantityTypeIdentifier.dietaryFatTotal.rawValue,
+             HKQuantityTypeIdentifier.dietaryFatSaturated.rawValue,
+             HKQuantityTypeIdentifier.dietaryFatMonounsaturated.rawValue,
+             HKQuantityTypeIdentifier.dietaryFatPolyunsaturated.rawValue,
              HKQuantityTypeIdentifier.dietaryFiber.rawValue,
              HKQuantityTypeIdentifier.dietarySugar.rawValue:
             return .gram()

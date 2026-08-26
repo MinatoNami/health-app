@@ -27,11 +27,26 @@ final class HealthReader {
         }
     }
 
+    /// A page of changes, already normalised.
+    ///
+    /// Deliberately carries `HealthRecord` values rather than `HKSample`
+    /// objects. Normalising here means it happens on the queue HealthKit
+    /// delivers results on, instead of on the main actor — it was the last piece
+    /// of per-sample CPU work left on the main thread, and two thousand samples
+    /// of it cannot be broken up by yielding.
+    ///
+    /// It is also the safer boundary: `HKSample` is a non-`Sendable`
+    /// Objective-C object, and handing arrays of them between actors is
+    /// something Swift 6 will refuse outright. Structs cross freely.
     struct AnchoredPage {
-        var added: [HKSample]
-        var deleted: [HKDeletedObject]
+        var records: [HealthRecord]
         var newAnchor: HKQueryAnchor?
-        /// A full page almost certainly means more is waiting.
+        /// Newest `endDate` among the samples that were emitted, for the anchor
+        /// bookkeeping. Nil when the page emitted nothing.
+        var newestEnd: Date?
+        /// A full page almost certainly means more is waiting. Counted from the
+        /// samples *read*, not the records kept — a page entirely below the
+        /// cutoff emits nothing and is not the end of the data.
         var likelyHasMore: Bool
     }
 
@@ -51,12 +66,19 @@ final class HealthReader {
 
     // MARK: - Anchored reads
 
-    /// One page of changes since `anchor`. Returns added samples *and* deleted
-    /// object UUIDs — the only query that reports deletions, which is why it's
-    /// the backbone of sync rather than `HKSampleQuery`.
+    /// One page of changes since `anchor`, normalised on HealthKit's own queue.
+    ///
+    /// Returns added samples *and* deleted object UUIDs — the only query that
+    /// reports deletions, which is why it's the backbone of sync rather than
+    /// `HKSampleQuery`.
+    ///
+    /// `cutoff` is applied here rather than by the caller: a sample older than
+    /// the backfill start is dropped before it is ever normalised, so the anchor
+    /// still advances over ancient history without paying to convert it.
     func anchoredPage(type: HKSampleType,
                       anchor: HKQueryAnchor?,
-                      limit: Int) async throws -> AnchoredPage {
+                      limit: Int,
+                      cutoff: Date) async throws -> AnchoredPage {
         guard await HealthReader.isReadable else { throw ReadError.protectedDataUnavailable }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -75,11 +97,38 @@ final class HealthReader {
                     return
                 }
                 let added = samples ?? []
+                let removed = deleted ?? []
+
+                var records: [HealthRecord] = []
+                records.reserveCapacity(added.count + removed.count)
+                var newestEnd: Date?
+
+                for sample in added {
+                    // HealthKit samples are Objective-C objects that pile up in
+                    // the autorelease pool. Without draining it per sample, a
+                    // page of 2,000 — times hundreds of pages — is a steady
+                    // climb to a jetsam kill rather than flat memory use.
+                    autoreleasepool {
+                        guard sample.endDate >= cutoff else { return }
+                        if let record = Normalizer.record(from: sample) {
+                            records.append(record)
+                            if sample.endDate > (newestEnd ?? .distantPast) {
+                                newestEnd = sample.endDate
+                            }
+                        }
+                    }
+                }
+                // Tombstones carry no type or date, only a UUID. Emitting them is
+                // what keeps the destination from diverging permanently.
+                for object in removed {
+                    records.append(HealthRecord.deletion(uuid: object.uuid))
+                }
+
                 continuation.resume(returning: AnchoredPage(
-                    added: added,
-                    deleted: deleted ?? [],
+                    records: records,
                     newAnchor: newAnchor,
-                    likelyHasMore: added.count + (deleted?.count ?? 0) >= limit
+                    newestEnd: newestEnd,
+                    likelyHasMore: added.count + removed.count >= limit
                 ))
             }
             healthStore.execute(query)

@@ -524,7 +524,7 @@ class InsightEndpointTests(InsightTestCase):
         self.assertFalse(body["reachable"])
         self.assertIn("refused", body["detail"])
 
-    def test_history_is_session_only_and_deletable(self):
+    def sign_in(self):
         User.objects.create_user(username="dash", password="dash-p4ssw0rd-x")
         self.client.get("/v1/auth/csrf")
         self.client.post(
@@ -532,11 +532,24 @@ class InsightEndpointTests(InsightTestCase):
             data=json.dumps({"username": "dash", "password": "dash-p4ssw0rd-x"}),
             content_type="application/json",
         )
+
+    def test_history_is_session_only_and_deletable(self):
+        self.sign_in()
         InsightTurn.objects.create(question="kept for now")
 
-        self.assertEqual(len(self.client.get("/v1/insights/history").json()["turns"]), 1)
         self.assertEqual(self.client.delete("/v1/insights/history").json()["deleted"], 1)
         self.assertEqual(InsightTurn.objects.count(), 0)
+
+    def test_reading_history_moved_to_the_chat_export(self):
+        """Two endpoints returning overlapping views of one table is how they
+        drift apart. `/v1/chat/messages` does the same job with the
+        conversation, tools, safety verdict and feedback attached."""
+        self.sign_in()
+        InsightTurn.objects.create(question="still readable")
+
+        self.assertEqual(self.client.get("/v1/insights/history").status_code, 405)
+        rows = self.client.get("/v1/chat/messages").json()["messages"]
+        self.assertEqual([r["question"] for r in rows], ["still readable"])
 
     def test_generation_is_throttled(self):
         with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \

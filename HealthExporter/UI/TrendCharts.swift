@@ -16,8 +16,22 @@ struct TrendChart: View {
     /// Only the days that actually place on the axis. Everything on this screen
     /// reads from this rather than `series.points`, so a point the chart cannot
     /// draw is also not counted in the summary or the headline figure.
-    private var points: [ServerStatus.Series.Point] {
-        series.points.filter { $0.parsedDay != nil }
+    ///
+    /// Resolved once in `init`, not per access. It was a computed property read
+    /// five times per body evaluation — `isEmpty`, `last`, the chart itself, the
+    /// domain and the accessibility summary — so every layout pass filtered the
+    /// series five times over, for every chart on the screen. A keyboard
+    /// appearing anywhere in the app is a layout pass.
+    private let points: [ServerStatus.Series.Point]
+    private let domain: ClosedRange<Double>
+
+    init(title: String, series: ServerStatus.Series, style: Style) {
+        self.title = title
+        self.series = series
+        self.style = style
+        let drawable = series.points.filter { $0.parsedDay != nil }
+        self.points = drawable
+        self.domain = Self.domain(for: drawable, style: style)
     }
 
     var body: some View {
@@ -68,8 +82,15 @@ struct TrendChart: View {
         Chart(points) { point in
             switch style {
             case .bars:
+                // `unit: .day` is what stops the "falling back to a fixed
+                // dimension size for a mark" warning, and the fallback behind it.
+                // A BarMark needs a width, and against a bare `Date` there is
+                // nothing to derive one from — Charts has to guess per mark, on
+                // every layout pass, for every bar. Naming the unit also aligns
+                // each bar to its own day rather than to whatever spacing the
+                // guess produced.
                 BarMark(
-                    x: .value("Day", point.day),
+                    x: .value("Day", point.day, unit: .day),
                     y: .value(title, point.value)
                 )
                 .foregroundStyle(Color.accentColor.gradient)
@@ -111,7 +132,9 @@ struct TrendChart: View {
     /// metric that reads the same every day is flat, and a metric that is zero
     /// every day — `sleep_analysis` on a phone that does not track sleep — is
     /// both flat and zero.
-    private var domain: ClosedRange<Double> {
+    private static func domain(
+        for points: [ServerStatus.Series.Point], style: Style
+    ) -> ClosedRange<Double> {
         let values = points.map(\.value)
         guard let low = values.min(), let high = values.max() else { return 0...1 }
 

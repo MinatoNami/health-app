@@ -34,7 +34,7 @@ are read today.
 ## Where it goes
 
 ```
-iPhone  ──TLS, pinned certificate──▶  Django + Postgres        (your server, on your tailnet)
+iPhone  ──TLS (Let's Encrypt)──▶        Django + Postgres        (your server, on your tailnet)
                                               │
                                               └──WireGuard──▶  LM Studio  (your laptop)
 ```
@@ -42,8 +42,10 @@ iPhone  ──TLS, pinned certificate──▶  Django + Postgres        (your s
 - **On the phone:** a local SQLite queue and NDJSON batch files in the app's
   container, excluded from iCloud backup. The server credential lives in the
   Keychain, not in `UserDefaults`.
-- **In transit to the server:** HTTPS only, with the server's certificate pinned
-  by SHA-256. The app refuses a non-`https://` destination outright.
+- **In transit to the server:** HTTPS only, validated against system roots — the
+  tailnet issues a real Let's Encrypt certificate for this host. The app refuses
+  a non-`https://` destination outright, and still accepts a pinned fingerprint
+  for a self-signed endpoint if one is ever pointed at.
 - **On the server:** Postgres in a Docker volume, reachable only over the
   tailnet. The database port is bound to loopback, so the only route in is an
   SSH tunnel.
@@ -62,7 +64,7 @@ both display where processing happens, and say "an external service at
 
 Not your records. The model receives a **prepared summary**: per-metric averages
 over the last 7 days and the preceding 28, with units, valid-day counts and
-confidence — plus whatever it fetches through eight read-only tools that return
+confidence — plus whatever it fetches through twelve read-only tools that return
 the same kind of computed figures.
 
 It has no database credentials, no SQL, and no access to individual samples.
@@ -70,6 +72,21 @@ It has no database credentials, no SQL, and no access to individual samples.
 Your questions are sent as you type them. If you describe a symptom, that text
 reaches the model — except when the safety rules classify it as urgent, in which
 case the model is **not called at all** and a reviewed response is returned.
+
+Inside a chat, the earlier turns of **that conversation** go with it, so a
+follow-up makes sense: your questions, and the summary line of each answer, up to
+`INSIGHT_HISTORY_TURNS` (6). Never the observations or the evidence, and never
+anything from a different conversation. If the chat is in a project, the standing
+context you wrote for that project is sent too — it is part of the prompt, so
+treat it as something the model reads every time.
+
+When a chat outgrows the model's context, its older turns are sent once more to
+be summarised, and that summary is what travels afterwards instead of them. The
+summary is stored on the chat and you can read it in the transcript. It is
+written to carry topics and what you said about yourself, not figures — but it is
+model-generated text about your questions, so it is treated as one: it is subject
+to the same retention window, and it is cleared once the questions behind it have
+been deleted.
 
 ---
 
@@ -80,6 +97,11 @@ case the model is **not called at all** and a reviewed response is returned.
 | Health records | Indefinitely, until you delete them |
 | Uploaded batch files (phone) | Pruned after delivery; archive trimmed automatically |
 | Questions and generated answers | `INSIGHT_RETENTION_DAYS`, 30 by default, then deleted |
+| Chats and their titles | As above — a chat is deleted once retention has emptied it |
+| Conversation summaries (compaction) | Cleared once the questions they were written from have expired |
+| Your ratings and notes on answers | Kept — an answer you rated survives the window (`INSIGHT_KEEP_RATED=0` to disable) |
+| Answers you rated | Kept with the rating, for the same reason |
+| Project names and standing context | Until you delete the project. It is text you wrote, not health data |
 | The snapshot an answer was built from | **Never stored** — recomputed on demand |
 | Database backups | 30 days, encrypted with AES-256 |
 | Application logs | Record counts, metric names and error reasons. No measurements. |
@@ -107,7 +129,15 @@ people miss:
 3. **Apple Health itself.** Deleting here never touches it. Use the Health app.
 
 To delete only stored questions, without touching health records: the
-**Insights** tab's "Delete stored questions", or `DELETE /v1/insights/history`.
+**Settings** tab's "Delete now", or `DELETE /v1/insights/history`. That clears
+the chat list too, since a chat is its messages, and it takes the rated ones
+with it — the retention exemption keeps them past the window, it does not
+protect them from a deliberate deletion.
+
+To delete a single conversation and everything said in it: the ⋯ menu beside it
+in the sidebar, or `DELETE /v1/chat/sessions/<uuid>`. Deleting a *project*
+deliberately does not delete its chats — they are unfiled and stay reachable, so
+one mis-click cannot take months of conversations with it.
 
 To take your data with you: **Export** tab, or `/v1/export/records.csv`.
 

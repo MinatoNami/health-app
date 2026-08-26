@@ -31,11 +31,17 @@ struct SinkConfiguration: Codable, Equatable {
     /// only defaults — both fields are editable in Settings, and uploading
     /// stays off until a token is entered and the toggle is flipped.
     static let defaultBaseURL = "https://alena-server.tail03bec9.ts.net"
-    /// SHA-256 of that server's certificate. `./deploy.sh pin` prints the
-    /// current value; the deploy script never regenerates an existing
-    /// certificate, so this changes only if the keypair is deliberately
-    /// replaced with `./deploy.sh rotate-cert`.
-    static let defaultPin = "a0d5647fcd34c3b465397918534b04c2bc35c986dc166da6a01bd79ccc6e96b2"
+    /// Empty, because the server no longer needs pinning.
+    ///
+    /// It did for as long as `tailscale cert` refused to issue for this tailnet
+    /// — the app requires `https://`, so the server ran a self-signed
+    /// certificate and this app carried its fingerprint. Enabling Tailscale
+    /// Serve on 2026-08-17 turned HTTPS Certificates on tailnet-wide, and
+    /// `alena-server` now serves a genuine Let's Encrypt certificate, so an
+    /// empty pin means ordinary system-trust validation. The field stays
+    /// editable: pointing this app at a self-signed endpoint is still a
+    /// supported thing to do, it is just no longer the default.
+    static let defaultPin = ""
 
     /// Pins this app has shipped before.
     ///
@@ -45,11 +51,16 @@ struct SinkConfiguration: Codable, Equatable {
     /// leave every existing install failing to connect until someone retyped
     /// 64 hex characters by hand on a phone.
     ///
-    /// Superseded by the RSA-4096 → ECDSA P-256 rotation: the old certificate
-    /// was 1431 bytes, and the tailnet MTU is 1280, so its handshake could not
-    /// fit in a single packet and failed on relayed paths.
+    /// The first was superseded by the RSA-4096 → ECDSA P-256 rotation: the old
+    /// certificate was 1431 bytes, and the tailnet MTU is 1280, so its
+    /// handshake could not fit in a single packet and failed on relayed paths.
+    /// The second is the self-signed certificate itself, retired when the
+    /// tailnet started issuing real ones — an install still carrying it clears
+    /// the pin on next launch rather than failing every upload against a
+    /// certificate that is now perfectly valid.
     static let supersededPins: Set<String> = [
         "819aac937513c6b26e7e150c2ba1acb0dfe84d7a45002d858ad2e0bd93c1212c",
+        "a0d5647fcd34c3b465397918534b04c2bc35c986dc166da6a01bd79ccc6e96b2",
     ]
 
     var baseURL: String = SinkConfiguration.defaultBaseURL
@@ -112,10 +123,25 @@ struct SinkConfiguration: Codable, Equatable {
     /// Derived from `baseURL` rather than configured separately so no endpoint
     /// can ever be pointed somewhere the health data is not already going.
     func apiEndpoint(_ path: String) -> URL? {
+        apiEndpoint(path, query: [])
+    }
+
+    /// Build a URL against the configured server.
+    ///
+    /// The query goes through `URLQueryItem` rather than being glued onto the
+    /// path, because `URLComponents.path` percent-encodes everything illegal in
+    /// a path — `?` included. Passing `"/v1/chat/sessions?limit=40"` here as a
+    /// single string produced `/v1/chat/sessions%3Flimit=40`, which the server
+    /// read as one long path that matches no route and answered 404. Every
+    /// endpoint before the chat list was query-free, so nothing had ever
+    /// stepped on it.
+    func apiEndpoint(_ path: String, query: [URLQueryItem]) -> URL? {
         guard var components = URLComponents(string: baseURL) else { return nil }
         guard components.scheme?.lowercased() == "https" else { return nil }
         guard let host = components.host, !host.isEmpty else { return nil }
         components.path = path
+        // Empty rather than `[]`: an empty array still yields a trailing "?".
+        components.queryItems = query.isEmpty ? nil : query
         return components.url
     }
 
@@ -424,6 +450,18 @@ final class HTTPSink: ExportSink {
 
     /// Shared plumbing for the analysis endpoints: bearer auth, the pinned
     /// session, and the same status-code contract as everything else.
+    /// One decoder for every response.
+    ///
+    /// The date strategy is the reason it exists: the chat models carry real
+    /// `Date`s, and Django emits six fractional digits where
+    /// `ISO8601DateFormatter` is only dependable for three. Everything older
+    /// here decodes dates as strings and is unaffected.
+    private static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = ServerDate.decodingStrategy
+        return decoder
+    }()
+
     private func fetch<T: Decodable>(
         _ url: URL?,
         as type: T.Type,
@@ -452,7 +490,7 @@ final class HTTPSink: ExportSink {
             switch http.statusCode {
             case 200...299:
                 do {
-                    return .success(try JSONDecoder().decode(T.self, from: data))
+                    return .success(try Self.decoder.decode(T.self, from: data))
                 } catch {
                     return .failure(SinkError.badResponse("Could not read the response: \(error)"))
                 }
@@ -494,13 +532,45 @@ final class HTTPSink: ExportSink {
     /// The long timeout is not slack: a local model works through a tool loop
     /// and a structured answer in tens of seconds, and a timeout that fires
     /// mid-answer is indistinguishable from a broken server.
-    func ask(question: String, context: String, remember: Bool) async -> Result<InsightResult, Error> {
-        let body = try? JSONSerialization.data(withJSONObject: [
+    /// Which conversation a question belongs to.
+    ///
+    /// A new chat is opened by the ask itself rather than by a call beforehand.
+    /// Creating the session first and then asking leaves an empty chat in the
+    /// history whenever the question behind it never lands — and on a phone,
+    /// where the question is being asked over whatever signal is available,
+    /// that is not an edge case.
+    static func sessionArgs(sessionId: String?, projectId: Int?) -> [String: Any] {
+        if let sessionId { return ["session_id": sessionId] }
+        var args: [String: Any] = ["start_session": true]
+        if let projectId { args["project_id"] = projectId }
+        return args
+    }
+
+    func ask(
+        question: String,
+        context: String,
+        remember: Bool,
+        sessionId: String?,
+        projectId: Int? = nil,
+        progressKey: String? = nil
+    ) async -> Result<InsightResult, Error> {
+        var payload: [String: Any] = [
             "question": question,
             "context": context,
             "remember": remember,
             "tz": TimeZone.current.identifier,
-        ])
+        ]
+        // Chosen by the caller so it can start polling before this request
+        // returns — which is the point, since this request is what takes the
+        // time. Ignored by the server unless it looks like a UUID.
+        if let progressKey { payload["progress_key"] = progressKey }
+        // Only when the answer is being kept: a question asked with
+        // `remember: false` stores nothing, so opening a chat for it would
+        // leave a conversation with no messages in it.
+        if remember {
+            payload.merge(Self.sessionArgs(sessionId: sessionId, projectId: projectId)) { a, _ in a }
+        }
+        let body = try? JSONSerialization.data(withJSONObject: payload)
         return await fetch(
             configuration.apiEndpoint("/v1/insights/ask"),
             as: InsightResult.self,
@@ -510,12 +580,112 @@ final class HTTPSink: ExportSink {
         )
     }
 
-    func weeklyReview() async -> Result<InsightResult, Error> {
-        let body = try? JSONSerialization.data(withJSONObject: ["tz": TimeZone.current.identifier])
+    /// Where an in-flight answer has got to. Carries no health data — a label
+    /// and a step count — and is deliberately cheap: it is called every couple
+    /// of seconds for the length of one question.
+    func insightProgress(key: String) async -> Result<InsightProgress, Error> {
+        await fetch(
+            configuration.apiEndpoint("/v1/insights/progress/\(key)"),
+            as: InsightProgress.self,
+            timeout: 10
+        )
+    }
+
+    func weeklyReview(sessionId: String?, projectId: Int? = nil) async -> Result<InsightResult, Error> {
+        var payload: [String: Any] = ["tz": TimeZone.current.identifier]
+        payload.merge(Self.sessionArgs(sessionId: sessionId, projectId: projectId)) { a, _ in a }
+        let body = try? JSONSerialization.data(withJSONObject: payload)
         return await fetch(
             configuration.apiEndpoint("/v1/insights/weekly"),
             as: InsightResult.self,
             timeout: 240,
+            method: "POST",
+            body: body ?? Data("{}".utf8)
+        )
+    }
+
+    // MARK: - Conversations
+
+    /// The history list. Titles only — a month of conversations is a lot of
+    /// prose, and it does not need to travel every time the list is opened.
+    func chatSessions(limit: Int = 40, offset: Int = 0, search: String = "") async -> Result<ChatSessionPage, Error> {
+        var query = [
+            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "offset", value: String(offset)),
+            // Tri-state on the server: absent means "both", so this has to be
+            // sent explicitly to leave archived chats out.
+            URLQueryItem(name: "archived", value: "0"),
+        ]
+        if !search.isEmpty {
+            // No hand-rolled escaping: `URLQueryItem` encodes the value, and a
+            // search containing `&` or `=` would otherwise split into extra
+            // parameters.
+            query.append(URLQueryItem(name: "q", value: search))
+        }
+        return await fetch(
+            configuration.apiEndpoint("/v1/chat/sessions", query: query),
+            as: ChatSessionPage.self
+        )
+    }
+
+    func chatProjects() async -> Result<ChatProjectList, Error> {
+        await fetch(configuration.apiEndpoint("/v1/chat/projects"), as: ChatProjectList.self)
+    }
+
+    /// One conversation with everything said in it.
+    func chatTranscript(_ sessionId: String) async -> Result<ChatTranscript, Error> {
+        await fetch(configuration.apiEndpoint("/v1/chat/sessions/\(sessionId)"), as: ChatTranscript.self)
+    }
+
+    func renameChat(_ sessionId: String, title: String) async -> Result<ChatSession, Error> {
+        let body = try? JSONSerialization.data(withJSONObject: ["title": title])
+        return await fetch(
+            configuration.apiEndpoint("/v1/chat/sessions/\(sessionId)"),
+            as: ChatSession.self,
+            method: "PATCH",
+            body: body ?? Data("{}".utf8)
+        )
+    }
+
+    func archiveChat(_ sessionId: String, archived: Bool) async -> Result<ChatSession, Error> {
+        let body = try? JSONSerialization.data(withJSONObject: ["archived": archived])
+        return await fetch(
+            configuration.apiEndpoint("/v1/chat/sessions/\(sessionId)"),
+            as: ChatSession.self,
+            method: "PATCH",
+            body: body ?? Data("{}".utf8)
+        )
+    }
+
+    func deleteChat(_ sessionId: String) async -> Result<DeletionResult, Error> {
+        await fetch(
+            configuration.apiEndpoint("/v1/chat/sessions/\(sessionId)"),
+            as: DeletionResult.self,
+            method: "DELETE"
+        )
+    }
+
+    /// Folds older turns into a written summary so a long conversation still
+    /// fits the model's context. Slow — it runs the model.
+    func compactChat(_ sessionId: String) async -> Result<CompactionResult, Error> {
+        await fetch(
+            configuration.apiEndpoint("/v1/chat/sessions/\(sessionId)/compact"),
+            as: CompactionResult.self,
+            timeout: 180,
+            method: "POST",
+            body: Data("{}".utf8)
+        )
+    }
+
+    /// What you made of one answer. `rating` is 1, -1, or nil to clear.
+    func rateAnswer(_ turnId: Int, rating: Int?, note: String?) async -> Result<ChatMessage, Error> {
+        var payload: [String: Any] = [:]
+        payload["rating"] = rating ?? NSNull()
+        if let note { payload["note"] = note }
+        let body = try? JSONSerialization.data(withJSONObject: payload)
+        return await fetch(
+            configuration.apiEndpoint("/v1/chat/messages/\(turnId)/feedback"),
+            as: ChatMessage.self,
             method: "POST",
             body: body ?? Data("{}".utf8)
         )

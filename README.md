@@ -1,9 +1,49 @@
 # Health Exporter
 
-An iOS app that reads Apple Health data and exports it as NDJSON — to files now,
-to your own HTTP endpoint when you're ready.
+An iOS app that reads Apple Health data and exports it as NDJSON to your own
+server, which computes health analysis from it and can explain that analysis with
+a language model running on your own machine.
 
-Full design rationale: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+| Summary | Insights | Server |
+|---|---|---|
+| ![The Summary tab](docs/screenshots/01-summary.png) | ![The Insights tab](docs/screenshots/02-insights.png) | ![The Server tab](docs/screenshots/04-server.png) |
+
+*Generated data, not a real health record. Captured by a UI test —
+[docs/SCREENSHOTS.md](docs/SCREENSHOTS.md).*
+
+## Documentation
+
+**Start here:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the system as
+built, and the invariants everything else is organised around.
+
+*The three components*
+
+| | |
+|---|---|
+| [docs/MOBILE.md](docs/MOBILE.md) | The iOS app: what it does, its screens, how it is laid out |
+| [server/README.md](server/README.md) | The server: deploy, operations, backups, the sync contract |
+| [docs/DASHBOARD.md](docs/DASHBOARD.md) | The web dashboard: views, structure, styling |
+
+*Subsystems*
+
+| | |
+|---|---|
+| [docs/ANALYSIS.md](docs/ANALYSIS.md) | What the server computes — baselines, nutrition, correlations, safety |
+| [docs/CHAT.md](docs/CHAT.md) | Conversations: sessions, projects, compaction, feedback |
+| [docs/API.md](docs/API.md) | Every endpoint, and what authenticates it |
+| [docs/LLM-SETUP.md](docs/LLM-SETUP.md) | Pointing the model layer at your machine, and testing it properly |
+
+*Operating it*
+
+| | |
+|---|---|
+| [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | App startup, caching, and the rules that keep the main thread free |
+| [docs/PRIVACY.md](docs/PRIVACY.md) | What is collected, where it goes, how to delete it |
+| [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) | Regenerating the screenshots, and the traps in doing so |
+| [docs/ORIGINAL-PLAN.md](docs/ORIGINAL-PLAN.md) | The design document written before any of it existed |
+
+**This file** covers running the app on your iPhone, the wire format, and how
+syncing works.
 
 ---
 
@@ -100,7 +140,8 @@ cd server
 ```
 
 Then on the phone: Settings tab → *Account* → **Sign In**. The URL and
-certificate pin are pre-filled for that server. Signing in exchanges your
+server URL is pre-filled, and the certificate field is left empty because
+the server presents a publicly trusted certificate. Signing in exchanges your
 password for a bearer token; flip *Upload automatically* once it succeeds.
 **Test Connection** proves the URL, the TLS pin, and the token in one request
 without sending any health data — worth doing, because from then on failures are
@@ -116,26 +157,29 @@ dropping only the local copy would leave a working credential in anyone else's
 hands. Each sign-in mints its own token, so revoking one device doesn't sign out
 the others.
 
-### Why the certificate is pinned
+### Why there is no certificate pin
 
-The server lives on a Tailscale tailnet. A tailnet hostname can't get a
-publicly trusted certificate unless HTTPS Certificates are enabled for the
-tailnet — and for this one, Tailscale refuses. The alternative, installing a CA
-profile on the phone, would make iOS trust that CA for *every* site it visits.
+There used to be one. The server lives on a Tailscale tailnet, and a tailnet
+hostname cannot get a publicly trusted certificate unless HTTPS Certificates are
+enabled for the tailnet — which, for this one, Tailscale refused. Installing a
+CA profile on the phone would have made iOS trust that CA for *every* site it
+visits, so instead the server ran a self-signed certificate and the app trusted
+exactly that one, by SHA-256 of its DER encoding.
 
-So the app trusts exactly one certificate, by SHA-256 of its DER encoding.
-`./deploy.sh pin` prints the current value. An empty pin field means normal
-system validation, so pointing the app at a server with a real certificate needs
-no code change.
+Enabling Tailscale Serve on 2026-08-17 turned HTTPS Certificates on for the
+tailnet, and `alena-server` now presents a genuine Let's Encrypt certificate.
+The pin is gone: `SinkConfiguration.defaultPin` is empty, which means ordinary
+system-trust validation, and the `Info.plist` ATS exception that existed only so
+an untrusted certificate could reach `CertificatePinner` is gone with it. App
+Transport Security is now enforced normally for this host.
 
-**Pinning alone is not sufficient on a device.** App Transport Security rejects
-an untrusted certificate during connection setup and fails with
-`NSURLErrorSecureConnectionFailed (-1200)` *before* the `URLSession` delegate is
-consulted — so however correct the pinning code is, it never runs. `Info.plist`
-therefore carries an `NSExceptionDomains` entry for this one host, which hands
-the trust decision to `CertificatePinner` instead. That is stricter than what
-ATS would have accepted, not weaker: an exact certificate match rather than
-"anything a public CA vouches for".
+The machinery is still there and still works. The Certificate field accepts a
+fingerprint, `CertificatePinner` honours it, and an install carrying a
+superseded pin clears it on next launch rather than failing every upload — so
+pointing this app at a self-signed endpoint remains a supported thing to do. It
+is simply no longer what this deployment needs. `./deploy.sh` falls back to
+generating a self-signed certificate on a host where Tailscale will not issue
+one, and prints the pin only in that case.
 
 Two traps worth knowing:
 
@@ -235,6 +279,11 @@ makes iOS collapse the bar to four plus a "More" list, and what falls into More
 is the *last* two — which on this app meant burying sign-in. Batch files and the
 log moved under Settings → Diagnostics when Insights arrived.
 
+What happens between the icon tap and a usable interface — the launch screen, the
+boot view, the cached figures the first screen opens on, and what runs in the
+background behind it — is in [docs/LIFECYCLE.md](docs/LIFECYCLE.md). Read that
+before moving work onto or off the main actor.
+
 Adding or removing Swift files means regenerating the project:
 
 ```bash
@@ -271,25 +320,57 @@ it matters. A metric that has *stopped arriving* always warrants one, and leads
 the line — burying that under a reassurance is how five weeks of missing sleep
 data goes unnoticed.
 
+### The other alert
+
+The brief is about the numbers. There is a second, rarer notification about
+whether the numbers are arriving at all.
+
+Everything else here catches data that stopped reaching the *server* — the
+coverage report, the freshness check, metrics reported as not syncing rather
+than as zero. None of it catches the phone failing to send, because a server
+that is never contacted has nothing to notice. `SyncEngine` does notice: three
+rejected uploads trip a circuit breaker and set the sync state. But that is a
+line on a screen, and the whole point of background sync is that nobody is
+looking at the screen.
+
+The gap this closed was specific. `isSignedIn` means "a token is in the
+Keychain", which a *revoked* token still satisfies — so the morning brief kept
+firing every day with the last figures it managed to fetch, while nothing had
+uploaded for weeks. Its `Through <date>` subtitle was the only tell.
+
+So: a rejected token says so immediately, and a queue that has not moved in
+three days says so once. Three days rather than one because a weekend off Wi-Fi
+is an ordinary gap and an alert that fires on those is one you switch off. It
+withdraws itself when delivery recovers.
+
 ---
 
 ## Insights on the phone
 
 The Insights tab shows the server's analysis — every headline metric over the
-last 7 days against the user's own preceding 28, with coverage and a confidence
-grade — and lets you ask questions about it.
+last 7 days against your own preceding 28, with coverage and a confidence grade
+— and lets you hold a conversation about it. Chats are kept: the history sheet
+in the toolbar lists past conversations, search reaches the questions inside
+them, and the chat you were in is still there next time you open the app.
+
+Behind those questions the model can reach nutrition, associations between
+metrics, and weekly rhythms as well as the headline figures — twelve read-only
+tools, each returning numbers that were already computed.
 
 Nothing is recomputed on the device. Baselines, coverage grading and the
 deduplication rules underneath them are subtle enough that a second
 implementation would drift, and a phone quietly disagreeing with the dashboard
-about the same week is worse than either number alone. See `server/README.md`
-for how the analysis and the model layer work.
+about the same week is worse than either number alone.
 
-The measured comparison is rendered first and the generated explanation second,
-which is also the order they arrive: the snapshot is one fast query, an answer is
-a local model working for tens of seconds. When the model server is asleep — it
-lives on a laptop, so it often is — the screen still carries everything that was
-actually recorded.
+The measured comparison renders first and the generated explanation second,
+which is also the order they arrive: the snapshot is one fast query, an answer
+is a local model working for tens of seconds. When the model server is asleep —
+it lives on a laptop, so it often is — the screen still carries everything that
+was actually recorded.
+
+**[docs/MOBILE.md](docs/MOBILE.md)** covers the app in full, and
+**[docs/CHAT.md](docs/CHAT.md)** covers how conversations work across both
+clients.
 
 ---
 

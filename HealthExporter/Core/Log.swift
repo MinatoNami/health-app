@@ -33,13 +33,56 @@ final class Log {
 
     private init() {
         fileURL = Paths.supportDirectory?.appendingPathComponent("sync.log")
-        buffer = Log.loadPersisted(from: fileURL)
+        // Loaded off the main thread, not in this initialiser.
+        //
+        // `Log.shared` is first touched by the very first line of
+        // `didFinishLaunchingWithOptions`, so decoding up to 500 persisted
+        // entries here happened before the app had drawn anything — to populate
+        // a buffer nothing reads until somebody opens Diagnostics. Entries
+        // written before the load lands are merged, not dropped.
+        let url = fileURL
+        Log.persistQueue.async { [weak self] in
+            let restored = Log.loadPersisted(from: url)
+            guard !restored.isEmpty, let self else { return }
+            self.lock.lock()
+            self.buffer = (restored + self.buffer)
+                .sorted { $0.at < $1.at }
+                .suffix(self.capacity)
+                .map { $0 }
+            self.lock.unlock()
+        }
     }
 
     func debug(_ category: String, _ message: String) { append(.debug, category, message) }
     func info(_ category: String, _ message: String) { append(.info, category, message) }
     func warn(_ category: String, _ message: String) { append(.warn, category, message) }
     func error(_ category: String, _ message: String) { append(.error, category, message) }
+
+    /// Times a synchronous block and reports it only when it was slow enough to
+    /// be felt.
+    ///
+    /// The sync path runs on the main actor, so any single non-`async` call in it
+    /// is a hang of exactly its own duration — `Task.yield()` between calls
+    /// cannot break one up. Xcode's hang detector says a hang happened but not
+    /// which call did it, and the candidates here are several.
+    ///
+    /// A threshold rather than logging every call: a page reporting "wrote in
+    /// 4ms" three hundred times is what buries the one that took four seconds.
+    @discardableResult
+    func blocking<T>(
+        _ category: String,
+        _ label: String,
+        over threshold: TimeInterval = 0.25,
+        _ body: () throws -> T
+    ) rethrows -> T {
+        let started = DispatchTime.now().uptimeNanoseconds
+        let value = try body()
+        let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+        if seconds >= threshold {
+            warn(category, String(format: "%@ held the main thread for %.2fs", label, seconds))
+        }
+        return value
+    }
 
     private func append(_ level: Level, _ category: String, _ message: String) {
         switch level {
@@ -83,8 +126,28 @@ final class Log {
     private var lastPersist = Date.distantPast
 
     private func persist(_ snapshot: [Entry]) {
-        guard let fileURL else { return }
         guard Date().timeIntervalSince(lastPersist) > 2 else { return }
+        write(snapshot)
+    }
+
+    /// Writes the buffer now, ignoring the debounce.
+    ///
+    /// The debounce exists so a 5,000-sample sync does not rewrite the file
+    /// 5,000 times, and its cost is the tail: the last few seconds of a session
+    /// are routinely missing from the file, which are exactly the lines that say
+    /// how the session ended. Twice while debugging this app that made a working
+    /// system look broken — a sync with no "Finished" line and deliveries that
+    /// had in fact all been accepted. Called when the app leaves the foreground,
+    /// which is the one moment the tail is guaranteed to matter.
+    func flush() {
+        lock.lock()
+        let snapshot = buffer
+        lock.unlock()
+        write(snapshot)
+    }
+
+    private func write(_ snapshot: [Entry]) {
+        guard let fileURL else { return }
         lastPersist = Date()
         Log.persistQueue.async {
             guard let data = try? JSONEncoder().encode(snapshot.suffix(500).map { $0 }) else { return }

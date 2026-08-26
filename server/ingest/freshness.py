@@ -77,6 +77,14 @@ def check(tz_name: str | None = None) -> list[Finding]:
 
     for slug in health_analysis.available_metrics():
         spec = health_analysis.METRICS[slug]
+        # Self-reported metrics are exempt. This check exists to catch a signal
+        # that died — a revoked permission, a watch in a drawer, background
+        # delivery broken by an OS update. A food log with nothing in it for two
+        # days is not a fault; it is somebody who did not feel like writing their
+        # lunch down, and pushing an alert about it is how the alert that matters
+        # gets muted.
+        if spec.self_reported:
+            continue
         seen = health_analysis.last_recorded(slug)
         if seen is None:
             continue

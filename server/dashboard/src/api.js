@@ -43,6 +43,25 @@ const qs = (params) =>
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
 
+/* Where this browser thinks it is, as an IANA name.
+ *
+ * Sent on everything that slices data by day. Without it the server falls back
+ * to DISPLAY_TIMEZONE, which is a fixed guess — right until you open the
+ * dashboard from another country, at which point "yesterday" quietly means
+ * somebody else's yesterday and every daily total shifts by the offset. The
+ * phone has always sent this; the dashboard never did.
+ */
+const tz = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch {
+    return ''
+  }
+}
+
+/* Query string with the timezone attached, unless the caller set one. */
+const tzq = (params = {}) => qs({ tz: tz(), ...params })
+
 export const api = {
   async ensureCsrf() {
     await request('/v1/auth/csrf')
@@ -57,16 +76,16 @@ export const api = {
   },
   logout: () => request('/v1/auth/session/logout', { method: 'POST' }),
 
-  overview: (params) => request(`/v1/analytics/overview?${qs(params)}`),
+  overview: (params) => request(`/v1/analytics/overview?${tzq(params)}`),
   metrics: () => request('/v1/analytics/metrics'),
-  series: (params) => request(`/v1/analytics/series?${qs(params)}`),
-  exportSummary: (params) => request(`/v1/export/summary?${qs(params)}`),
+  series: (params) => request(`/v1/analytics/series?${tzq(params)}`),
+  exportSummary: (params) => request(`/v1/export/summary?${tzq(params)}`),
 
   // Deterministic analysis. Same inputs, same numbers, no model involved —
   // which is why these load instantly and the ask below does not.
-  snapshot: (params = {}) => request(`/v1/analysis/snapshot?${qs(params)}`),
-  quality: (params = {}) => request(`/v1/analysis/quality?${qs(params)}`),
-  sleepDetail: (params = {}) => request(`/v1/analysis/sleep?${qs(params)}`),
+  snapshot: (params = {}) => request(`/v1/analysis/snapshot?${tzq(params)}`),
+  quality: (params = {}) => request(`/v1/analysis/quality?${tzq(params)}`),
+  sleepDetail: (params = {}) => request(`/v1/analysis/sleep?${tzq(params)}`),
   goals: () => request('/v1/analysis/goals'),
   saveGoal: (body) =>
     request('/v1/analysis/goals', { method: 'POST', body: JSON.stringify(body) }),
@@ -75,16 +94,72 @@ export const api = {
   // Model-backed. Slow by nature: a local model works through this for tens of
   // seconds, so callers must show that something is happening.
   insightStatus: () => request('/v1/insights/status'),
-  // `follow_up` replays the last couple of turns for continuity. Only their
-  // summaries — the figures are re-read from the snapshot every time, so the
-  // model cannot cite its own earlier prose back as a measurement.
-  ask: (body) => request('/v1/insights/ask', { method: 'POST', body: JSON.stringify(body) }),
-  weeklyReview: () => request('/v1/insights/weekly', { method: 'POST', body: '{}' }),
-  insightHistory: () => request('/v1/insights/history'),
+  // `session_id` puts the question in a conversation, which is what makes the
+  // server replay that chat's earlier turns. Only their summaries — the figures
+  // are re-read from the snapshot every time, so the model cannot cite its own
+  // earlier prose back as a measurement.
+  ask: (body) =>
+    request('/v1/insights/ask', { method: 'POST', body: JSON.stringify({ tz: tz(), ...body }) }),
+  // Where an in-flight answer has got to. Polled while the ask above is still
+  // open, which is why it is a separate request rather than part of that one.
+  insightProgress: (key) => request(`/v1/insights/progress/${encodeURIComponent(key)}`),
+  weeklyReview: (body = {}) =>
+    request('/v1/insights/weekly', {
+      method: 'POST',
+      body: JSON.stringify({ tz: tz(), ...body }),
+    }),
+  // Reading stored questions moved to chatMessages below — same rows, with the
+  // conversation, tools, safety verdict and feedback attached. This is the
+  // delete-everything action, which has no equivalent there.
   forgetInsights: () => request('/v1/insights/history', { method: 'DELETE' }),
+
+  // How the answers are doing, grouped by the model and prompt version that
+  // produced them. Counts alone say something went wrong; the notes say what.
+  chatFeedback: (params = {}) => request(`/v1/chat/feedback?${qs(params)}`),
+
+  // Conversations. The list endpoint is deliberately separate from the
+  // transcript one: the sidebar reloads on every new chat and must not drag a
+  // month of message bodies with it.
+  chatProjects: () => request('/v1/chat/projects'),
+  createChatProject: (body) =>
+    request('/v1/chat/projects', { method: 'POST', body: JSON.stringify(body) }),
+  updateChatProject: (id, body) =>
+    request(`/v1/chat/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteChatProject: (id) => request(`/v1/chat/projects/${id}`, { method: 'DELETE' }),
+
+  chatSessions: (params = {}) => request(`/v1/chat/sessions?${qs(params)}`),
+  createChatSession: (body = {}) =>
+    request('/v1/chat/sessions', { method: 'POST', body: JSON.stringify(body) }),
+  chatSession: (id) => request(`/v1/chat/sessions/${id}`),
+  updateChatSession: (id, body) =>
+    request(`/v1/chat/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteChatSession: (id) => request(`/v1/chat/sessions/${id}`, { method: 'DELETE' }),
+  // Folds older turns into a written summary so a long chat keeps its thread
+  // instead of losing its opening to the turn cap. Affects what is sent to the
+  // model; the transcript is never rewritten. Slow — it runs the model.
+  compactChatSession: (id) =>
+    request(`/v1/chat/sessions/${id}/compact`, { method: 'POST', body: '{}' }),
+
+  // What you thought of one answer. `rating` is 1, -1, or null to clear; the
+  // note is the half worth having, because "used the wrong sleep window" is
+  // something you can act on and a bare thumbs-down is not.
+  rateMessage: (turnId, body) =>
+    request(`/v1/chat/messages/${turnId}/feedback`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // A URL rather than a fetch, for the same reason the CSV export is: handing
+  // it to the browser as a normal download lets it name and save the file.
+  chatExportUrl: (id, format = 'md') => `/v1/chat/sessions/${id}/export.${format}`,
+
+  // Flat across every conversation, oldest first, with the safety verdict, the
+  // tools that ran and the model that answered attached to each turn. This is
+  // the one to read from a script when scoring answers.
+  chatMessages: (params = {}) => request(`/v1/chat/messages?${qs(params)}`),
 
   // Deliberately a URL rather than a fetch: handing it to the browser as a
   // normal download lets it stream to disk. Fetching it would buffer the whole
   // CSV in memory, which for a multi-year export is hundreds of megabytes.
-  exportUrl: (params) => `/v1/export/records.csv?${qs(params)}`,
+  exportUrl: (params) => `/v1/export/records.csv?${tzq(params)}`,
 }

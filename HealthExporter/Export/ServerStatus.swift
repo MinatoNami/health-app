@@ -19,13 +19,23 @@ struct ServerCoverage: Codable, Equatable {
     struct Metric: Codable, Equatable {
         var count: Int
         var latestSampleAt: String?
+        var latestSampleEnd: String?
         var latestRecordedAt: String?
 
+        /// The newest sample's *start*. Not what the client's own high-water
+        /// mark measures — see `latestSampleEndDate`.
         var latestSampleDate: Date? { latestSampleAt.flatMap(Timestamps.parse) }
+
+        /// The newest sample's *end*, which is the figure an anchor's
+        /// `lastSampleEnd` is comparable with. Optional because a server older
+        /// than this field will not send it, and guessing would reintroduce
+        /// exactly the bug it exists to fix.
+        var latestSampleEndDate: Date? { latestSampleEnd.flatMap(Timestamps.parse) }
 
         enum CodingKeys: String, CodingKey {
             case count
             case latestSampleAt = "latest_sample_at"
+            case latestSampleEnd = "latest_sample_end"
             case latestRecordedAt = "latest_recorded_at"
         }
     }

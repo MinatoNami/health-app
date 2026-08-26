@@ -132,6 +132,46 @@ def available_models() -> list[str]:
     return [item.get("id", "") for item in body.get("data", []) if item.get("id")]
 
 
+# LM Studio's own REST API, alongside the OpenAI-compatible one. It is the only
+# place the context length is available: /v1/models follows OpenAI's schema,
+# which has no field for it.
+LMSTUDIO_API = "/api/v0/models"
+
+
+def loaded_context_length() -> int | None:
+    """How much context the loaded model was actually given, if the server says.
+
+    Worth asking rather than configuring, because the answer changes whenever
+    somebody reloads a model in LM Studio — and a stale number here is not
+    inert: too low means paying for summarisation that was not needed, too high
+    means finding the real limit as a truncated answer halfway through a
+    conversation.
+
+    Returns None for anything that is not LM Studio, which is not an error. The
+    caller falls back to LLM_CONTEXT_TOKENS.
+    """
+    root = base_url().removesuffix("/v1")
+    request = urllib.request.Request(f"{root}{LMSTUDIO_API}", method="GET")
+    key = os.environ.get("LLM_API_KEY", "").strip()
+    if key:
+        request.add_header("Authorization", f"Bearer {key}")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - any failure just means "cannot tell"
+        return None
+
+    models = [m for m in body.get("data", []) if isinstance(m, dict)]
+    wanted = configured_model()
+    candidates = [m for m in models if m.get("id") == wanted] if wanted else []
+    candidates = candidates or [m for m in models if m.get("state") == "loaded"]
+    for model in candidates:
+        length = model.get("loaded_context_length") or model.get("max_context_length")
+        if isinstance(length, int) and length > 0:
+            return length
+    return None
+
+
 def resolve_model() -> str:
     """The configured model, or the first one the server offers.
 

@@ -50,6 +50,15 @@ struct MetricsView: View {
 
 struct GroupDetailView: View {
     let group: MetricCatalog.Group
+    /// Resolved in `init`, not in `body`. Building these reads the anchor store
+    /// behind a lock, copies a dictionary of ~170 states and sorts the result —
+    /// which a `List` body has no business doing every time it is evaluated.
+    private let rows: [Row]
+
+    init(group: MetricCatalog.Group) {
+        self.group = group
+        self.rows = Self.buildRows(for: group)
+    }
 
     var body: some View {
         List {
@@ -87,7 +96,7 @@ struct GroupDetailView: View {
         var state: AnchorStore.TypeState?
     }
 
-    private var rows: [Row] {
+    private static func buildRows(for group: MetricCatalog.Group) -> [Row] {
         let states = AnchorStore.shared.all
         var out: [Row] = []
         for name in group.quantities {

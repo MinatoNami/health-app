@@ -17,6 +17,10 @@ ROOT        = File.expand_path('..', __dir__)
 APP_NAME    = 'HealthExporter'
 BUNDLE_ID   = 'com.lionelchong.HealthExporter'
 SOURCE_DIR  = File.join(ROOT, APP_NAME)
+TEST_NAME   = "#{APP_NAME}Tests"
+TEST_DIR    = File.join(ROOT, TEST_NAME)
+UITEST_NAME = "#{APP_NAME}UITests"
+UITEST_DIR  = File.join(ROOT, UITEST_NAME)
 PROJECT_PATH = File.join(ROOT, "#{APP_NAME}.xcodeproj")
 
 FileUtils.rm_rf(PROJECT_PATH)
@@ -92,6 +96,10 @@ common = {
 
 target.build_configurations.each do |config|
   config.build_settings.merge!(common)
+  # `@testable import HealthExporter` needs the app module built with
+  # testability. Debug enables it by default; setting it explicitly means the
+  # test target does not silently stop compiling if that default ever moves.
+  config.build_settings['ENABLE_TESTABILITY'] = config.name == 'Debug' ? 'YES' : 'NO'
   if config.name == 'Debug'
     config.build_settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] = 'DEBUG'
     config.build_settings['SWIFT_OPTIMIZATION_LEVEL'] = '-Onone'
@@ -102,11 +110,82 @@ target.build_configurations.each do |config|
   end
 end
 
+# --- Unit tests -------------------------------------------------------------
+# Host-application tests rather than a standalone logic bundle: the code under
+# test is inside the app module, so the bundle has to be loaded into a running
+# host to reach it. HealthKit returns nothing in the Simulator, which bounds
+# what is worth testing here — the pure parts that have already been wrong once
+# (URL building, Django's six-digit timestamps, the sync-failure rule).
+test_target = nil
+test_files = Dir.glob(File.join(TEST_DIR, '**', '*.swift')).sort
+unless test_files.empty?
+  test_target = project.new_target(:unit_test_bundle, TEST_NAME, :ios, '18.0')
+  test_group = project.new_group(TEST_NAME, TEST_NAME)
+  test_files.each do |path|
+    test_target.add_file_references([test_group.new_reference(path)])
+  end
+  test_target.add_dependency(target)
+
+  test_target.build_configurations.each do |config|
+    config.build_settings.merge!(
+      'PRODUCT_NAME' => '$(TARGET_NAME)',
+      'PRODUCT_BUNDLE_IDENTIFIER' => "#{BUNDLE_ID}Tests",
+      'IPHONEOS_DEPLOYMENT_TARGET' => '18.0',
+      'SWIFT_VERSION' => '5.0',
+      'GENERATE_INFOPLIST_FILE' => 'YES',
+      'CODE_SIGN_STYLE' => 'Automatic',
+      'DEVELOPMENT_TEAM' => ENV.fetch('DEVELOPMENT_TEAM', 'MNJZZHXWT8'),
+      'TARGETED_DEVICE_FAMILY' => '1',
+      'SUPPORTED_PLATFORMS' => 'iphoneos iphonesimulator',
+      'SDKROOT' => 'iphoneos',
+      'TEST_HOST' => "$(BUILT_PRODUCTS_DIR)/#{APP_NAME}.app/#{APP_NAME}",
+      'BUNDLE_LOADER' => '$(TEST_HOST)',
+      'ALWAYS_SEARCH_USER_PATHS' => 'NO'
+    )
+  end
+end
+
 project.build_configurations.each do |config|
   config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '18.0'
   config.build_settings['SWIFT_VERSION'] = '5.0'
   config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'YES'
   config.build_settings['CLANG_ENABLE_OBJC_ARC'] = 'YES'
+end
+
+# --- UI tests ---------------------------------------------------------------
+# A separate bundle from the unit tests because it is a different kind of thing:
+# it drives the app from outside through the accessibility tree rather than
+# linking against its module. It is also what captures the documentation
+# screenshots — see HealthExporterUITests/ScreenshotTests.swift — which is the
+# only way to produce them reproducibly rather than by hand on somebody's phone.
+uitest_target = nil
+uitest_files = Dir.glob(File.join(UITEST_DIR, '**', '*.swift')).sort
+unless uitest_files.empty?
+  uitest_target = project.new_target(:ui_test_bundle, UITEST_NAME, :ios, '18.0')
+  uitest_group = project.new_group(UITEST_NAME, UITEST_NAME)
+  uitest_files.each do |path|
+    uitest_target.add_file_references([uitest_group.new_reference(path)])
+  end
+  uitest_target.add_dependency(target)
+
+  uitest_target.build_configurations.each do |config|
+    config.build_settings.merge!(
+      'PRODUCT_NAME' => '$(TARGET_NAME)',
+      'PRODUCT_BUNDLE_IDENTIFIER' => "#{BUNDLE_ID}UITests",
+      'IPHONEOS_DEPLOYMENT_TARGET' => '18.0',
+      'SWIFT_VERSION' => '5.0',
+      'GENERATE_INFOPLIST_FILE' => 'YES',
+      'CODE_SIGN_STYLE' => 'Automatic',
+      'DEVELOPMENT_TEAM' => ENV.fetch('DEVELOPMENT_TEAM', 'MNJZZHXWT8'),
+      'TARGETED_DEVICE_FAMILY' => '1',
+      'SUPPORTED_PLATFORMS' => 'iphoneos iphonesimulator',
+      'SDKROOT' => 'iphoneos',
+      # No TEST_HOST: a UI test bundle launches the app as a separate process
+      # rather than loading into it.
+      'TEST_TARGET_NAME' => APP_NAME,
+      'ALWAYS_SEARCH_USER_PATHS' => 'NO'
+    )
+  end
 end
 
 # --- Frameworks -------------------------------------------------------------
@@ -129,6 +208,10 @@ project.save
 scheme = Xcodeproj::XCScheme.new
 scheme.add_build_target(target)
 scheme.set_launch_target(target)
+# In the shared scheme, so `xcodebuild test -scheme HealthExporter` works on a
+# fresh clone without anyone opening Xcode to tick a box.
+scheme.add_test_target(test_target) if test_target
+scheme.add_test_target(uitest_target) if uitest_target
 scheme.save_as(PROJECT_PATH, APP_NAME, true)
 
 # xcodeproj does not write the implicit workspace, and `rm -rf` above removes
@@ -149,6 +232,8 @@ XML
 
 puts "Generated #{PROJECT_PATH}"
 puts "  #{swift_files.count} Swift files across #{grouped.keys.count} groups"
+puts "  #{test_files.count} test files in #{TEST_NAME}" unless test_files.empty?
+puts "  #{uitest_files.count} UI test files in #{UITEST_NAME}" unless uitest_files.empty?
 puts "  Deployment target: iOS 18.0, Swift 5 language mode"
 puts ''
 puts 'Next: open in Xcode, set your Team under Signing & Capabilities, and Run.'

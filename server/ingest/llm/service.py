@@ -12,13 +12,16 @@ the deterministic snapshot — which is the part that was actually measured.
 
 import json
 import logging
+import os
 import re
+from datetime import timedelta
 
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 
-from .. import health_analysis, safety
-from ..models import InsightTurn
+from .. import analytics, health_analysis, safety
+from ..models import ChatSession, InsightTurn
 from . import client, prompts, tools
 
 log = logging.getLogger(__name__)
@@ -31,6 +34,76 @@ MAX_TOOL_ROUNDS = 6
 # Reasoning models emit their scratchpad inline on some builds. It is not part
 # of the answer and it is definitely not part of the JSON.
 THINK_BLOCK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+# How many of the most recent per-day rows survive `_condense`. Matches the cap
+# the tools themselves apply, so the snapshot and `get_sleep_summary` cannot
+# disagree about what the recent days were.
+#
+# The number this was originally written around no longer applies. Dropping
+# every per-day row saves about 1,800 tokens, which mattered when the local
+# window was a few thousand; the model behind LLM_BASE_URL now loads at 262,144
+# and the whole prompt is under 3% of it. What the saving cost was accuracy: with
+# no row carrying a date, a question about one day gets answered from the window
+# average, and "what did I eat today" comes back with the mean of the logged days
+# presented as one day's meal.
+RECENT_DAY_ROWS = 14
+
+# Budget for one compaction. Absurd next to a 150-word summary, and it has to
+# be: this is the only call here that asks for unconstrained prose, so the model
+# thinks in the open first, and on a reasoning model that thinking is most of
+# the response. Measured on qwen3.6-35b-a3b against a twelve-turn conversation,
+# it spent about 2,900 tokens working out before writing a word — so the old
+# 400-token cap could only ever return an empty answer, whatever the
+# conversation. It is a ceiling and not a target: a call that finishes early
+# costs nothing, and one that runs away is a failure worth waiting out rather
+# than a summary worth having.
+COMPACT_MAX_TOKENS = 8000
+
+# How long a progress note outlives the answer it belongs to. Short: it is only
+# read while somebody is waiting, and a stale one read afterwards would describe
+# a question already answered.
+PROGRESS_TTL_SECONDS = 600
+
+# Progress goes through the shared cache rather than a module-level dict because
+# the server runs four gunicorn workers. The poll asking "where has it got to?"
+# almost never lands on the worker running the answer, so an in-process store
+# would report nothing at all for most of the wait.
+PROGRESS_PREFIX = "insight-progress:"
+
+# The client picks the key, so it is checked rather than trusted: anything that
+# is not a plain UUID is refused instead of being concatenated into a cache key.
+PROGRESS_KEY = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+
+
+def progress_cache_key(key: str) -> str | None:
+    """The cache key for a client-supplied progress id, or None if it is not one."""
+    key = (key or "").strip()
+    return f"{PROGRESS_PREFIX}{key}" if PROGRESS_KEY.match(key) else None
+
+
+def read_progress(key: str) -> dict | None:
+    """Where an in-flight answer has got to, if anything has been recorded."""
+    cache_key = progress_cache_key(key)
+    return cache.get(cache_key) if cache_key else None
+
+
+def _progress_writer(key: str | None):
+    """A callback that records the current step, or None if nothing asked for one."""
+    cache_key = progress_cache_key(key) if key else None
+    if cache_key is None:
+        return None
+
+    step = {"n": 0}
+
+    def write(label: str):
+        step["n"] += 1
+        cache.set(
+            cache_key,
+            {"label": label, "step": step["n"], "done": False},
+            PROGRESS_TTL_SECONDS,
+        )
+
+    return write
 
 
 def _condense(snapshot: dict) -> dict:
@@ -74,8 +147,11 @@ def _condense(snapshot: dict) -> dict:
             }
             for q in snapshot["data_quality"]
         ],
+        # `recent` is kept for the same reason the per-day rows below are: it is
+        # the only thing here that can answer "what did I do on Saturday". Only
+        # `by_activity` is dropped, and the totals above already summarise it.
         "workouts": {
-            k: v for k, v in snapshot["workouts"].items() if k not in ("recent", "by_activity")
+            k: v for k, v in snapshot["workouts"].items() if k != "by_activity"
         },
         "metrics_never_recorded": snapshot["metrics_unavailable"],
         # Named separately so the model can say "sleep has not synced since
@@ -84,21 +160,116 @@ def _condense(snapshot: dict) -> dict:
         "metrics_that_stopped_syncing": snapshot.get("metrics_not_syncing") or [],
     }
     if snapshot.get("sleep"):
-        condensed["sleep"] = {
-            k: v for k, v in snapshot["sleep"].items() if k != "nights"
-        }
+        sleep = {k: v for k, v in snapshot["sleep"].items() if k != "nights"}
+        # "Last night" and "how did I sleep on Tuesday" are the most common
+        # questions asked of this thing, and with no dated row in the prompt a
+        # small model does not call a tool for them — it answers from the window
+        # average and reports a weekly mean as a single night. The averages stay
+        # alongside, so the row to quote is always the nearer one.
+        nights = snapshot["sleep"].get("nights") or []
+        if nights:
+            sleep["most_recent_nights"] = nights[-RECENT_DAY_ROWS:]
+        condensed["sleep"] = sleep
+    if snapshot.get("nutrition"):
+        # The per-day table is dropped like every other per-day array, but the
+        # three day-counts and the limitations stay: without them the averages
+        # read as a full picture of what somebody ate.
+        nutrition = {k: v for k, v in snapshot["nutrition"].items() if k != "days"}
+        logged = [d for d in (snapshot["nutrition"].get("days") or []) if d.get("energy_kcal")]
+        if logged:
+            nutrition["most_recent_logged_days"] = [
+                {
+                    "date": day.get("date"),
+                    "energy_kcal": day.get("energy_kcal"),
+                    "complete_log": day.get("complete_log"),
+                    **{
+                        key: (day.get("totals") or {}).get(key)
+                        for key in ("dietary_protein", "dietary_carbohydrates", "dietary_fat_total")
+                        if (day.get("totals") or {}).get(key) is not None
+                    },
+                }
+                for day in logged[-RECENT_DAY_ROWS:]
+            ]
+        condensed["nutrition"] = nutrition
     return condensed
 
 
-def _system_prompt(verdict: safety.SafetyVerdict, snapshot: dict) -> str:
-    constraints = "\n".join(f"- {c}" for c in verdict.constraints)
+# A project's standing context is free text somebody typed about themselves. It
+# is useful — "training for a half marathon in October" changes what a good
+# answer looks like — but it arrives from outside the prompt, so it is capped and
+# fenced rather than concatenated in raw.
+MAX_PROJECT_INSTRUCTIONS = 2000
+
+
+def _now_block(snapshot: dict) -> str:
+    """What time it is where the person is, and what that does and does not mean.
+
+    Without this the model has `as_of` — yesterday's date — and nothing else, so
+    "this week", "last month" and "since Tuesday" are resolved against whatever
+    it believes today to be. On a model whose training data stopped a year ago,
+    that is a year-old calendar, and the answer confidently names the wrong
+    dates while quoting the right figures.
+
+    The zone comes off the snapshot rather than from `tz_name` directly, so the
+    clock in the prompt and the day boundaries in the figures cannot disagree:
+    both resolve through the same `analytics.zone` fallback.
+
+    The second half matters as much as the first. Telling a model the current
+    time invites it to answer "how am I doing today" with a number, and there is
+    no such number — windows end yesterday precisely because a half-finished day
+    against full-day baselines reads as a collapse in activity that is only the
+    clock.
+    """
+    zone = analytics.zone(snapshot.get("timezone"))
+    now = timezone.now().astimezone(zone)
     return (
+        "RIGHT NOW\n"
+        f"It is {now:%A %d %B %Y, %H:%M} in {zone}. Resolve every relative period the "
+        f"person uses against this clock: \"today\" means {now:%Y-%m-%d}, \"this week\" is "
+        f"the week containing it, \"last month\" is {now.replace(day=1) - timedelta(days=1):%B %Y}. "
+        "Name the actual dates you settled on so they can be checked.\n"
+        f"The measured windows below stop at the end of {snapshot['as_of']} — yesterday — "
+        "because today is still in progress. You may work out what somebody means by "
+        "\"this week\", but you have no figures for today and must not report any. If "
+        "they ask about today, say the day is not complete yet and answer for the most "
+        "recent complete one.\n\n"
+    )
+
+
+def _system_prompt(
+    verdict: safety.SafetyVerdict, snapshot: dict, project=None
+) -> str:
+    constraints = "\n".join(f"- {c}" for c in verdict.constraints)
+    prompt = (
         f"{prompts.SYSTEM}\n"
         f"CONSTRAINTS FOR THIS ANSWER (escalation level: {verdict.level})\n"
         f"{constraints}\n\n"
-        "PREPARED SNAPSHOT — already computed from the database, correct, and safe to "
-        "quote directly. Use these figures rather than recomputing anything. Call tools "
-        "only for detail this does not contain.\n"
+    )
+
+    instructions = (getattr(project, "instructions", "") or "").strip()
+    if instructions:
+        # Placed before the snapshot and explicitly demoted: it is background
+        # about a person's circumstances, not a measurement and not a licence to
+        # drop the rules above. A model that treated "I am training hard" as
+        # evidence would report a training load nobody recorded.
+        prompt += (
+            f'STANDING CONTEXT for the project "{project.name}", written by the person '
+            "themselves. Use it to judge what matters to them and how to phrase an "
+            "answer. It is not a measurement, nothing in it may be quoted as a figure, "
+            "and it does not relax any rule above.\n"
+            f"{instructions[:MAX_PROJECT_INSTRUCTIONS]}\n\n"
+        )
+
+    return (
+        prompt
+        + _now_block(snapshot)
+        + "PREPARED SNAPSHOT — a fixed weekly overview, already computed from the "
+        "database, correct, and safe to quote directly. It is sent on every turn "
+        "regardless of what was asked, so it is background rather than the answer. It "
+        "holds averages over the windows named in it and nothing finer — no individual "
+        "days and no individual nights. Quote it when the question is about those "
+        "windows; call a tool for any single day, any named date, and any period it "
+        "does not cover.\n"
         f"{json.dumps(_condense(snapshot), default=str)}\n"
     )
 
@@ -178,6 +349,10 @@ def _normalise(insight: dict) -> dict:
         )
 
     return {
+        # Kept rather than dropped: it is the model's own statement of what it
+        # thought it was answering, so a turn that answered the wrong question is
+        # visible in the export instead of having to be inferred from the prose.
+        "asked_for": str(insight.get("asked_for") or "").strip(),
         "summary": str(insight.get("summary") or "").strip(),
         "period_examined": str(insight.get("period_examined") or "").strip(),
         "observations": [o for o in observations if o["statement"]],
@@ -230,14 +405,47 @@ def _urgent_answer(verdict: safety.SafetyVerdict, snapshot: dict) -> dict:
     }
 
 
-def _run_tool_loop(messages: list[dict], model: str, tz_name: str | None) -> tuple[list[dict], list[dict], dict]:
-    """Returns (messages, tool_call_log, usage totals)."""
+def _run_tool_loop(
+    messages: list[dict],
+    model: str,
+    tz_name: str | None,
+    on_progress=None,
+) -> tuple[list[dict], list[dict], dict]:
+    """Returns (messages, tool_call_log, usage totals).
+
+    `on_progress(label)` is called as the loop moves, so something can be shown
+    during the twenty to ninety seconds this takes. It is best-effort by
+    construction: a progress report that could fail an answer would be a
+    decoration that breaks the thing it decorates.
+    """
     schema = tools.openai_schema()
     log_entries: list[dict] = []
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "latency_ms": 0}
 
+    def report(label: str):
+        if on_progress is None:
+            return
+        try:
+            on_progress(label)
+        except Exception:  # noqa: BLE001
+            log.debug("Progress report failed", exc_info=True)
+
     for _round in range(MAX_TOOL_ROUNDS):
-        result = client.chat(messages, model=model, tools=schema, max_tokens=1200)
+        # Only on the first round. Every round after this one is preceded by a
+        # tool having just run, and that tool's label is the more informative
+        # thing to leave on screen while the model reads the result — which is
+        # the slow part. Tools are database queries and finish in milliseconds,
+        # so a label replaced at the top of the next round would be visible for
+        # an instant and never read.
+        if _round == 0:
+            report("Deciding what to look up")
+        # Greedy. Picking a tool and its arguments is a lookup, not a piece of
+        # writing: there is one right answer and sampling around it only invents
+        # a different metric or a different window. The prose call afterwards
+        # keeps its own small temperature.
+        result = client.chat(
+            messages, model=model, tools=schema, max_tokens=1200, temperature=0
+        )
         usage["prompt_tokens"] += result["usage"].get("prompt_tokens", 0) or 0
         usage["completion_tokens"] += result["usage"].get("completion_tokens", 0) or 0
         usage["latency_ms"] += result["latency_ms"]
@@ -266,6 +474,7 @@ def _run_tool_loop(messages: list[dict], model: str, tz_name: str | None) -> tup
                 arguments = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw or {})
             except json.JSONDecodeError:
                 arguments = {}
+            report(tools.label_for(name))
             payload = tools.call(name, arguments if isinstance(arguments, dict) else {}, tz_name)
             log_entries.append({"tool": name, "arguments": arguments, "ok": "error" not in payload})
             messages.append(
@@ -282,13 +491,29 @@ def _run_tool_loop(messages: list[dict], model: str, tz_name: str | None) -> tup
     return messages, log_entries, usage
 
 
-# How many prior turns a follow-up carries. Two is enough for "what about last
-# month?" and short enough that the snapshot — the part that is actually
-# measured — still dominates the context on a local model.
+# How many prior turns a *sessionless* follow-up carries. Two is enough for
+# "what about last month?", and without a session there is nothing better to
+# scope to than "whatever this person asked most recently" — so it stays short.
 FOLLOW_UP_TURNS = 2
 
+# How many prior turns a session replays. A session is a conversation somebody
+# scrolls back through, so it carries more than a bare follow-up — but not
+# everything. The snapshot is the part that was actually measured and it has to
+# keep dominating a modest local context window, so this is bounded and
+# configurable: the right number depends on the model behind LLM_BASE_URL.
+DEFAULT_SESSION_TURNS = 6
+MAX_SESSION_TURNS = 20
 
-def _prior_turns(owner, limit: int = FOLLOW_UP_TURNS) -> list[dict]:
+
+def session_turns() -> int:
+    raw = os.environ.get("INSIGHT_HISTORY_TURNS") or str(DEFAULT_SESSION_TURNS)
+    try:
+        return max(0, min(MAX_SESSION_TURNS, int(raw)))
+    except ValueError:
+        return DEFAULT_SESSION_TURNS
+
+
+def _replayable(queryset, limit: int) -> list[dict]:
     """Earlier questions and their summaries, oldest first.
 
     Only the summary is replayed, never the observations or the evidence. The
@@ -297,11 +522,242 @@ def _prior_turns(owner, limit: int = FOLLOW_UP_TURNS) -> list[dict]:
     number that was hedged once becomes a fact later.
     """
     turns = []
-    for turn in _owned_by(owner).exclude(answer__isnull=True)[:limit]:
+    for turn in queryset.exclude(answer__isnull=True).order_by("-created_at")[:limit]:
         summary = (turn.answer or {}).get("summary")
         if turn.question and summary:
             turns.append({"question": turn.question, "summary": summary})
     return list(reversed(turns))
+
+
+def _prior_turns(owner, session=None) -> list[dict]:
+    """The conversation so far.
+
+    Scoped to the session when there is one. Replaying an owner's global last-N
+    turns into a named chat would carry last week's sleep question into a
+    conversation about nutrition and let the model answer as though it had been
+    asked — the single most confusing thing a chat history can do.
+
+    Turns already folded into a compaction are left out: the summary stands in
+    for them, and replaying both would spend the context twice on the same
+    conversation.
+    """
+    if session is not None:
+        return _replayable(session.pending_turns(), session_turns())
+    return _replayable(_owned_by(owner), FOLLOW_UP_TURNS)
+
+
+# --------------------------------------------------------------------------
+# Context budgeting and compaction
+# --------------------------------------------------------------------------
+
+# What the model behind LLM_BASE_URL can hold, when nothing better is known.
+# Conservative: guessing high means discovering the real limit as a truncated
+# answer halfway through a conversation.
+DEFAULT_CONTEXT_TOKENS = 8192
+
+# LM Studio reports the loaded model's context length, so normally nothing has
+# to be configured at all. Cached because it only changes when somebody reloads
+# a model, and the compaction check would otherwise make an HTTP call on the way
+# to every answer.
+CONTEXT_CACHE_KEY = "ingest:llm-context-length:v1"
+CONTEXT_CACHE_SECONDS = 300
+
+# Reserved for the answer itself. `answer()` asks for 2000 and the tool loop for
+# 1200; the headroom above that absorbs the estimate being an estimate.
+OUTPUT_RESERVE_TOKENS = 2600
+
+# The share of what remains that conversation history may occupy. The snapshot
+# is the part that was actually measured, and it has to stay dominant — a chat
+# that has crowded out its own evidence answers from memory, which is the exact
+# failure this architecture exists to prevent.
+HISTORY_SHARE = 0.35
+
+# Below this there is nothing worth spending a model call on.
+MIN_TURNS_TO_COMPACT = 2
+
+
+def context_tokens() -> int:
+    """How much context this conversation has to fit into.
+
+    Three sources, in this order:
+
+    1. `LLM_CONTEXT_TOKENS`, if set. An explicit operator override always wins —
+       there are reasons to want a smaller working window than the model
+       technically has, and a setting that gets silently ignored is worse than
+       no setting.
+    2. What the model server reports. LM Studio knows, and asking beats
+       maintaining a number by hand that goes stale the moment somebody loads a
+       different model.
+    3. A conservative default, for a server that cannot say.
+    """
+    raw = os.environ.get("LLM_CONTEXT_TOKENS", "").strip()
+    if raw:
+        try:
+            return max(2048, int(raw))
+        except ValueError:
+            log.warning("LLM_CONTEXT_TOKENS is not a number: %r", raw)
+
+    cached = cache.get(CONTEXT_CACHE_KEY)
+    if cached is None:
+        cached = client.loaded_context_length() or 0
+        cache.set(CONTEXT_CACHE_KEY, cached, CONTEXT_CACHE_SECONDS)
+    return max(2048, cached) if cached else DEFAULT_CONTEXT_TOKENS
+
+
+def estimate_tokens(text: str) -> int:
+    """Four characters to a token.
+
+    A real tokeniser would mean shipping one, and which one depends on a model
+    that changes without a redeploy. The ratio holds well enough for English
+    prose and JSON, and every decision it feeds is a threshold with a margin
+    rather than a hard cut. `prompt_tokens` from the last turn records what the
+    server actually counted, so the estimate is checkable rather than trusted.
+    """
+    return (len(text or "") + 3) // 4
+
+
+def history_budget(system_prompt: str) -> int:
+    """Tokens available for replayed conversation, after the snapshot.
+
+    Derived rather than fixed: the system prompt carries the condensed snapshot,
+    which grows with how many metrics somebody records. A constant budget would
+    be too generous on a sparse account and over the limit on a full one.
+    """
+    spare = context_tokens() - OUTPUT_RESERVE_TOKENS - estimate_tokens(system_prompt)
+    return max(0, int(spare * HISTORY_SHARE))
+
+
+def _history_text(summary: str, turns: list[dict]) -> str:
+    parts = [summary] if summary else []
+    for turn in turns:
+        parts.append(turn["question"])
+        parts.append(turn["summary"])
+    return "\n".join(parts)
+
+
+def compact(
+    session: ChatSession,
+    *,
+    keep: int = MIN_TURNS_TO_COMPACT,
+    force: bool = False,
+) -> dict:
+    """Fold this conversation's older turns into a written summary.
+
+    Returns `{compacted, turns, summary, reason}`. Never raises: compaction is a
+    convenience that keeps a long chat coherent, and a model server that is down
+    must degrade to the existing behaviour — dropping the oldest turns — rather
+    than taking the question down with it.
+
+    `keep` leaves the most recent turns replayed verbatim. Compacting everything
+    would summarise the exchange somebody is still in the middle of, which is
+    where the detail matters most.
+
+    The summary goes through the same prohibited-claim rules as an answer. It is
+    generated prose that a person reads and that is replayed into later prompts,
+    so exempting it would mean the one piece of model output nobody checks.
+    """
+    pending = list(session.pending_turns())
+    replayable = [
+        t for t in pending if t.question and (t.answer or {}).get("summary")
+    ]
+    keep = max(0, keep)
+    foldable = replayable[: max(0, len(replayable) - keep)]
+
+    if len(foldable) < (1 if force else MIN_TURNS_TO_COMPACT):
+        return {
+            "compacted": False,
+            "turns": 0,
+            "summary": session.summary,
+            "reason": "not enough conversation to compact yet",
+        }
+
+    transcript = "\n\n".join(
+        f"Asked: {t.question}\nAnswered: {(t.answer or {}).get('summary', '')}"
+        for t in foldable
+    )
+    if session.summary:
+        transcript = (
+            f"Notes from an earlier compaction of this same conversation:\n"
+            f"{session.summary}\n\n{transcript}"
+        )
+
+    try:
+        model = client.resolve_model()
+        result = client.chat(
+            [
+                {"role": "system", "content": prompts.COMPACT},
+                {"role": "user", "content": transcript},
+            ],
+            model=model,
+            temperature=0.1,
+            max_tokens=COMPACT_MAX_TOKENS,
+        )
+        text = THINK_BLOCK.sub("", result["message"].get("content") or "").strip()
+    except client.LLMUnavailable as exc:
+        log.warning("Could not compact session %s: %s", session.pk, exc)
+        return {"compacted": False, "turns": 0, "summary": session.summary, "reason": str(exc)}
+
+    if not text:
+        # `content` empty with `finish_reason == "length"` is the model having
+        # spent the whole budget thinking and never reaching the summary. Said
+        # plainly, because "the model returned an empty summary" describes the
+        # symptom and points at nothing: the fix is a bigger budget, not a
+        # retry, and every retry will fail the same way.
+        #
+        # Deliberately *not* falling back to `reasoning_content` the way
+        # `_candidate_texts` does for answers. That fallback is correct there —
+        # grammar-constrained output lands in the reasoning channel — but this
+        # call is unconstrained prose, so the reasoning channel holds the
+        # model's working-out, which is full of the figures COMPACT exists to
+        # keep out of a summary that is replayed into every later prompt.
+        ran_out = result.get("finish_reason") == "length"
+        log.warning(
+            "Empty compaction summary for session %s (finish_reason=%s, %s completion tokens)",
+            session.pk,
+            result.get("finish_reason"),
+            result["usage"].get("completion_tokens"),
+        )
+        return {
+            "compacted": False,
+            "turns": 0,
+            "summary": session.summary,
+            "reason": (
+                "the model ran out of room while reasoning and never wrote the "
+                "summary — the conversation is unchanged"
+                if ran_out
+                else "the model returned an empty summary"
+            ),
+        }
+
+    breach = safety.prohibited_claim(text)
+    if breach:
+        log.warning("Refused a conversation summary that %s", breach)
+        return {
+            "compacted": False,
+            "turns": 0,
+            "summary": session.summary,
+            "reason": f"the generated summary {breach}, so it was discarded",
+        }
+
+    session.summary = text
+    session.summary_through_at = foldable[-1].created_at
+    session.summary_turns += len(foldable)
+    session.summarised_at = timezone.now()
+    session.save(
+        update_fields=[
+            "summary",
+            "summary_through_at",
+            "summary_turns",
+            "summarised_at",
+            "updated_at",
+        ]
+    )
+    return {
+        "compacted": True,
+        "turns": len(foldable),
+        "summary": text,
+        "reason": None,
+    }
 
 
 def answer(
@@ -313,11 +769,18 @@ def answer(
     persist: bool = True,
     instruction: str | None = None,
     follow_up: bool = False,
+    session: ChatSession | None = None,
+    title_hint: str = "",
+    progress_key: str | None = None,
 ) -> dict:
     """Answer one question about this person's health data.
 
     Always returns a payload. `generated` says whether the model contributed; if
     it is false, `snapshot` is still the measured truth and the UI shows it.
+
+    Passing `session` puts the turn in a conversation: earlier turns from *that*
+    conversation are replayed for continuity, the project's standing context (if
+    any) joins the system prompt, and the stored turn is filed under it.
     """
     question = (question or "").strip()
     snapshot = health_analysis.snapshot(tz_name=tz_name)
@@ -326,6 +789,7 @@ def answer(
     payload = {
         "question": question,
         "asked_at": timezone.now().isoformat(),
+        "session_id": str(session.pk) if session else None,
         "snapshot": snapshot,
         "safety": verdict.as_dict(),
         "answer": None,
@@ -333,52 +797,160 @@ def answer(
         "tool_calls": [],
         "model": None,
         "error": None,
+        # How many earlier turns were folded into the summary to make room for
+        # this one. Surfaced so the UI can say it happened rather than leaving
+        # the conversation to quietly forget its own opening.
+        "compacted": 0,
     }
 
-    if verdict.level == "urgent":
-        payload["answer"] = _urgent_answer(verdict, snapshot)
-        payload["source"] = "safety_rules"
-        _persist(payload, owner, persist)
+    progress = _progress_writer(progress_key)
+
+    def stop(**fields) -> dict:
+        payload.update(fields)
+        # Every exit runs through here, including the safety short-circuit and a
+        # model that was never reachable, so this is the one place that can
+        # promise the note is cleared however the answer ended.
+        if progress is not None:
+            cache_key = progress_cache_key(progress_key)
+            if cache_key:
+                cache.set(cache_key, {"label": "", "done": True}, PROGRESS_TTL_SECONDS)
+        _persist(payload, owner, persist, session=session, title_hint=title_hint)
         return payload
 
+    if verdict.level == "urgent":
+        return stop(answer=_urgent_answer(verdict, snapshot), source="safety_rules")
+
     if not client.is_enabled():
-        payload["error"] = "Insight generation is switched off on this server."
-        _persist(payload, owner, persist)
-        return payload
+        return stop(error="Insight generation is switched off on this server.")
 
     try:
         model = client.resolve_model()
     except client.LLMUnavailable as exc:
-        payload["error"] = str(exc)
-        _persist(payload, owner, persist)
-        return payload
+        return stop(error=str(exc))
 
     user_message = question
     if context:
         user_message += f"\n\nContext I want you to take into account:\n{context}"
     if instruction:
         user_message = f"{instruction}\n\n{user_message}" if question else instruction
+    if not user_message.strip():
+        # A blank turn is not something the server can render: the chat template
+        # raises "No user query found in messages" and the 400 comes back as
+        # "insight generation unavailable", so pressing send on an empty box read
+        # as a broken model rather than as an empty box. Name the situation
+        # instead, and the prompt's rule for it applies.
+        user_message = "(The person sent an empty message without asking anything.)"
 
-    messages = [{"role": "system", "content": _system_prompt(verdict, snapshot)}]
+    system = _system_prompt(verdict, snapshot, project=getattr(session, "project", None))
+
+    # Does the prompt fit at all, before anything is sent?
+    #
+    # `history_budget` clamps to zero, so a tight window silently drops the
+    # conversation and carries on — correct, and not enough on its own: the
+    # system prompt alone can exceed the whole window, and then the request goes
+    # out and comes back as "request (8596 tokens) exceeds the available context
+    # size (8192 tokens)". That is the model server describing its own limit, and
+    # it says nothing about which model, why it changed, or what to do.
+    #
+    # It changes without anyone touching this app. With LLM_MODEL unset the
+    # client takes whichever model the server lists first, so loading anything
+    # in LM Studio can move health questions onto it — and a model loaded at 8k
+    # cannot hold this prompt, which is mostly the measured snapshot and does not
+    # shrink to fit.
+    needed = estimate_tokens(system) + OUTPUT_RESERVE_TOKENS
+    limit = context_tokens()
+    if needed > limit:
+        log.warning(
+            "Prompt does not fit: %s needs ~%d tokens of a %d-token window",
+            model,
+            needed,
+            limit,
+        )
+        return stop(
+            error=(
+                f"The loaded model ({model}) has a {limit:,}-token context and this "
+                f"question needs about {needed:,}. Load it with a larger context, or "
+                f"pin a bigger model with LLM_MODEL. The measured summary below is "
+                f"unaffected."
+            )
+        )
 
     # Replayed as real turns rather than pasted into the prompt, so the model
-    # treats them as things it said before rather than as evidence.
-    if follow_up:
-        for turn in _prior_turns(owner):
-            messages.append({"role": "user", "content": turn["question"]})
-            messages.append({"role": "assistant", "content": turn["summary"]})
-        if len(messages) > 1:
-            messages[0]["content"] += (
-                "\nThis is a follow-up. Earlier answers are in the conversation for "
-                "continuity only — re-read the snapshot and the tools for every figure "
-                "you quote, and do not treat anything you said before as a measurement.\n"
-            )
+    # treats them as things it said before rather than as evidence. A session
+    # carries its own history without being asked: the transcript on screen is
+    # visibly a conversation, so behaving like one is the only consistent option.
+    prior, compaction = [], None
+    if follow_up or session is not None:
+        prior = _prior_turns(owner, session)
+
+        # Auto-compaction. Only when the replayed conversation would not fit —
+        # this costs a whole extra model call, so it is a response to running
+        # out of room rather than housekeeping on a timer. If it fails, the
+        # turn cap still bounds the history and the question is answered
+        # anyway; a conversation that cannot be summarised is not a reason to
+        # refuse to answer it.
+        if session is not None:
+            budget = history_budget(system)
+            if estimate_tokens(_history_text(session.summary, prior)) > budget:
+                outcome = compact(session)
+                if outcome["compacted"]:
+                    prior = _prior_turns(owner, session)
+                    payload["compacted"] = outcome["turns"]
+                    log.info(
+                        "Compacted %d turns of session %s to fit the context window",
+                        outcome["turns"],
+                        session.pk,
+                    )
+            compaction = session.summary or None
+
+    messages = [{"role": "system", "content": system}]
+
+    if compaction:
+        # A user message rather than a system one: it is a record of what this
+        # person said and asked, and models weight a system block as standing
+        # instruction. Fenced the same way the replayed answers are.
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Notes from earlier in this same conversation, summarised to fit. "
+                    "Background only — it contains no measurements, and every figure "
+                    "you quote must come from the snapshot or the tools.\n"
+                    f"{compaction}"
+                ),
+            }
+        )
+        messages.append(
+            {"role": "assistant", "content": "Understood — I have the thread so far."}
+        )
+
+    for turn in prior:
+        messages.append({"role": "user", "content": turn["question"]})
+        messages.append({"role": "assistant", "content": turn["summary"]})
+
+    if len(messages) > 1:
+        messages[0]["content"] += (
+            "\nThis is a follow-up. Earlier answers are in the conversation for "
+            "continuity only — re-read the snapshot and the tools for every figure "
+            "you quote, and do not treat anything you said before as a measurement.\n"
+            "The final message is the one you are answering, and it sets the "
+            "subject. If it asks about something else, the previous subject is "
+            "finished and does not carry into this answer; if it asks nothing at "
+            "all, neither does. A conversation full of one topic is not a reason to "
+            "answer a new question with that topic, and repeating an earlier answer "
+            "back because it is what the thread contains is the specific failure to "
+            "avoid here. Read the last message before deciding anything.\n"
+        )
 
     messages.append({"role": "user", "content": user_message})
 
     try:
-        messages, tool_log, usage = _run_tool_loop(messages, model, tz_name)
-        messages.append({"role": "user", "content": prompts.FINALISE})
+        messages, tool_log, usage = _run_tool_loop(
+            messages, model, tz_name, on_progress=progress
+        )
+        if progress is not None:
+            progress("Writing the answer")
+        messages.append({"role": "user", "content": prompts.finalise(user_message)})
         final = client.chat(
             messages,
             model=model,
@@ -389,17 +961,13 @@ def answer(
         insight = _normalise(_parse_json(final["message"]))
     except client.LLMUnavailable as exc:
         log.warning("Insight generation unavailable: %s", exc)
-        payload["error"] = str(exc)
-        _persist(payload, owner, persist)
-        return payload
+        return stop(error=str(exc))
     except (json.JSONDecodeError, ValueError, TypeError) as exc:
         log.warning("Model returned an unusable answer: %s", exc)
-        payload["error"] = (
-            "The model produced an answer that could not be read as structured output. "
-            "The measured summary below is unaffected."
+        return stop(
+            error="The model produced an answer that could not be read as structured "
+            "output. The measured summary below is unaffected."
         )
-        _persist(payload, owner, persist)
-        return payload
 
     verdict = safety.postflight(insight, verdict)
     payload["safety"] = verdict.as_dict()
@@ -417,18 +985,16 @@ def answer(
     }
 
     if verdict.blocked:
-        payload["answer"] = None
-        payload["error"] = verdict.blocked_reason
-    else:
-        payload["answer"] = insight
-        payload["generated"] = True
-        payload["source"] = "model"
-
-    _persist(payload, owner, persist)
-    return payload
+        return stop(answer=None, error=verdict.blocked_reason)
+    return stop(answer=insight, generated=True, source="model")
 
 
-def weekly_review(tz_name: str | None = None, owner=None, persist: bool = True) -> dict:
+def weekly_review(
+    tz_name: str | None = None,
+    owner=None,
+    persist: bool = True,
+    session: ChatSession | None = None,
+) -> dict:
     """The proactive review from §10 phase 4, on demand rather than on a timer."""
     return answer(
         "",
@@ -436,6 +1002,10 @@ def weekly_review(tz_name: str | None = None, owner=None, persist: bool = True) 
         tz_name=tz_name,
         owner=owner,
         persist=persist,
+        session=session,
+        # The question is empty here, so without a hint the chat this lands in
+        # would be titled "New chat" forever.
+        title_hint="Weekly review",
     )
 
 
@@ -444,45 +1014,70 @@ def weekly_review(tz_name: str | None = None, owner=None, persist: bool = True) 
 # --------------------------------------------------------------------------
 
 
-def _persist(payload: dict, owner, persist: bool):
-    """Stores the turn, then prunes.
+def _persist(
+    payload: dict,
+    owner,
+    persist: bool,
+    session: ChatSession | None = None,
+    title_hint: str = "",
+):
+    """Stores the turn, files it under its session, then prunes.
 
     §8 asks that prompts and model responses not be retained indefinitely. The
     snapshot is deliberately *not* stored — it is derived from records that are
     still in the database and can be recomputed, so keeping a second copy of
     health figures inside a conversation log buys nothing and doubles what a
     deletion request has to reach.
+
+    `persist=False` skips the session bookkeeping too. A question asked with
+    "don't remember this" must not leave a chat behind that is named after it.
     """
     if not persist:
         return
     try:
-        InsightTurn.objects.create(
+        turn = InsightTurn.objects.create(
+            session=session,
             owner=owner if getattr(owner, "pk", None) else None,
             question=payload["question"][:2000],
             answer=payload.get("answer"),
             safety=payload.get("safety"),
             tool_calls=payload.get("tool_calls"),
             model_name=(payload.get("model") or {}).get("name", "")[:128],
+            prompt_version=prompts.VERSION,
             latency_ms=(payload.get("model") or {}).get("latency_ms") or 0,
+            prompt_tokens=(payload.get("model") or {}).get("prompt_tokens") or 0,
+            completion_tokens=(payload.get("model") or {}).get("completion_tokens") or 0,
             error=(payload.get("error") or "")[:500],
         )
+        payload["turn_id"] = turn.pk
+        if session is not None:
+            session.autotitle(payload["question"] or title_hint)
+            session.touch(turn.created_at)
+            session.save(update_fields=["title", "last_message_at", "updated_at"])
         InsightTurn.prune()
     except Exception:  # noqa: BLE001 - a logging failure must not lose the answer
         log.exception("Could not record insight turn")
 
 
-def _owned_by(owner):
-    """This person's turns, plus the unowned ones.
+def scoped(queryset, owner):
+    """This person's rows, plus the unowned ones.
 
-    Turns arrive unowned when the caller authenticated with a token minted on
-    the CLI, which has no user behind it. Hiding those from the one dashboard
-    that can show them would mean questions that are stored, subject to
-    retention, and invisible — the worst of both.
+    Rows arrive unowned when the caller authenticated with a token minted on the
+    CLI, which has no user behind it. Hiding those from the one dashboard that
+    can show them would mean questions that are stored, subject to retention,
+    and invisible — the worst of both.
+
+    Shared by turns, sessions and projects so all three answer "whose is this?"
+    the same way. Three different answers to that question is how a chat ends up
+    listed in a sidebar it cannot be opened from.
     """
-    queryset = InsightTurn.objects.all()
     if getattr(owner, "pk", None):
         return queryset.filter(Q(owner=owner) | Q(owner__isnull=True))
     return queryset
+
+
+def _owned_by(owner):
+    return scoped(InsightTurn.objects.all(), owner)
 
 
 def history(owner=None, limit: int = 20) -> list[dict]:
@@ -490,6 +1085,12 @@ def history(owner=None, limit: int = 20) -> list[dict]:
 
 
 def forget(owner=None) -> int:
-    """Permanent deletion of stored questions and answers."""
+    """Permanent deletion of stored questions and answers.
+
+    Sessions go with them: a chat whose messages have all been deleted is an
+    empty room, and leaving the sidebar full of them makes a deletion look like
+    it did not happen.
+    """
     deleted, _ = _owned_by(owner).delete()
+    scoped(ChatSession.objects.all(), owner).filter(turns__isnull=True).delete()
     return deleted
