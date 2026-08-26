@@ -29,6 +29,13 @@ struct RootView: View {
         } content: {
             tabs
         }
+        // First run, over everything — including the boot gate, which is why it
+        // is attached out here rather than inside `tabs`. A cover rather than a
+        // branch so the tabs behind it are already built: dismissing it lands on
+        // a Today screen that has finished laying out.
+        .fullScreenCover(isPresented: onboardingBinding) {
+            OnboardingView { services.completeOnboarding() }
+        }
         // Stated once, in front of everything, when the server the app is
         // configured to use did not answer at launch.
         //
@@ -69,6 +76,16 @@ struct RootView: View {
             // flight — that would discard an answer already being written.
             if tab == .insights, !engine.isAsking { engine.newChat() }
         }
+    }
+
+    /// Read-only in practice: the cover is dismissed by `completeOnboarding`,
+    /// never by a swipe, because there is no partial state worth keeping. The
+    /// setter exists only because `fullScreenCover` requires one.
+    private var onboardingBinding: Binding<Bool> {
+        Binding(
+            get: { services.needsOnboarding },
+            set: { if !$0 { services.completeOnboarding() } }
+        )
     }
 
     /// `alert(isPresented:)` wants a `Bool` binding, and the message is a

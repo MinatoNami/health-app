@@ -31,7 +31,12 @@ struct TodayView: View {
                 LazyVStack(alignment: .leading, spacing: 26) {
                     header
 
-                    if !authorization.hasRequested {
+                    // Onboarding covers the first run. This is the *second*
+                    // case: someone who skipped it, or declined at the prompt.
+                    // It cannot tell those apart — read authorisation is
+                    // deliberately opaque, and an empty store looks exactly
+                    // like a refused one — so it says neither.
+                    if !authorization.hasRequested, !services.needsOnboarding {
                         grantAccessCard
                     }
 
@@ -237,7 +242,7 @@ struct TodayView: View {
             Text("Grant Health access to begin")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Ink.primary)
-            Text("You'll be asked once per data type, ever. Enable everything you want on the Data tab first.")
+            Text("You'll be asked once per data type, ever. Choose the groups first — afterwards, changing your mind means a trip to Settings.")
                 .font(.system(size: 13))
                 .foregroundStyle(Ink.muted)
                 .fixedSize(horizontal: false, vertical: true)

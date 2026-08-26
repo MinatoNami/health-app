@@ -36,6 +36,12 @@ read when something stops arriving.
 
 ## Screens
 
+First launch:
+
+<img src="screenshots/00-onboarding.png" alt="Onboarding" width="240">
+
+Then:
+
 | Today | Insights | Trends | Data |
 |---|---|---|---|
 | ![Today](screenshots/01-today.png) | ![Insights](screenshots/02-insights.png) | ![Trends](screenshots/03-trends.png) | ![Data](screenshots/04-data.png) |

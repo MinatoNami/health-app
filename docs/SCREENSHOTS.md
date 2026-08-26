@@ -60,6 +60,13 @@ xcrun xcresulttool export attachments --path /tmp/shots.xcresult --output-path /
 sips -Z 900 docs/screenshots/*.png
 ```
 
+`OnboardingTests` needs no server — onboarding runs before any of that exists
+— and resets the once-per-install flag with a DEBUG-only `-resetFirstRun`
+launch argument. The permission step itself is **not** automatable: tapping
+Request Health Access raises a system Health sheet that is not in the app's
+element tree, so XCUITest can neither see nor dismiss it. The step beyond it is
+entered directly with `-onboardingStep=connect` rather than left unverified.
+
 `ScreenshotTests` holds two tests. `testCaptureEveryTab` photographs the four
 tabs; `testServerUnreachableAlert` signs in, repoints the URL at a port nothing
 listens on, relaunches, and checks the startup alert appears with all three of

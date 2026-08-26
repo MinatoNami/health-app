@@ -151,6 +151,27 @@ final class AppServices: ObservableObject {
     /// the brief rather than the general screen.
     @Published var showBriefOnOpen = false
 
+    /// Whether first-run onboarding still has to happen.
+    ///
+    /// Persisted rather than derived from `authorization.hasRequested`, because
+    /// the two are different questions: someone who read the intro and chose
+    /// "Not now" has been onboarded and has not granted anything, and showing
+    /// them the same three promises on every launch until they relent is how an
+    /// intro screen becomes a nag.
+    @Published private(set) var needsOnboarding: Bool
+
+    private struct FirstRun: Codable { var completed = false }
+    private let firstRunStore = StateStore<FirstRun>(
+        filename: "first-run.json", fallback: FirstRun()
+    )
+
+    /// Finishes onboarding, whichever way it ended.
+    func completeOnboarding() {
+        needsOnboarding = false
+        firstRunStore.mutate { $0.completed = true }
+        Log.shared.info("app", "Onboarding completed")
+    }
+
     /// Why the configured server could not be reached at startup, if it could
     /// not. `RootView` puts this in front of everything as a blocking alert.
     ///
@@ -181,6 +202,19 @@ final class AppServices: ObservableObject {
         self.backgroundSync = BackgroundSync(authorization: auth, engine: engine)
         self.dailyBrief = DailyBriefScheduler(engine: engine)
         self.syncFailure = SyncFailureNotifier(engine: engine)
+        // An install that already granted Health access predates this screen;
+        // it has effectively been onboarded and must not be sent back through.
+        var pending = !firstRunStore.value.completed && !auth.hasRequested
+        #if DEBUG
+        // Onboarding is a once-per-install screen, which makes it the one flow
+        // a UI test cannot reach twice — and the flag that hides it is exactly
+        // the thing likeliest to break. DEBUG only, so it cannot ship.
+        if ProcessInfo.processInfo.arguments.contains("-resetFirstRun") {
+            firstRunStore.mutate { $0.completed = false }
+            pending = true
+        }
+        #endif
+        self.needsOnboarding = pending
     }
 
     /// Must run inside `didFinishLaunchingWithOptions`. `BGTaskScheduler.register`
