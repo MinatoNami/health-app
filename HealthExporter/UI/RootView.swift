@@ -38,7 +38,13 @@ struct RootView: View {
             Button("Retry") {
                 Task { await services.checkServerReachable() }
             }
-            Button("Continue Offline") { services.startupServerError = nil }
+            // `.cancel` and not merely a third button. Without a cancel role
+            // SwiftUI synthesises its own "Cancel" — a fourth option, sitting
+            // below Close App, that does exactly what this one does and says
+            // nothing about what continuing means. Carrying the role here both
+            // removes it and makes the swipe-to-dismiss gesture land on the
+            // sensible choice.
+            Button("Continue Offline", role: .cancel) { services.startupServerError = nil }
             Button("Close App", role: .destructive) { services.closeApp() }
         } message: {
             Text(services.startupServerError ?? "")

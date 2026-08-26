@@ -67,21 +67,44 @@ final class ScreenshotTests: XCTestCase {
         capture("Settings")
     }
 
+    /// The startup alert, and the only runtime check that it appears at all.
+    ///
+    /// Hermetic: it signs in against the real demo server so there is a valid
+    /// token and uploading is on — `sink.isUsable` gates the whole check — then
+    /// repoints the URL at a port nothing listens on and relaunches. Port 1 is
+    /// reserved and refuses immediately, so this does not wait out a timeout.
+    func testServerUnreachableAlert() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let server = try XCTUnwrap(environment["SCREENSHOT_SERVER"])
+        let user = try XCTUnwrap(environment["SCREENSHOT_USER"])
+        let password = try XCTUnwrap(environment["SCREENSHOT_PASSWORD"])
+
+        try signIn(server: server, user: user, password: password)
+        setServerURL("https://127.0.0.1:1")
+
+        app.terminate()
+        app.launch()
+
+        let alert = app.alerts["Can't reach the server"]
+        XCTAssertTrue(alert.waitForExistence(timeout: 30), "no alert for an unreachable server")
+        for choice in ["Retry", "Continue Offline", "Close App"] {
+            XCTAssertTrue(alert.buttons[choice].exists, "missing \(choice)")
+        }
+        capture("Unreachable")
+
+        // Continue Offline carries the cancel role, so dismissing leaves the
+        // cached figures on screen rather than an empty app.
+        alert.buttons["Continue Offline"].tap()
+        XCTAssertTrue(app.staticTexts["Highlights"].waitForExistence(timeout: 10),
+                      "dismissing left nothing behind")
+    }
+
     // MARK: - Steps
 
     private func signIn(server: String, user: String, password: String) throws {
         show("Settings")
 
-        let url = app.textFields["https://your-server"].firstMatch
-        XCTAssertTrue(url.waitForExistence(timeout: 10), "server URL field")
-        url.tap()
-        clear(url)
-        url.typeText(server)
-        // A mangled URL makes `endpoint` nil, which *disables* Sign In — so the
-        // tap below would land on nothing and the only symptom would be the
-        // thirty-second wait for a "Sign Out" that never arrives.
-        XCTAssertEqual(url.value as? String, server, "server URL did not replace cleanly")
-        dismissKeyboard()
+        setServerURL(server)
 
         // Before anything else, and deliberately after the URL is set.
         //
@@ -141,9 +164,28 @@ final class ScreenshotTests: XCTestCase {
     /// leaving it off would put a caveat in the screenshot about the test's own
     /// housekeeping.
     private func enableUploading() {
-        let toggle = app.switches["Upload automatically"].firstMatch
-        guard scrollTo(toggle, attempts: 10) else { return }
-        if (toggle.value as? String) == "0" { toggle.tap() }
+        // Back to the top first. `scrollTo` only swipes forward, and this
+        // toggle sits *above* the Account section the sign-in just left us at —
+        // so searching from here scrolls away from it and finds nothing. It
+        // returned quietly when that happened, which meant uploading stayed off
+        // and `sink.isUsable` stayed false with no sign anything had gone wrong.
+        for _ in 0..<8 { app.swipeDown() }
+
+        let row = app.switches["Upload automatically"].firstMatch
+        XCTAssertTrue(scrollTo(row, attempts: 6), "Upload automatically toggle")
+        guard (row.value as? String) == "0" else { return }
+
+        // Tap the switch, not the row. A SwiftUI `Toggle` in a `List` publishes
+        // two elements — the full-width labelled row and the control inside it —
+        // and only the control responds. `row.tap()` lands in the middle of the
+        // label and changes nothing, silently.
+        let control = row.switches.firstMatch
+        if control.exists {
+            control.tap()
+        } else {
+            row.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        }
+        XCTAssertEqual(row.value as? String, "1", "uploading did not switch on")
     }
 
     private func show(_ tab: String) {
@@ -158,6 +200,23 @@ final class ScreenshotTests: XCTestCase {
         shot.name = name
         shot.lifetime = .keepAlways
         add(shot)
+    }
+
+    /// Replaces the server URL in Settings.
+    ///
+    /// Assumes the Settings tab is showing. A mangled URL makes `endpoint` nil,
+    /// which *disables* Sign In — so a bad replace here shows up thirty seconds
+    /// later as a "Sign Out" that never arrives, nowhere near the cause.
+    private func setServerURL(_ server: String) {
+        show("Settings")
+        for _ in 0..<8 { app.swipeDown() }
+        let url = app.textFields["https://your-server"].firstMatch
+        XCTAssertTrue(url.waitForExistence(timeout: 10), "server URL field")
+        url.tap()
+        clear(url)
+        url.typeText(server)
+        XCTAssertEqual(url.value as? String, server, "server URL did not replace cleanly")
+        dismissKeyboard()
     }
 
     /// Puts the keyboard away.

@@ -60,13 +60,20 @@ xcrun xcresulttool export attachments --path /tmp/shots.xcresult --output-path /
 sips -Z 900 docs/screenshots/*.png
 ```
 
-The test **skips** unless `SCREENSHOT_SERVER` is set, so an ordinary
+`ScreenshotTests` holds two tests. `testCaptureEveryTab` photographs the five
+tabs; `testServerUnreachableAlert` signs in, repoints the URL at a port nothing
+listens on, relaunches, and checks the startup alert appears with all three of
+its buttons. The second is the only runtime coverage that check has — the
+condition needs a signed-in app pointed at a dead server, which no unit test can
+arrange.
+
+The tests **skip** unless `SCREENSHOT_SERVER` is set, so an ordinary
 `xcodebuild test` on a machine with no demo server does not fail on a fixture it
 cannot reach.
 
 ---
 
-## Four things that will bite you
+## Five things that will bite you
 
 **`TEST_RUNNER_` is not decoration.** `xcodebuild` does not pass the host's
 environment to a test running on the simulator. Variables prefixed
@@ -85,6 +92,11 @@ field, which is not an obvious thing to debug. The test signs out first, and
 deliberately sets the server URL *before* doing so: sign-out revokes against
 whatever server is configured, and that ordering guarantees the request goes to
 the throwaway instance rather than to whatever the leftover token belongs to.
+
+**A SwiftUI `Toggle` in a `List` publishes two elements** — the full-width
+labelled row and the control inside it — and only the control responds to a tap.
+`app.switches["Upload automatically"].tap()` lands in the middle of the label
+and changes nothing, silently. Tap the nested switch.
 
 **The test relaunches the app after signing in.** Launch fetches the snapshot
 before the test has a valid token, so those requests 401 and the screens keep

@@ -44,6 +44,14 @@ Generated data on a throwaway server, captured by
 `HealthExporterUITests/ScreenshotTests` — see [SCREENSHOTS.md](SCREENSHOTS.md)
 for how to refresh them and why they are never taken by hand.
 
+And the startup check, when the configured server does not answer:
+
+<img src="screenshots/06-unreachable.png" alt="Can't reach the server" width="280">
+
+Retry first, because the usual cause is a laptop that has not woken up.
+*Continue Offline* carries the cancel role — the cached figures are already on
+screen behind it.
+
 | Tab | What it is |
 |---|---|
 | **Status** | Sync state, the outbox, last upload, the morning brief |
