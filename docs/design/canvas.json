@@ -1,0 +1,48 @@
+{
+  "pages": [
+    { "id": "page-1", "name": "Screens & flow" },
+    { "id": "page-2", "name": "Analysis & research" }
+  ],
+  "artboards": [
+    { "file": "Flow.dc.html", "x": 0, "y": 0, "w": 1320, "h": 660, "page": "page-1", "title": "Flow — how the screens connect" },
+
+    { "file": "Main.dc.html", "x": 0, "y": 820, "w": 390, "h": 844, "page": "page-1", "title": "1 · Today" },
+    { "file": "MetricDetail.dc.html", "x": 490, "y": 820, "w": 390, "h": 844, "page": "page-1", "title": "2 · Metric detail" },
+    { "file": "InsightsEmpty.dc.html", "x": 980, "y": 820, "w": 390, "h": 844, "page": "page-1", "title": "3 · Insights — new" },
+
+    { "file": "InsightsAnswer.dc.html", "x": 0, "y": 1810, "w": 390, "h": 844, "page": "page-1", "title": "4 · Insights — answer" },
+    { "file": "Trends.dc.html", "x": 490, "y": 1810, "w": 390, "h": 844, "page": "page-1", "title": "5 · Trends" },
+    { "file": "Data.dc.html", "x": 980, "y": 1810, "w": 390, "h": 844, "page": "page-1", "title": "6 · Data" },
+
+    { "file": "Teardown.dc.html", "x": 0, "y": 0, "w": 1080, "h": 880, "page": "page-2" },
+    { "file": "Research.dc.html", "x": 1180, "y": 0, "w": 1080, "h": 880, "page": "page-2" },
+    { "file": "DirectionB.dc.html", "x": 2360, "y": 0, "w": 390, "h": 844, "page": "page-2", "title": "Direction B — chart-led alternate" }
+  ],
+  "annotations": [
+    {
+      "id": "static-note",
+      "x": 1400,
+      "y": 0,
+      "w": 300,
+      "page": "page-1",
+      "text": "STATIC SCREENS\n\nThe canvas preview does not run event handlers — I tested it four ways and none fired — so these are flat screens plus the map above rather than a tap-through.\n\nEverything the prototype would have done is on the diagram, labelled with its trigger."
+    },
+    {
+      "id": "read-note",
+      "x": 1400,
+      "y": 300,
+      "w": 300,
+      "page": "page-1",
+      "text": "WHAT TO LOOK FOR\n\n· Today leads with one sentence, not six equal numbers\n· The 7-segment strip is valid_days / window_days — the error bar no competitor ships\n· Screen 2 ends with what the metric CANNOT tell you\n· Screen 4 attaches evidence to the answer\n· On screen 5 the line breaks where the watch was off"
+    },
+    {
+      "id": "alt-note",
+      "x": 2360,
+      "y": -190,
+      "w": 390,
+      "page": "page-2",
+      "text": "ALTERNATE AXIS — not a restyle\n\nData-forward instead of sentence-forward: six sparklines on one shared axis, light ground.\n\nTradeoff: faster for someone fluent in their own numbers, and it does none of the thinking for someone who is not."
+    }
+  ],
+  "launch": { "view": "canvas", "page": "page-1" }
+}

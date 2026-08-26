@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #F7F5F1; }
+    a { color: #B3453F; text-decoration: none; }
+    a:hover { color: #8E332E; }
+    * { box-sizing: border-box; }
+  </style>
+</helmet>
+
+<div style="width: 390px; height: 844px; background: #F7F5F1; font-family: 'IBM Plex Sans', 'Helvetica Neue', system-ui, sans-serif; color: #1B1A18; overflow: hidden; display: flex; flex-direction: column;">
+
+  <div style="height: 56px; flex-shrink: 0;"></div>
+
+  <div style="flex-grow: 1; overflow: hidden; padding: 0 20px; display: flex; flex-direction: column; gap: 20px;">
+
+    <div style="display: flex; align-items: baseline; justify-content: space-between;">
+      <div style="font-size: 22px; font-weight: 600; letter-spacing: -0.018em;">Last 7 days</div>
+      <div style="font-size: 12px; color: #8A857C; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">vs prior 28</div>
+    </div>
+
+    <!-- Direction B: the chart IS the summary. One shared axis, six sparklines. -->
+    <div style="display: flex; flex-direction: column; gap: 0; border-top: 1px solid #DED9D0;">
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 15px 0; border-bottom: 1px solid #DED9D0;">
+        <div style="width: 74px; flex-shrink: 0; font-size: 13px; color: #56524B;">Exercise</div>
+        <svg width="96" height="30" viewBox="0 0 96 30" style="flex-shrink: 0;">
+          <polyline points="0,22 16,20 32,21 48,15 64,10 80,7 96,5" fill="none" stroke="#1B1A18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          <line x1="0" y1="19" x2="96" y2="19" stroke="#C9C3B8" stroke-width="1" stroke-dasharray="2 3"></line>
+        </svg>
+        <div style="flex-grow: 1; text-align: right; font-size: 15px; font-weight: 600; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">58<span style="font-size: 11px; color: #8A857C; font-weight: 400;"> min</span></div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 15px 0; border-bottom: 1px solid #DED9D0;">
+        <div style="width: 74px; flex-shrink: 0; font-size: 13px; color: #56524B;">Steps</div>
+        <svg width="96" height="30" viewBox="0 0 96 30" style="flex-shrink: 0;">
+          <polyline points="0,20 16,18 32,19 48,14 64,11 80,9 96,8" fill="none" stroke="#1B1A18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          <line x1="0" y1="18" x2="96" y2="18" stroke="#C9C3B8" stroke-width="1" stroke-dasharray="2 3"></line>
+        </svg>
+        <div style="flex-grow: 1; text-align: right; font-size: 15px; font-weight: 600; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">12.3<span style="font-size: 11px; color: #8A857C; font-weight: 400;">k</span></div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 15px 0; border-bottom: 1px solid #DED9D0;">
+        <div style="width: 74px; flex-shrink: 0; font-size: 13px; color: #56524B;">Sleep</div>
+        <svg width="96" height="30" viewBox="0 0 96 30" style="flex-shrink: 0;">
+          <polyline points="0,17 16,19 32,16 48,14 64,13 80,11 96,12" fill="none" stroke="#1B1A18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          <line x1="0" y1="17" x2="96" y2="17" stroke="#C9C3B8" stroke-width="1" stroke-dasharray="2 3"></line>
+        </svg>
+        <div style="flex-grow: 1; text-align: right; font-size: 15px; font-weight: 600; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">7.0<span style="font-size: 11px; color: #8A857C; font-weight: 400;"> hr</span></div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 15px 0; border-bottom: 1px solid #DED9D0;">
+        <div style="width: 74px; flex-shrink: 0; font-size: 13px; color: #56524B;">Resting HR</div>
+        <svg width="96" height="30" viewBox="0 0 96 30" style="flex-shrink: 0;">
+          <polyline points="0,12 16,13 32,12 48,14 64,15 80,16 96,16" fill="none" stroke="#1B1A18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          <line x1="0" y1="13" x2="96" y2="13" stroke="#C9C3B8" stroke-width="1" stroke-dasharray="2 3"></line>
+        </svg>
+        <div style="flex-grow: 1; text-align: right; font-size: 15px; font-weight: 600; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">58<span style="font-size: 11px; color: #8A857C; font-weight: 400;"> bpm</span></div>
+      </div>
+
+      <div style="display: flex; align-items: center; gap: 14px; padding: 15px 0; border-bottom: 1px solid #DED9D0;">
+        <div style="width: 74px; flex-shrink: 0; font-size: 13px; color: #56524B;">HRV</div>
+        <svg width="96" height="30" viewBox="0 0 96 30" style="flex-shrink: 0;">
+          <polyline points="0,20 16,18 32,19 48,15 64,13 80,10 96,9" fill="none" stroke="#1B1A18" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          <line x1="0" y1="18" x2="96" y2="18" stroke="#C9C3B8" stroke-width="1" stroke-dasharray="2 3"></line>
+        </svg>
+        <div style="flex-grow: 1; text-align: right; font-size: 15px; font-weight: 600; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">53<span style="font-size: 11px; color: #8A857C; font-weight: 400;"> ms</span></div>
+      </div>
+
+      <!-- The gap reads as a gap, not a dip -->
+      <div style="display: flex; align-items: center; gap: 14px; padding: 15px 0; border-bottom: 1px solid #DED9D0;">
+        <div style="width: 74px; flex-shrink: 0; font-size: 13px; color: #8A857C;">Blood O&#8322;</div>
+        <svg width="96" height="30" viewBox="0 0 96 30" style="flex-shrink: 0;">
+          <line x1="0" y1="15" x2="96" y2="15" stroke="#C9C3B8" stroke-width="1.6" stroke-dasharray="3 4" stroke-linecap="round"></line>
+        </svg>
+        <div style="flex-grow: 1; text-align: right; font-size: 12px; color: #8A857C; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">no data</div>
+      </div>
+
+    </div>
+
+    <div style="font-size: 12.5px; color: #8A857C; line-height: 1.5; text-wrap: pretty;">
+      Dotted line marks your 28-day average. Every series shares one time axis, so a week reads across all six at once.
+    </div>
+
+  </div>
+
+  <div style="flex-shrink: 0; padding: 14px 20px 26px;">
+    <div style="padding: 12px 15px; border-radius: 10px; background: #EBE7E0; border: 1px solid #DED9D0; font-size: 13.5px; color: #56524B;">Ask about these figures</div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

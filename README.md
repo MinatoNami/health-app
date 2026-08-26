@@ -40,6 +40,7 @@ built, and the invariants everything else is organised around.
 | [docs/LIFECYCLE.md](docs/LIFECYCLE.md) | App startup, caching, and the rules that keep the main thread free |
 | [docs/PRIVACY.md](docs/PRIVACY.md) | What is collected, where it goes, how to delete it |
 | [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md) | Regenerating the screenshots, and the traps in doing so |
+| [docs/design/](docs/design/) | A proposed redesign: six screens, the flow, and the research behind it |
 | [docs/ORIGINAL-PLAN.md](docs/ORIGINAL-PLAN.md) | The design document written before any of it existed |
 
 **This file** covers running the app on your iPhone, the wire format, and how

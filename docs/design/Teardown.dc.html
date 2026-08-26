@@ -1,0 +1,74 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #121113; }
+    a { color: #E64F5A; text-decoration: none; }
+    a:hover { color: #F2727B; }
+    * { box-sizing: border-box; }
+  </style>
+</helmet>
+
+<div style="width: 1080px; height: 880px; background: #121113; font-family: 'IBM Plex Sans', 'Helvetica Neue', system-ui, sans-serif; color: #F4F1EC; padding: 44px 48px; display: flex; flex-direction: column; gap: 30px;">
+
+  <div style="display: flex; flex-direction: column; gap: 8px;">
+    <div style="font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: #E64F5A; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">Teardown &mdash; what is on screen today</div>
+    <div style="font-size: 30px; font-weight: 600; letter-spacing: -0.02em;">The app follows Apple Health so closely it inherits Health's problem</div>
+    <div style="font-size: 15px; color: #9A939B; line-height: 1.55; max-width: 820px; text-wrap: pretty;">
+      <code style="font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size: 13.5px; color: #C9C2C8;">MetricStyle.swift</code> says the colour language copies Health "so there is no second colour language to learn". That is a sound call for colour and the wrong call for the home screen: Health is a <em style="font-style: normal; color: #C9C2C8;">database browser</em>, and this app is the one thing Health is not &mdash; something that has already done the thinking.
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 40px; flex-grow: 1;">
+
+    <div style="flex-shrink: 0; display: flex; flex-direction: column; gap: 10px;">
+      <img src="01-summary.png" alt="Current Summary tab" style="width: 238px; border-radius: 14px; border: 1px solid #2E2A30; display: block;">
+      <div style="font-size: 11px; color: #665F68; text-align: center; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">Summary, as shipped</div>
+    </div>
+
+    <div style="flex-grow: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; align-content: start;">
+
+      <div style="border-left: 2px solid #E64F5A; padding-left: 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="font-size: 15px; font-weight: 600;">Six numbers, all shouting equally</div>
+        <div style="font-size: 13.5px; color: #9A939B; line-height: 1.55;">Steps at +32% and Weight at &minus;2% get identical weight, type size and colour. The screen has no opinion, so the reader has to form one. Nothing here says <em style="font-style: normal; color: #C9C2C8;">this is the thing that changed</em>.</div>
+      </div>
+
+      <div style="border-left: 2px solid #E64F5A; padding-left: 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="font-size: 15px; font-weight: 600;">The best asset is invisible</div>
+        <div style="font-size: 13.5px; color: #9A939B; line-height: 1.55;">The server computes a confidence grade and a reason for every figure &mdash; "7 of 7 days have data". None of it reaches this screen. The one thing no competitor ships is the one thing not shown.</div>
+      </div>
+
+      <div style="border-left: 2px solid #E64F5A; padding-left: 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="font-size: 15px; font-weight: 600;">Three of five tabs are plumbing</div>
+        <div style="font-size: 13.5px; color: #9A939B; line-height: 1.55;">Metrics, Server and Settings are all "is the machine working". Real estate at the bottom of the screen is the most expensive in the app, and 60% of it is diagnostics.</div>
+      </div>
+
+      <div style="border-left: 2px solid #E64F5A; padding-left: 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="font-size: 15px; font-weight: 600;">A permission card that never leaves</div>
+        <div style="font-size: 13.5px; color: #9A939B; line-height: 1.55;">"Grant Health access to begin" occupies the top third above the actual content. Onboarding state is sitting in the permanent layout.</div>
+      </div>
+
+      <div style="border-left: 2px solid #6FBFA8; padding-left: 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="font-size: 15px; font-weight: 600; color: #A8DCCB;">Worth keeping: the restraint</div>
+        <div style="font-size: 13.5px; color: #9A939B; line-height: 1.55;">No gamification, no streaks, no invented score, no badges. The docstring on <code style="font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; font-size: 12.5px;">StatusView</code> &mdash; "healthy days say almost nothing, which is what makes the bad day visible" &mdash; is a better design principle than most shipped health apps have.</div>
+      </div>
+
+      <div style="border-left: 2px solid #6FBFA8; padding-left: 16px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="font-size: 15px; font-weight: 600; color: #A8DCCB;">Worth keeping: personal baselines</div>
+        <div style="font-size: 13.5px; color: #9A939B; line-height: 1.55;">Every figure is already "against your own preceding 28 days", never a population norm. Whoop charges a subscription for that idea. It is stated here in 8pt grey.</div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>
