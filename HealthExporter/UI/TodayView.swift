@@ -41,10 +41,16 @@ struct TodayView: View {
                     }
 
                     if let snapshot = engine.snapshot {
-                        lead(snapshot)
-                        if !movers(snapshot).isEmpty { moversSection(snapshot) }
-                        if !steady(snapshot).isEmpty { steadySection(snapshot) }
-                        ForEach(stale(snapshot)) { staleCallout($0) }
+                        if isBuildingBaseline(snapshot) {
+                            buildingLead(snapshot)
+                            recordedSoFar(snapshot)
+                            if let banner = runningBanner { SyncBanner(state: banner) }
+                        } else {
+                            lead(snapshot)
+                            if !movers(snapshot).isEmpty { moversSection(snapshot) }
+                            if !steady(snapshot).isEmpty { steadySection(snapshot) }
+                            ForEach(stale(snapshot)) { staleCallout($0) }
+                        }
                     } else {
                         placeholder
                     }
@@ -132,6 +138,105 @@ struct TodayView: View {
                 )
             }
         }
+    }
+
+    // MARK: - The first week
+
+    /// True while there is data but nothing worth comparing yet.
+    ///
+    /// Week one is the state this app's whole idiom has nothing to say in:
+    /// every figure it shows is "your last 7 days against your own preceding
+    /// 28", and on day three there is no preceding 28. Without this branch the
+    /// screen fell through to "Nothing moved much against your last four
+    /// weeks" — which is not a cautious way of saying *no baseline yet*, it is
+    /// a claim of stability that was never measured.
+    private func isBuildingBaseline(_ snapshot: HealthSnapshot) -> Bool {
+        !snapshot.metrics.isEmpty && snapshot.metrics.allSatisfy { !$0.isUsable }
+    }
+
+    /// The metric with the most days behind it, usable or not — the honest
+    /// denominator for "how far along is this".
+    private func widest(_ snapshot: HealthSnapshot) -> HealthSnapshot.Comparison? {
+        snapshot.metrics.max { $0.current.validDays < $1.current.validDays }
+    }
+
+    private func buildingLead(_ snapshot: HealthSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 13) {
+            Text("Not enough days yet to compare anything.")
+                .font(.lead)
+                .kerning(-0.5)
+                .lineSpacing(2)
+                .foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let widest = widest(snapshot) {
+                CoverageSummary(
+                    validDays: widest.current.validDays,
+                    windowDays: widest.current.windowDays
+                )
+            }
+
+            Text("A week against your own baseline needs a baseline. Yours is being built — comparisons start appearing once there are enough days on both sides of the window.")
+                .font(.system(size: 13.5))
+                .lineSpacing(2)
+                .foregroundStyle(Ink.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// What has actually been recorded, with the day count attached.
+    ///
+    /// Deliberately *not* labelled "yesterday". The value is the mean over
+    /// however many days exist, and on two days that is a mean of two — calling
+    /// it a single day would be the same species of lie as showing it as a
+    /// weekly average.
+    private func recordedSoFar(_ snapshot: HealthSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recorded so far").sectionLabelStyle()
+            VStack(spacing: 0) {
+                ForEach(Array(recorded(snapshot).enumerated()), id: \.element.id) { index, metric in
+                    if index > 0 { Divider().overlay(Ink.divider) }
+                    HStack {
+                        Text(MetricStyle.shortLabel(metric.metricSlug, fallback: metric.label))
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(Ink.secondary)
+                        Spacer()
+                        Text(MetricFormat.value(metric.current.value, slug: metric.metricSlug))
+                            .font(.figure(13.5))
+                            .foregroundStyle(Ink.primary)
+                        Text(MetricStyle.unit(metric.unit, slug: metric.metricSlug))
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Ink.faint)
+                        Text("· \(metric.current.validDays)d")
+                            .font(.figure(11.5, weight: .regular))
+                            .foregroundStyle(Ink.faint)
+                    }
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 13)
+                }
+            }
+            .cardStyle()
+
+            Text("Averages over the days recorded, not single readings. One day is not a trend and is not shown as one.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Ink.faint)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func recorded(_ snapshot: HealthSnapshot) -> [HealthSnapshot.Comparison] {
+        snapshot.metrics.filter { ($0.current.validDays) > 0 }
+    }
+
+    /// The real sync state, if one is running. No invented "40 minutes left":
+    /// nothing in this app knows how long a backfill has to go.
+    private var runningBanner: SyncBanner.State? {
+        SyncBanner.state(
+            phase: engine.phase,
+            lastSyncedAt: engine.settings.lastFullSyncAt,
+            pendingBatches: engine.pendingBatches,
+            uploadEnabled: engine.settings.sink.enabled
+        )
     }
 
     private func headline(_ snapshot: HealthSnapshot) -> String {
@@ -282,7 +387,13 @@ struct TodayView: View {
                 Image(systemName: "sparkles")
                     .font(.system(size: 15))
                     .foregroundStyle(Ink.accent)
-                Text("Ask about your health data")
+                // Not disabled while the baseline builds. The server answers
+                // a thin week honestly — that is what the confidence grades are
+                // for — and "why is there nothing here yet?" is a fair question
+                // to want answered on day two.
+                Text(engine.snapshot.map(isBuildingBaseline) == true
+                     ? "Ask — answers will say how thin the data is"
+                     : "Ask about your health data")
                     .font(.system(size: 14))
                     .foregroundStyle(Ink.faint)
                 Spacer(minLength: 0)

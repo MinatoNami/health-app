@@ -36,9 +36,12 @@ read when something stops arriving.
 
 ## Screens
 
-First launch:
+First launch, and the week after it — before there is a baseline to compare
+against, Today says so rather than reporting stability it has not measured:
 
-<img src="screenshots/00-onboarding.png" alt="Onboarding" width="240">
+| First launch | The first week |
+|---|---|
+| ![Onboarding](screenshots/00-onboarding.png) | ![The first week](screenshots/06-first-week.png) |
 
 Then:
 

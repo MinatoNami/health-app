@@ -18,14 +18,33 @@ final class OnboardingTests: XCTestCase {
         app.launchArguments = ["-resetFirstRun"]
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+        dismissServerAlertIfPresent()
+    }
+
+    /// A real first run has no server configured and so cannot raise the
+    /// unreachable alert. A simulator carrying a dead URL from an earlier test
+    /// can — and it arrives *after* launch, on top of the onboarding cover, so
+    /// a one-shot check before it exists misses it.
+    private func dismissServerAlertIfPresent() {
+        let keepGoing = app.alerts.buttons["Continue Offline"].firstMatch
+        if keepGoing.waitForExistence(timeout: 2) { keepGoing.tap() }
+    }
+
+    /// Waits for the intro, clearing anything that lands on top of it.
+    @discardableResult
+    private func waitForIntro(timeout: TimeInterval = 25) -> Bool {
+        let intro = app.staticTexts["Your health data, on a server you own."]
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if intro.exists { return true }
+            dismissServerAlertIfPresent()
+        }
+        return intro.exists
     }
 
     func testTheFlowReachesTheGroupPicker() throws {
         // 1 — the intro
-        XCTAssertTrue(
-            app.staticTexts["Your health data, on a server you own."].waitForExistence(timeout: 15),
-            "onboarding did not appear on a reset first run"
-        )
+        XCTAssertTrue(waitForIntro(), "onboarding did not appear on a reset first run")
         capture("Onboarding")
 
         // The warning that justifies the whole flow existing.
@@ -47,9 +66,7 @@ final class OnboardingTests: XCTestCase {
     }
 
     func testItDoesNotComeBack() throws {
-        XCTAssertTrue(
-            app.staticTexts["Your health data, on a server you own."].waitForExistence(timeout: 15)
-        )
+        XCTAssertTrue(waitForIntro())
         app.buttons["Not now"].tap()
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 15))
 
@@ -57,6 +74,7 @@ final class OnboardingTests: XCTestCase {
         app.terminate()
         app.launchArguments = []
         app.launch()
+        dismissServerAlertIfPresent()
 
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 20),
                       "the app did not come back up")
@@ -77,9 +95,12 @@ final class OnboardingTests: XCTestCase {
         app.terminate()
         app.launchArguments = ["-resetFirstRun", "-onboardingStep=connect"]
         app.launch()
+        dismissServerAlertIfPresent()
 
-        XCTAssertTrue(app.staticTexts["Now point it somewhere."].waitForExistence(timeout: 20),
-                      "the server step did not render")
+        let server = app.staticTexts["Now point it somewhere."]
+        let deadline = Date().addingTimeInterval(25)
+        while Date() < deadline, !server.exists { dismissServerAlertIfPresent() }
+        XCTAssertTrue(server.exists, "the server step did not render")
         XCTAssertTrue(app.buttons["Connect a server"].exists)
         capture("OnboardingServer")
 

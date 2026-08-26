@@ -33,6 +33,18 @@ final class ScreenshotTests: XCTestCase {
         app = XCUIApplication()
         app.launch()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30))
+        dismissOnboardingIfPresent()
+    }
+
+    /// A clean simulator opens on onboarding, which covers everything this
+    /// file wants to photograph. Skipping it is right here: these captures are
+    /// of the app in use, and `OnboardingTests` owns the first-run flow.
+    private func dismissOnboardingIfPresent() {
+        let notNow = app.buttons["Not now"].firstMatch
+        if notNow.waitForExistence(timeout: 5) {
+            notNow.tap()
+            _ = app.tabBars.buttons["Today"].waitForExistence(timeout: 15)
+        }
     }
 
     func testCaptureEveryTab() throws {
@@ -104,6 +116,12 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground, "Continue Offline closed the app")
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 5),
                       "the app is not navigable after dismissing")
+
+        // Put the URL back. The Simulator keeps this app's container between
+        // tests *and* between runs, so a dead server left in Settings raises
+        // the unreachable alert over the first screen of every later test —
+        // which is exactly how this one broke all three onboarding tests.
+        setServerURL(server)
     }
 
     // MARK: - Steps
@@ -235,7 +253,11 @@ final class ScreenshotTests: XCTestCase {
         for _ in 0..<8 { app.swipeDown() }
         let url = app.textFields["https://your-server"].firstMatch
         XCTAssertTrue(url.waitForExistence(timeout: 10), "server URL field")
-        url.tap()
+        // Tap the trailing edge, not the centre. A tap puts the caret where it
+        // landed and delete only removes to the left of it, so tapping the
+        // middle of a long default URL leaves its tail permanently out of
+        // reach — "https://localhost:8443" plus a stranded ".ts.net".
+        url.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).tap()
         clear(url)
         url.typeText(server)
         XCTAssertEqual(url.value as? String, server, "server URL did not replace cleanly")
@@ -262,10 +284,18 @@ final class ScreenshotTests: XCTestCase {
     /// reports its placeholder as its value, which is the one case that must
     /// not be deleted.
     private func clear(_ field: XCUIElement) {
-        guard let current = field.value as? String,
-              !current.isEmpty,
-              current != field.placeholderValue else { return }
-        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
+        // Loops, because one pass is not reliably enough. `value` on a field
+        // whose text overflows its width does not always report the whole
+        // string, so deleting `value.count` characters can leave a tail behind
+        // — which is how a fresh install's default tailnet URL turned
+        // "https://localhost:8443" into "https://localhost:8443.ts.net".
+        for _ in 0..<6 {
+            guard let current = field.value as? String,
+                  !current.isEmpty,
+                  current != field.placeholderValue else { return }
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue,
+                                  count: current.count + 4))
+        }
     }
 
     /// Scrolls until `element` is on screen, or gives up.
