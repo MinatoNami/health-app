@@ -4,9 +4,9 @@ An iOS app that reads Apple Health data and exports it as NDJSON to your own
 server, which computes health analysis from it and can explain that analysis with
 a language model running on your own machine.
 
-| Summary | Insights | Server |
+| Today | Insights | Trends |
 |---|---|---|
-| ![The Summary tab](docs/screenshots/01-summary.png) | ![The Insights tab](docs/screenshots/02-insights.png) | ![The Server tab](docs/screenshots/04-server.png) |
+| ![The Today tab](docs/screenshots/01-today.png) | ![The Insights tab](docs/screenshots/02-insights.png) | ![The Trends tab](docs/screenshots/03-trends.png) |
 
 *Generated data, not a real health record. Captured by a UI test —
 [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md).*

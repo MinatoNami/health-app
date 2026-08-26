@@ -34,8 +34,8 @@ also why no ATS exception is needed: the certificate validates normally.
 that terminates TLS and forwards to it will do.
 
 **Data.** Twelve weeks of it, with a deliberate gap in one metric so the "stopped
-arriving" path is visible rather than theoretical — `04-server.png` shows Blood
-Oxygen three weeks stale, which is the whole freshness design in one line.
+arriving" path is visible rather than theoretical — `04-data.png` shows Blood
+Oxygen not seen in 48 hours, which is the whole freshness design in one line.
 
 ---
 
@@ -60,7 +60,7 @@ xcrun xcresulttool export attachments --path /tmp/shots.xcresult --output-path /
 sips -Z 900 docs/screenshots/*.png
 ```
 
-`ScreenshotTests` holds two tests. `testCaptureEveryTab` photographs the five
+`ScreenshotTests` holds two tests. `testCaptureEveryTab` photographs the four
 tabs; `testServerUnreachableAlert` signs in, repoints the URL at a port nothing
 listens on, relaunches, and checks the startup alert appears with all three of
 its buttons. The second is the only runtime coverage that check has — the
@@ -109,6 +109,15 @@ is both a cleaner picture and a more representative one.
 ## HealthKit is not part of this
 
 The Simulator has no Health data and `simctl privacy` has no `health` service to
-grant, so the Summary tab keeps its "Grant Health access to begin" card. That is
+grant, so the Today tab keeps its "Grant Health access to begin" card. That is
 honest — it is what the app looks like on a device that has not been granted
 access — and everything below it is real analysis of the data on the server.
+
+---
+
+## The "before" shot
+
+`docs/design/before-summary.png` is the old Summary tab, kept deliberately: the
+teardown board in [design/](design/) argues against it, and that argument stops
+making sense the moment the image is refreshed to the screen that replaced it.
+It is the one screenshot here that must **not** be regenerated.

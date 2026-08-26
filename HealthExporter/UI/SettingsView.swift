@@ -10,8 +10,10 @@ struct SettingsView: View {
     /// token, and is cleared as soon as that returns.
     @State private var password = ""
 
+    /// No `NavigationStack` of its own: this is pushed from `DataView`, which
+    /// owns the stack. A nested one here would give the pushed screen a second
+    /// navigation bar and swallow the back button.
     var body: some View {
-        NavigationStack {
             Form {
                 Section("History") {
                     DatePicker("Backfill from",
@@ -235,7 +237,6 @@ struct SettingsView: View {
                     engine.refreshCounts()
                 }
                 Button("Cancel", role: .cancel) {}
-            }
         }
     }
 }

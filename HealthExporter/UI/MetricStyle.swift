@@ -127,3 +127,59 @@ struct MetricRow: View {
         return "\(pct > 0 ? "↑" : "↓")\(Int(abs(pct).rounded()))% vs 28-day"
     }
 }
+
+/// Number formatting for the redesigned screens.
+///
+/// Split from `MetricStyle` because it is about *figures*, not about a metric's
+/// identity — and because the same rounding has to hold on the Today row, the
+/// detail hero and the steady chip. Three copies of "one decimal under ten"
+/// would drift, and a figure that reads 7.0 on one screen and 7 on the next
+/// looks like two different numbers.
+enum MetricFormat {
+
+    /// A value at a magnitude a person reads, with the thousands compressed.
+    ///
+    /// 12,270 steps becomes "12.3k". The exact figure is not the point on a
+    /// summary row — the size of it is — and five digits crowd out the label
+    /// beside them.
+    static func value(_ value: Double?, slug: String) -> String {
+        guard let value else { return "—" }
+        let magnitude = abs(value)
+
+        // Steps and distance are the only things that reach five digits, and
+        // they are also the only ones nobody quotes exactly.
+        if slug == "step_count", magnitude >= 10_000 {
+            return (value / 1000).formatted(.number.precision(.fractionLength(1))) + "k"
+        }
+        if magnitude >= 1_000 { return value.formatted(.number.precision(.fractionLength(0))) }
+        if magnitude >= 100 { return value.formatted(.number.precision(.fractionLength(0))) }
+        return value.formatted(.number.precision(.fractionLength(magnitude < 10 ? 1 : 0)))
+    }
+
+    /// A percentage change, signed. Returns "—" below one percent rather than
+    /// "0%", which reads as a measurement rather than as an absence of one.
+    static func change(_ pct: Double?) -> String {
+        guard let pct, abs(pct) >= 1 else { return "—" }
+        return (pct > 0 ? "+" : "−") + "\(Int(abs(pct).rounded()))%"
+    }
+}
+
+extension MetricStyle {
+    /// A name that fits in a chip. "Heart Rate Variability" is three words too
+    /// long for a 90pt pill, and truncating it mid-word reads as a bug.
+    static func shortLabel(_ slug: String, fallback: String) -> String {
+        switch slug {
+        case "resting_heart_rate": return "Resting HR"
+        case "heart_rate_variability_sdnn": return "HRV"
+        case "walking_heart_rate_average": return "Walking HR"
+        case "apple_exercise_time": return "Exercise"
+        case "distance_walking_running": return "Distance"
+        case "active_energy_burned": return "Energy"
+        case "oxygen_saturation": return "Blood O₂"
+        case "body_fat_percentage": return "Body fat"
+        case "sleep_analysis": return "Sleep"
+        case "body_mass": return "Weight"
+        default: return fallback
+        }
+    }
+}

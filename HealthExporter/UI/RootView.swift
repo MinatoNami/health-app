@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// Five tabs, and five is a ceiling rather than a preference: a sixth makes iOS
-/// collapse the bar to four plus a "More" list, and the two that fall in are the
-/// last two — which put sign-in behind an extra tap on an app that does nothing
-/// until you sign in. Batch files moved under Settings when Insights arrived.
+/// Four tabs: Today, Insights, Trends, Data.
+///
+/// It was five, and three of them — Metrics, Server, Settings — all answered
+/// the same question: is the machine working. That is a lot of the app's
+/// cheapest-to-reach real estate spent on plumbing, so they are one `DataView`
+/// now, with Settings pushed from it. Five remains the ceiling whatever the
+/// split: a sixth makes iOS collapse the bar to four plus a "More" list.
 ///
 /// Selection is bound to `AppServices` rather than held locally so a tap on the
 /// morning notification can switch tabs. That arrives at the app delegate before
@@ -49,6 +52,12 @@ struct RootView: View {
         } message: {
             Text(services.startupServerError ?? "")
         }
+        // `Ink` is a fixed dark palette, not an adaptive one — see
+        // `DesignTokens`. Without this the system draws its own chrome in the
+        // device's colour scheme: a near-black navigation title on a near-black
+        // ground, and every pushed `List` in light grey. A light variant is a
+        // deliberate piece of work, not a scheme flip.
+        .preferredColorScheme(.dark)
         // Switching tabs is navigating away from the conversation the drawer
         // belongs to, so it should not still be hanging over the next screen.
         .onChange(of: services.selectedTab) { _, tab in
@@ -74,21 +83,18 @@ struct RootView: View {
 
     private var tabs: some View {
         TabView(selection: $services.selectedTab) {
-            StatusView()
-                .tabItem { Label("Summary", systemImage: "heart.text.square") }
-                .tag(AppServices.Tab.status)
+            TodayView()
+                .tabItem { Label("Today", systemImage: "bolt.heart") }
+                .tag(AppServices.Tab.today)
             InsightsView()
                 .tabItem { Label("Insights", systemImage: "sparkles") }
                 .tag(AppServices.Tab.insights)
-            MetricsView()
-                .tabItem { Label("Metrics", systemImage: "list.bullet") }
-                .tag(AppServices.Tab.metrics)
-            ServerView()
-                .tabItem { Label("Server", systemImage: "server.rack") }
-                .tag(AppServices.Tab.server)
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(AppServices.Tab.settings)
+            TrendsView()
+                .tabItem { Label("Trends", systemImage: "chart.bar") }
+                .tag(AppServices.Tab.trends)
+            DataView()
+                .tabItem { Label("Data", systemImage: "gearshape") }
+                .tag(AppServices.Tab.data)
         }
         .overlay {
             if !authorization.isAvailable {

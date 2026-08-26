@@ -10,8 +10,10 @@ import SwiftUI
 struct ServerView: View {
     @EnvironmentObject private var engine: SyncEngine
 
+    /// No `NavigationStack` of its own: this is pushed from `DataView`, which
+    /// owns the stack. A nested one here would give the pushed screen a second
+    /// navigation bar and swallow the back button.
     var body: some View {
-        NavigationStack {
             List {
                 if !engine.isSignedIn {
                     Section {
@@ -54,7 +56,6 @@ struct ServerView: View {
             .task {
                 // Cached path on open; pull-to-refresh forces a recount.
                 if engine.serverStatus == nil { await engine.refreshServerStatus() }
-            }
         }
     }
 

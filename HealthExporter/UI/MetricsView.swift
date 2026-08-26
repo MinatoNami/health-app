@@ -5,8 +5,10 @@ import HealthKit
 struct MetricsView: View {
     @EnvironmentObject private var authorization: HealthAuthorization
 
+    /// No `NavigationStack` of its own: this is pushed from `DataView`, which
+    /// owns the stack. A nested one here would give the pushed screen a second
+    /// navigation bar and swallow the back button.
     var body: some View {
-        NavigationStack {
             List {
                 Section {
                     Text("iOS grants read access once per type. Enable a group "
@@ -43,7 +45,6 @@ struct MetricsView: View {
             .navigationTitle("Metrics")
             .toolbar {
                 Button("Enable All") { authorization.enableAll() }
-            }
         }
     }
 }

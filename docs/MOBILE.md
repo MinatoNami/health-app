@@ -36,9 +36,9 @@ read when something stops arriving.
 
 ## Screens
 
-| Summary | Insights | Metrics | Server | Settings |
-|---|---|---|---|---|
-| ![Summary](screenshots/01-summary.png) | ![Insights](screenshots/02-insights.png) | ![Metrics](screenshots/03-metrics.png) | ![Server](screenshots/04-server.png) | ![Settings](screenshots/05-settings.png) |
+| Today | Insights | Trends | Data |
+|---|---|---|---|
+| ![Today](screenshots/01-today.png) | ![Insights](screenshots/02-insights.png) | ![Trends](screenshots/03-trends.png) | ![Data](screenshots/04-data.png) |
 
 Generated data on a throwaway server, captured by
 `HealthExporterUITests/ScreenshotTests` — see [SCREENSHOTS.md](SCREENSHOTS.md)
@@ -46,7 +46,7 @@ for how to refresh them and why they are never taken by hand.
 
 And the startup check, when the configured server does not answer:
 
-<img src="screenshots/06-unreachable.png" alt="Can't reach the server" width="280">
+<img src="screenshots/05-unreachable.png" alt="Can't reach the server" width="280">
 
 Retry first, because the usual cause is a laptop that has not woken up.
 *Continue Offline* carries the cancel role — the cached figures are already on
@@ -54,11 +54,15 @@ screen behind it.
 
 | Tab | What it is |
 |---|---|
-| **Status** | Sync state, the outbox, last upload, the morning brief |
-| **Metrics** | Which HealthKit types are enabled, and per-type coverage |
+| **Today** | One measured sentence, what moved, what is steady, what stopped |
 | **Insights** | The conversation, chat history, the measured week |
-| **Exports** | Manual file export |
-| **Settings** | Server, account, brief, diagnostics, privacy |
+| **Trends** | One metric over time, with gaps drawn as gaps |
+| **Data** | Sources, server state, and Settings pushed from it |
+
+Four, not five. Metrics, Server and Settings all answered *is the machine
+working*, and three of five tab slots is too much of the app's
+cheapest-to-reach real estate to spend on plumbing. The reasoning, and the
+screens it came from, are in [design/](design/).
 
 ---
 

@@ -13,7 +13,7 @@ import Foundation
 /// discard them would mean a decode failure every time the server grew a field.
 
 struct HealthSnapshot: Codable, Equatable {
-    struct Window: Codable, Equatable {
+    struct Window: Codable, Equatable, Hashable {
         var value: Double?
         var validDays: Int
         var windowDays: Int
@@ -29,7 +29,7 @@ struct HealthSnapshot: Codable, Equatable {
         }
     }
 
-    struct Comparison: Codable, Equatable, Identifiable {
+    struct Comparison: Codable, Equatable, Hashable, Identifiable {
         var metricSlug: String
         var label: String
         var unit: String

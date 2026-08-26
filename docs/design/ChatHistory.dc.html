@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #121113; }
+    a { color: #E64F5A; text-decoration: none; }
+    a:hover { color: #F2727B; }
+    * { box-sizing: border-box; }
+  </style>
+</helmet>
+
+<div style="width: 390px; height: 844px; background: #121113; font-family: 'IBM Plex Sans', 'Helvetica Neue', system-ui, sans-serif; color: #F4F1EC; overflow: hidden; display: flex; flex-direction: column;">
+
+  <!-- Top inset. Deliberately empty: the real status bar draws here. -->
+  <div style="height: 54px; flex-shrink: 0;"></div>
+
+  <!-- The drawer covers the tab bar: a chat list is navigation, and it should
+       not sit under the one control that stays bright. -->
+  <div style="flex-grow: 1; display: flex; overflow: hidden; margin-top: -54px;">
+
+    <div style="width: 306px; flex-shrink: 0; background: #17151A; border-right: 1px solid #2A262E; display: flex; flex-direction: column;">
+      <div style="height: 54px; flex-shrink: 0;"></div>
+
+      <div style="padding: 0 18px 14px; display: flex; align-items: center; justify-content: space-between;">
+        <div style="font-size: 17px; font-weight: 600;">Chats</div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#E64F5A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 5v14"></path><path d="M5 12h14"></path>
+        </svg>
+      </div>
+
+      <div style="padding: 0 18px 12px;">
+        <div style="display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 0 12px; border-radius: 10px; background: #1E1B22; border: 1px solid #2A262E;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#665F68" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+          </svg>
+          <div style="font-size: 13px; color: #665F68;">Search questions</div>
+        </div>
+      </div>
+
+      <div style="flex-grow: 1; overflow: hidden;">
+      <div style="padding: 16px 18px 8px;"><div style="font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">Today</div></div>
+      <div style="padding: 11px 18px; display: flex; flex-direction: column; gap: 3px;">
+        <div style="font-size: 14px; color: #F4F1EC; line-height: 1.35;">Why did sleep improve?</div>
+        <div style="font-size: 11.5px; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">2h ago</div>
+      </div>
+      <div style="padding: 11px 18px; display: flex; flex-direction: column; gap: 3px;">
+        <div style="font-size: 14px; color: #F4F1EC; line-height: 1.35;">Am I overtraining?</div>
+        <div style="font-size: 11.5px; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">5h ago</div>
+      </div>
+      <div style="padding: 16px 18px 8px;"><div style="font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">Yesterday</div></div>
+      <div style="padding: 11px 18px; display: flex; flex-direction: column; gap: 3px;">
+        <div style="font-size: 14px; color: #F4F1EC; line-height: 1.35;">What changed after the trip?</div>
+        <div style="font-size: 11.5px; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">1d ago</div>
+      </div>
+      <div style="padding: 16px 18px 8px;"><div style="font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">Previous 7 days</div></div>
+      <div style="padding: 11px 18px; display: flex; flex-direction: column; gap: 3px;">
+        <div style="font-size: 14px; color: #F4F1EC; line-height: 1.35;">Is my resting HR normal for me?</div>
+        <div style="font-size: 11.5px; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">3d ago</div>
+      </div>
+      <div style="padding: 11px 18px; display: flex; flex-direction: column; gap: 3px;">
+        <div style="font-size: 14px; color: #F4F1EC; line-height: 1.35;">Caffeine and sleep</div>
+        <div style="font-size: 11.5px; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">5d ago</div>
+      </div>
+      <div style="padding: 11px 18px; display: flex; flex-direction: column; gap: 3px;">
+        <div style="font-size: 14px; color: #F4F1EC; line-height: 1.35;">Why is blood oxygen missing?</div>
+        <div style="font-size: 11.5px; color: #665F68; font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;">6d ago</div>
+      </div>
+        <div style="padding: 14px 18px;">
+          <div style="font-size: 13px; color: #E64F5A;">Load older chats</div>
+        </div>
+      </div>
+
+      <div style="flex-shrink: 0; padding: 12px 18px 30px; border-top: 1px solid #262229;">
+        <div style="font-size: 11.5px; color: #665F68; line-height: 1.5;">Chats are deleted after 30 days. Rated answers are kept.</div>
+      </div>
+    </div>
+
+    <!-- Scrim. Tap it or drag it away; the drag lives here and not on the panel,
+         because the panel's rows carry their own swipe actions. -->
+    <div style="flex-grow: 1; background: rgba(8, 7, 9, 0.62);"></div>
+  </div>
+
+</div>
+</x-dc>
+</body>
+</html>

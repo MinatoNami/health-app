@@ -138,7 +138,7 @@ final class AppServices: ObservableObject {
     /// Which tab is showing. Owned here rather than by `RootView` so a
     /// notification tap can change it — the tap arrives at the app delegate,
     /// long before any view is in a position to react.
-    @Published var selectedTab: Tab = .status
+    @Published var selectedTab: Tab = .today
     /// Whether the chat history drawer is out.
     ///
     /// Here rather than inside `InsightsView` because the drawer has to cover
@@ -166,7 +166,11 @@ final class AppServices: ObservableObject {
     @Published var isCheckingServer = false
 
     enum Tab: Hashable {
-        case status, insights, metrics, server, settings
+        /// Four, not five. Metrics, Server and Settings all answered "is the
+        /// machine working", and three of five tab slots is too much of the
+        /// cheapest-to-reach real estate in the app to spend on plumbing. They
+        /// live under `data` now.
+        case today, insights, trends, data
     }
 
     init() {
