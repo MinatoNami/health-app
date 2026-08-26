@@ -40,11 +40,18 @@ struct TodayView: View {
                         grantAccessCard
                     }
 
+                    // Above the figures, because when this is showing the
+                    // figures below it may be days old — and the difference
+                    // between "you trained less" and "nothing has uploaded
+                    // since Tuesday" is the whole point of saying so.
+                    if let banner = runningBanner {
+                        SyncBanner(state: banner) { services.selectedTab = .data }
+                    }
+
                     if let snapshot = engine.snapshot {
                         if isBuildingBaseline(snapshot) {
                             buildingLead(snapshot)
                             recordedSoFar(snapshot)
-                            if let banner = runningBanner { SyncBanner(state: banner) }
                         } else {
                             lead(snapshot)
                             if !movers(snapshot).isEmpty { moversSection(snapshot) }
@@ -128,8 +135,19 @@ struct TodayView: View {
                 .font(.lead)
                 .kerning(-0.5)
                 .lineSpacing(2)
-                .foregroundStyle(Ink.primary)
+                // Dimmed when nothing is reaching the server. The numbers are
+                // still true — they were measured — they are just not about
+                // this week any more, and rendering them at full strength next
+                // to a failure banner invites reading them as current.
+                .foregroundStyle(isStalled ? Ink.secondary : Ink.primary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if isStalled {
+                Text("Figures through \(readableDay(snapshot.asOf)) — the last day that reached the server.")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Ink.absentInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let widest = snapshot.metrics.first(where: { $0.isUsable }) {
                 CoverageSummary(
@@ -224,12 +242,35 @@ struct TodayView: View {
         }
     }
 
+    /// `as_of` arrives as a plain `yyyy-MM-dd`. Fine on the wire, wrong in a
+    /// sentence — "Figures through 2026-08-25" reads like a log line.
+    private func readableDay(_ raw: String) -> String {
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd"
+        parser.timeZone = .current
+        guard let date = parser.date(from: raw) else { return raw }
+        return date.formatted(.dateTime.day().month(.abbreviated))
+    }
+
+    /// True when delivery is broken rather than merely quiet.
+    private var isStalled: Bool {
+        guard let banner = runningBanner else { return false }
+        switch banner {
+        case .failed, .stale, .uploadingOff: return true
+        case .locked, .running: return false
+        }
+    }
+
     private func recorded(_ snapshot: HealthSnapshot) -> [HealthSnapshot.Comparison] {
         snapshot.metrics.filter { ($0.current.validDays) > 0 }
     }
 
-    /// The real sync state, if one is running. No invented "40 minutes left":
-    /// nothing in this app knows how long a backfill has to go.
+    /// Whatever the sync layer wants said, if anything. Nil on an ordinary day
+    /// — a healthy app says nothing here, which is what makes the bad day
+    /// visible.
+    ///
+    /// No invented progress figures: nothing in this app knows how long a
+    /// backfill has to go, so it reports the phase it is actually in.
     private var runningBanner: SyncBanner.State? {
         SyncBanner.state(
             phase: engine.phase,

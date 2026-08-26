@@ -67,12 +67,27 @@ Request Health Access raises a system Health sheet that is not in the app's
 element tree, so XCUITest can neither see nor dismiss it. The step beyond it is
 entered directly with `-onboardingStep=connect` rather than left unverified.
 
-`ScreenshotTests` holds two tests. `testCaptureEveryTab` photographs the four
+`ScreenshotTests` holds three tests. `testCaptureEveryTab` photographs the four
 tabs; `testServerUnreachableAlert` signs in, repoints the URL at a port nothing
 listens on, relaunches, and checks the startup alert appears with all three of
 its buttons. The second is the only runtime coverage that check has — the
 condition needs a signed-in app pointed at a dead server, which no unit test can
 arrange.
+
+`testRejectedTokenBanner` needs one more thing: a co-operating harness. The
+Simulator cannot break its own credential — the token is in the Keychain and
+only the server can refuse it — so the test writes a marker file and something
+outside has to revoke on seeing it. `docs/design/revoke-watcher.sh` is that
+something:
+
+```bash
+bash docs/design/revoke-watcher.sh /path/to/scratch &
+TEST_RUNNER_SCREENSHOT_REVOKE_MARKER=/path/to/scratch/revoke.marker  # plus the three above
+```
+
+Without `SCREENSHOT_REVOKE_MARKER` that one test skips rather than failing.
+Start the watcher *before* the run: it exits on its own, and a full suite takes
+several minutes to reach the test that signals it.
 
 The tests **skip** unless `SCREENSHOT_SERVER` is set, so an ordinary
 `xcodebuild test` on a machine with no demo server does not fail on a fixture it

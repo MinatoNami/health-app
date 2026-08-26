@@ -369,6 +369,18 @@ final class AppServices: ObservableObject {
             Log.shared.info("sink", "Startup check: \(message)")
         case .failure(let error):
             let detail = error.localizedDescription
+            // A refused credential is not an unreachable server, and treating
+            // it as one says something false in a modal: the machine answered,
+            // it just would not accept this phone. It is also not worth
+            // blocking the app for — the cached figures are still readable and
+            // the fix is a sign-in, not a retry — so it goes to the Today
+            // banner instead, where it arrives with a button that helps.
+            if case SinkError.unauthorized = error {
+                startupServerError = nil
+                syncEngine.reportCredentialRejected()
+                Log.shared.error("sink", "Startup check: credential rejected")
+                return
+            }
             startupServerError = detail
             Log.shared.error("sink", "Startup check failed: \(detail)")
         }

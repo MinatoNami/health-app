@@ -222,6 +222,12 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // Surfaces only. The `Form` itself is left alone deliberately:
+            // it carries sign-in, a date picker, a stepper and two destructive
+            // confirmations, and rebuilding that as custom cards to match the
+            // artboard would risk the app's critical path for a visual change.
+            .scrollContentBackground(.hidden)
+            .background(Ink.ground)
             .navigationTitle("Settings")
             .confirmationDialog("Reset all sync cursors?",
                                 isPresented: $showResetConfirmation,

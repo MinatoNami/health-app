@@ -30,10 +30,25 @@ struct SyncBanner: View {
 
         var tint: Color {
             switch self {
-            case .failed: return .red
-            case .locked, .running: return .secondary
-            case .uploadingOff, .stale: return .orange
+            // `absent` is the palette's "this stopped" amber and `accent` its
+            // red. Reserved status colours, never borrowed to tell one metric
+            // from another.
+            case .failed: return Ink.accent
+            case .locked, .running: return Ink.muted
+            case .uploadingOff, .stale: return Ink.absent
             }
+        }
+
+        /// Whether the state needs an action rather than only a sentence.
+        ///
+        /// A rejected token is the one failure nothing on this screen can fix
+        /// by waiting: uploads are parked until somebody signs in, and the
+        /// morning brief keeps firing with figures that stop getting older.
+        var action: String? {
+            if case .failed(let message) = self, message.contains("rejected the token") {
+                return "Sign in again"
+            }
+            return nil
         }
 
         var title: String {
@@ -63,30 +78,44 @@ struct SyncBanner: View {
     }
 
     let state: State
+    /// What the action button does, when the state has one.
+    var onAction: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 11) {
-            Image(systemName: state.symbol)
-                .font(.callout)
-                .foregroundStyle(state.tint)
-                .frame(width: 20)
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: state.symbol)
+                    .font(.system(size: 16))
+                    .foregroundStyle(state.tint)
+                    .frame(width: 20)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(state.title).font(.subheadline.weight(.semibold))
-                Text(state.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(state.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(state.tint)
+                    Text(state.detail)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Ink.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+
+            if let title = state.action, let onAction {
+                Button(title, action: onAction)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Ink.ground)
+                    .frame(maxWidth: .infinity, minHeight: 42)
+                    .background(state.tint, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(state.tint.opacity(0.07),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(state.tint.opacity(0.35), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(state.tint.opacity(0.28), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
     }

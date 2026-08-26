@@ -124,6 +124,46 @@ final class ScreenshotTests: XCTestCase {
         setServerURL(server)
     }
 
+
+    /// The rejected-token banner, which is the failure nothing on screen can
+    /// fix by waiting.
+    ///
+    /// Driven by revoking the app's token on the server mid-test: the next
+    /// upload comes back 401, the circuit breaker trips after three, and Today
+    /// has to say so rather than leaving stale figures reading as current.
+    func testRejectedTokenBanner() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let server = try XCTUnwrap(environment["SCREENSHOT_SERVER"])
+        let user = try XCTUnwrap(environment["SCREENSHOT_USER"])
+        let password = try XCTUnwrap(environment["SCREENSHOT_PASSWORD"])
+        // Needs a co-operating harness: something watching for this file that
+        // revokes the app's token when it appears. Without one the test skips
+        // rather than failing, because there is no way for it to break its own
+        // credential from inside the Simulator — the token lives in the
+        // Keychain and only the server can refuse it.
+        try XCTSkipIf(
+            (environment["SCREENSHOT_REVOKE_MARKER"] ?? "").isEmpty,
+            "needs the revoke watcher — see docs/SCREENSHOTS.md"
+        )
+        let revoke = try XCTUnwrap(environment["SCREENSHOT_REVOKE_MARKER"])
+
+        try signIn(server: server, user: user, password: password)
+
+        // The harness watches for this file and revokes every token behind it.
+        XCTAssertTrue(FileManager.default.createFile(atPath: revoke, contents: Data()),
+                      "could not signal the harness to revoke")
+        Thread.sleep(forTimeInterval: 8)
+
+        app.terminate()
+        app.launch()
+        show("Today")
+
+        let banner = app.staticTexts["Sync problem"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 40), "no banner for a rejected token")
+        XCTAssertTrue(app.buttons["Sign in again"].exists, "the banner offers no way out")
+        capture("Rejected")
+    }
+
     // MARK: - Steps
 
     private func signIn(server: String, user: String, password: String) throws {

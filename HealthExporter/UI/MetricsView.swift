@@ -42,6 +42,8 @@ struct MetricsView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Ink.ground)
             .navigationTitle("Metrics")
             .toolbar {
                 Button("Enable All") { authorization.enableAll() }

@@ -51,6 +51,8 @@ struct ServerView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Ink.ground)
             .navigationTitle("Server")
             .refreshable { await engine.refreshServerStatus(fresh: true) }
             .task {

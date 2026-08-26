@@ -121,6 +121,8 @@ struct ChatHistoryView: View {
                         .background(.bar)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Ink.surface)
             .alert("Rename chat", isPresented: renameBinding) {
                 TextField("Title", text: $newTitle)
                 Button("Cancel", role: .cancel) { renaming = nil }
@@ -265,7 +267,7 @@ struct SideDrawer<Panel: View, Content: View>: View {
 
                 panel
                     .frame(width: width)
-                    .background(Color(.systemGroupedBackground))
+                    .background(Ink.surface)
                     .ignoresSafeArea(edges: .vertical)
                     .offset(x: offset)
                     .shadow(color: .black.opacity(0.18 * progress), radius: 12, x: 2)

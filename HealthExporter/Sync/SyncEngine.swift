@@ -622,6 +622,22 @@ final class SyncEngine: ObservableObject {
         refreshCounts()
     }
 
+    /// Records a credential the server refused, from outside the delivery loop.
+    ///
+    /// The upload circuit breaker only trips while there is something to
+    /// upload — `deliverPending` returns early on an empty outbox — so a token
+    /// revoked on a quiet phone went unnoticed until the next batch. The
+    /// startup probe sees it immediately and has nowhere to put it; this is
+    /// that place, and it reuses the phase the breaker already sets so both
+    /// routes light the same banner.
+    func reportCredentialRejected() {
+        guard case .failed = phase else {
+            phase = .failed("Server rejected the token — sign in again")
+            Log.shared.error("sink", "Credential rejected; sign in again")
+            return
+        }
+    }
+
     /// True once a token is held, whether it was pasted in or obtained by
     /// signing in.
     var isSignedIn: Bool { !bearerToken.isEmpty }

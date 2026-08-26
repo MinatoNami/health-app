@@ -14,7 +14,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "CF3926EB1ABFD145385849F7"
+               BlueprintIdentifier = "03454D724CE0BA3E0A7BDF35"
                BuildableName = "HealthExporter.app"
                BlueprintName = "HealthExporter"
                ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -30,7 +30,7 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CF3926EB1ABFD145385849F7"
+            BlueprintIdentifier = "03454D724CE0BA3E0A7BDF35"
             BuildableName = "HealthExporter.app"
             BlueprintName = "HealthExporter"
             ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -41,7 +41,7 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "2A64257B59141C16A2024D4E"
+               BlueprintIdentifier = "FF21BBB9FAECA04C0312DA2A"
                BuildableName = "HealthExporterTests.xctest"
                BlueprintName = "HealthExporterTests"
                ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -51,7 +51,7 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F87BCEA4F4FFF66CFCA05C91"
+               BlueprintIdentifier = "97867B017C9C1D9F96B8723A"
                BuildableName = "HealthExporterUITests.xctest"
                BlueprintName = "HealthExporterUITests"
                ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -73,7 +73,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CF3926EB1ABFD145385849F7"
+            BlueprintIdentifier = "03454D724CE0BA3E0A7BDF35"
             BuildableName = "HealthExporter.app"
             BlueprintName = "HealthExporter"
             ReferencedContainer = "container:HealthExporter.xcodeproj">
@@ -90,7 +90,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "CF3926EB1ABFD145385849F7"
+            BlueprintIdentifier = "03454D724CE0BA3E0A7BDF35"
             BuildableName = "HealthExporter.app"
             BlueprintName = "HealthExporter"
             ReferencedContainer = "container:HealthExporter.xcodeproj">

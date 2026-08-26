@@ -55,7 +55,16 @@ for how to refresh them and why they are never taken by hand.
 
 And the startup check, when the configured server does not answer:
 
-<img src="screenshots/05-unreachable.png" alt="Can't reach the server" width="280">
+| Server unreachable | Credential rejected |
+|---|---|
+| ![Can't reach the server](screenshots/05-unreachable.png) | ![The server rejected this iPhone](screenshots/07-token-rejected.png) |
+
+Two failures, two weights. Unreachable is a modal because it happened before
+anything could load — but never a dead end: the cached figures are behind it and
+*Continue Offline* reaches them. A **rejected credential is not a modal**. The
+server answered; it just refused this phone, the app still works, and the data
+is only old. So it is a banner that dates the figures and offers the one action
+that fixes it.
 
 Retry first, because the usual cause is a laptop that has not woken up.
 *Continue Offline* carries the cancel role — the cached figures are already on
