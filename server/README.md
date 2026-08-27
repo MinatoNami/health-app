@@ -71,6 +71,68 @@ limit silently becomes 20/min and resets whenever a worker recycles.
 
 ---
 
+## Ports
+
+Everything this project binds is on **loopback only** — nothing here is reachable
+from another machine without something in front of it. Both mappings live in
+[docker-compose.yml](docker-compose.yml).
+
+| Host | Container | What |
+|------|-----------|------|
+| `127.0.0.1:8081` | `8000` | Django under gunicorn. The one upstream a proxy needs. |
+| `127.0.0.1:5432` | `5432` | Postgres. Not for a proxy — see below. |
+
+`GET /healthz` on 8081 answers `{"status":"ok","schema_version":1}` without
+authentication, and is what the container healthcheck and `deploy.sh verify`
+both use.
+
+**The dashboard is not a port.** It is a static build on disk at
+`/var/www/health-dashboard`, served straight from the filesystem. Anything
+fronting this needs a file route for it, not an upstream.
+
+The `127.0.0.1` prefixes are the entire point. A bare `"5432:5432"` binds
+`0.0.0.0`, which on a host with a VPN interface means every machine on the
+network can reach the health database directly. Bound this way, the only route
+in is an SSH tunnel, which reuses the access control already governing the host
+instead of inventing a second one. The same reasoning applies to 8081: it speaks
+plaintext HTTP, so publishing it would put an unencrypted copy of the endpoint
+on the network.
+
+### Putting a proxy in front
+
+Four things this app needs that a bare `proxy_pass http://127.0.0.1:8081` will
+not give you. All four are load-bearing — each one is here because its absence
+broke something.
+
+- **`client_max_body_size 64m`.** Not a round number picked for comfort — it
+  matches `MAX_BATCH_BYTES` in `ingest/service.py`, the limit the app itself
+  enforces. A first sync ships 5,000 records in one POST, and nginx's 1 MB
+  default rejects it with a 413 the app reports as a failed upload.
+- **Read and send timeouts of 900s**, matching gunicorn's. The 60s default cuts
+  off large batches mid-commit and streamed CSV exports mid-flight.
+- **`X-Forwarded-For` set to the real peer — overwrite, do not append.** With
+  `$proxy_add_x_forwarded_for` the caller's own value stays first, and DRF reads
+  the first entry: one spoofed header bought a fresh rate-limit bucket and the
+  login throttle became decorative. `NUM_PROXIES` must match however many
+  proxies actually sit in the chain.
+- **No temp-file buffering on responses** (`proxy_max_temp_file_size 0`).
+  Exports stream deliberately; buffering holds hundreds of megabytes before the
+  client sees a byte. The view also sends `X-Accel-Buffering: no`.
+
+Also set `X-Forwarded-Proto https`, or Django builds `http://` URLs behind a
+TLS terminator.
+
+**Mounting it somewhere other than the root works.** The app joins every route
+onto whatever path its base URL carries — `SinkConfiguration.basePath` — so a
+Server URL of `https://host/some-prefix` reaches `/some-prefix/v1/health/batches`
+and every sibling. Strip the prefix before proxying; Django's URLconf does not
+know about it and does not need to.
+
+[deploy/nginx-health.conf](deploy/nginx-health.conf) is a worked example of all
+of the above.
+
+---
+
 ## Why the endpoint looks like this
 
 **Upsert on `id`, always.** Sample UUIDs are stable across reads, so a retry of
@@ -286,8 +348,10 @@ with the dataviz validator in both light and dark modes.
 
 - **Tokens are stored as SHA-256 digests.** The raw value is shown once at
   creation and is unrecoverable — a database dump yields nothing usable.
-- **Postgres publishes no port.** It is reachable only from the web container;
-  binding 5432 on this host would expose it to the whole tailnet.
+- **Postgres is bound to loopback, not published.** `127.0.0.1:5432:5432`, so
+  the only route in from elsewhere is an SSH tunnel; a bare `5432:5432` would
+  bind `0.0.0.0` and expose the health database to the whole tailnet. See
+  [Ports](#ports).
 - **Login is rate-limited per real client IP.** `NUM_PROXIES=1` plus nginx
   overwriting `X-Forwarded-For` — with nginx *appending* and DRF reading the
   first entry, one spoofed header bought a fresh bucket and the limit was
