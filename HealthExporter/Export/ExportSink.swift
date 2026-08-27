@@ -31,12 +31,10 @@ struct SinkConfiguration: Codable, Equatable {
     /// only defaults — both fields are editable in Settings, and uploading
     /// stays off until a token is entered and the toggle is flipped.
     ///
-    /// The `/health-app` suffix is a mount prefix, not a route: nginx strips it
-    /// and every endpoint below is built by joining onto it. The root still
-    /// answers, so a device configured before this keeps working — but only
-    /// until someone puts something else on that server's root, which is the
-    /// reason for the move.
-    static let defaultBaseURL = "https://alena-server.tail03bec9.ts.net/health-app"
+    /// A path here is honoured — see `basePath`. That matters if the server
+    /// ever ends up behind a gateway that mounts it somewhere other than the
+    /// root; nothing below assumes this is bare.
+    static let defaultBaseURL = "https://alena-server.tail03bec9.ts.net"
     /// Empty, because the server no longer needs pinning.
     ///
     /// It did for as long as `tailscale cert` refused to issue for this tailnet
