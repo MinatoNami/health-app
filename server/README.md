@@ -3,7 +3,12 @@
 Django + DRF endpoint that receives NDJSON batches from the iOS app and stores
 them in Postgres. Runs on `alena-server` behind nginx, reachable over Tailscale.
 
-    https://alena-server.tail03bec9.ts.net/v1/health/batches
+    https://alena-server.tail03bec9.ts.net/health-app/v1/health/batches
+
+`/health-app` is a mount prefix. nginx strips it and hands the rest to Django,
+which knows nothing about it — so every route in this README works both under
+the prefix and, unchanged, at the root. The app is pointed at the prefix so the
+server's root stays free for something else.
 
 ---
 

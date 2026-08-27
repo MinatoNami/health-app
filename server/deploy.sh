@@ -39,6 +39,9 @@ LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_DIR="/etc/nginx/certs"
 CERT_NAME="health-exporter"
 NGINX_SITE="health-exporter"
+# Where the app is published on the tailnet. The root of this hostname belongs
+# to another service, so everything hangs off a prefix; see configure_tailscale_serve.
+MOUNT_PATH="${MOUNT_PATH:-/health-app}"
 # Pinned, not system-trusted: the client compares this certificate's SHA-256
 # directly, so a long life avoids a silent sync outage on expiry. Nothing here
 # relies on public CA trust or ATS's 825-day ceiling.
@@ -231,6 +234,31 @@ CRON"
   info "→ /var/log/health-cert.log"
 }
 
+# The route the phone actually takes.
+#
+# nginx listens on 443, but over the tailnet it never sees the request: for
+# traffic addressed to the node's Tailscale IP, Tailscale Serve intercepts ahead
+# of the socket, and on this host it already publishes `/` for another app. That
+# is why the app is mounted on a path instead of the root — the root is taken,
+# and pointing the app at it meant every upload was answered by somebody else's
+# 302 and then a 404, which is exactly what happened.
+#
+# --set-path is additive: it adds this mapping and leaves the existing `/` alone.
+# To undo it: sudo tailscale serve --set-path=/health-app off
+configure_tailscale_serve() {
+  step "Tailscale Serve"
+  remote "command -v tailscale >/dev/null" \
+    || { warn "tailscale is not installed; the tailnet mount was not configured"; return 0; }
+
+  if ! remote "sudo tailscale serve --bg --set-path=$MOUNT_PATH http://127.0.0.1:8082" >/dev/null 2>&1; then
+    warn "could not publish $MOUNT_PATH (needs a recent tailscale with --set-path)"
+    warn "the server is up; run this on $SSH_HOST by hand:"
+    warn "  sudo tailscale serve --bg --set-path=$MOUNT_PATH http://127.0.0.1:8082"
+    return 0
+  fi
+  ok "https://$SERVER_NAME$MOUNT_PATH -> nginx -> gunicorn"
+}
+
 configure_nginx() {
   step "nginx"
   local tmp="/tmp/${NGINX_SITE}.conf"
@@ -292,6 +320,15 @@ verify() {
   if curl -fsS --max-time 10 --cacert "$cache/$CERT_NAME.crt" \
        "https://$SERVER_NAME/healthz" >/dev/null 2>&1; then
     ok "https://$SERVER_NAME/healthz reachable over the tailnet"
+    # The mount the app is pointed at. Worth its own check: nginx accepting the
+    # config proves the syntax, not that the rewrite lands anywhere.
+    if curl -fsS --max-time 10 --cacert "$cache/$CERT_NAME.crt" \
+         "https://$SERVER_NAME/health-app/healthz" >/dev/null 2>&1; then
+      ok "https://$SERVER_NAME/health-app/healthz reachable — the mount is live"
+    else
+      warn "https://$SERVER_NAME/health-app/healthz did NOT answer"
+      warn "the root works, so this is the /health-app rewrite, not the app"
+    fi
   else
     warn "not reachable from this machine over the tailnet"
     warn "the server is up; check that Tailscale is running here and $SERVER_NAME resolves"
@@ -318,12 +355,14 @@ print_summary() {
   cat <<EOF
 
     Dashboard   https://$SERVER_NAME/dashboard/
-    Endpoint    https://$SERVER_NAME/v1/health/batches
+    Endpoint    https://$SERVER_NAME/health-app/v1/health/batches
     Admin       https://$SERVER_NAME/admin/
-    Health      https://$SERVER_NAME/healthz
+    Health      https://$SERVER_NAME/health-app/healthz
+
+    Everything is served under /health-app and, unchanged, at the root.
 
     In the app: Settings → HTTP destination
-      Server URL    https://$SERVER_NAME
+      Server URL    https://$SERVER_NAME/health-app
       Certificate   leave empty$cert_note
       Bearer token  ./deploy.sh token <label>
 
@@ -339,6 +378,7 @@ cmd_deploy() {
   ensure_env
   ensure_cert
   configure_nginx
+  configure_tailscale_serve
   start_services
   install_backups
   install_cert_renewal

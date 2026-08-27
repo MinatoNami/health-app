@@ -48,10 +48,14 @@ final class SinkConfigurationTests: XCTestCase {
         )
     }
 
-    func testAnExplicitPathIsLeftAlone() {
+    func testAnExplicitPathIsNowAPrefix() {
+        // Deliberately changed. A non-empty path used to *be* the batches
+        // endpoint, with the siblings derived by deleting its last component —
+        // which only ever worked at the root. It is a mount prefix now, and
+        // every route hangs off it.
         XCTAssertEqual(
             configuration("https://example.com/ingest").endpoint?.absoluteString,
-            "https://example.com/ingest"
+            "https://example.com/ingest/v1/health/batches"
         )
     }
 
@@ -64,6 +68,51 @@ final class SinkConfigurationTests: XCTestCase {
         XCTAssertEqual(sink.coverageEndpoint?.absoluteString, "https://example.com/v1/health/coverage")
         XCTAssertEqual(sink.loginEndpoint?.absoluteString, "https://example.com/v1/auth/login")
         XCTAssertEqual(sink.logoutEndpoint?.absoluteString, "https://example.com/v1/auth/logout")
+    }
+
+    // MARK: - A server mounted under a path
+
+    func testEveryEndpointKeepsTheBasePath() {
+        // The bug this section exists for. `apiEndpoint` assigned
+        // `components.path` outright, so a prefix was silently dropped from
+        // every call — and `pingEndpoint`, built by deleting the last path
+        // component of the batches URL, resolved to a bare "/ping".
+        let sink = configuration("https://example.com/health-app")
+
+        XCTAssertEqual(sink.endpoint?.path, "/health-app/v1/health/batches")
+        XCTAssertEqual(sink.pingEndpoint?.path, "/health-app/v1/health/ping")
+        XCTAssertEqual(sink.statsEndpoint?.path, "/health-app/v1/health/stats")
+        XCTAssertEqual(sink.coverageEndpoint?.path, "/health-app/v1/health/coverage")
+        XCTAssertEqual(sink.loginEndpoint?.path, "/health-app/v1/auth/login")
+        XCTAssertEqual(sink.logoutEndpoint?.path, "/health-app/v1/auth/logout")
+        XCTAssertEqual(sink.overviewEndpoint?.path, "/health-app/v1/analytics/overview")
+        XCTAssertEqual(
+            sink.apiEndpoint("/v1/analysis/snapshot")?.path,
+            "/health-app/v1/analysis/snapshot"
+        )
+    }
+
+    func testABasePathSurvivesAQueryString() {
+        let url = configuration("https://example.com/health-app")
+            .apiEndpoint("/v1/chat/sessions", query: [URLQueryItem(name: "limit", value: "40")])
+        XCTAssertEqual(url?.absoluteString, "https://example.com/health-app/v1/chat/sessions?limit=40")
+    }
+
+    func testATrailingSlashOnTheBaseDoesNotDoubleUp() {
+        let sink = configuration("https://example.com/health-app/")
+        XCTAssertEqual(sink.endpoint?.path, "/health-app/v1/health/batches")
+    }
+
+    func testANestedBasePathIsKept() {
+        let sink = configuration("https://example.com/apps/health")
+        XCTAssertEqual(sink.endpoint?.path, "/apps/health/v1/health/batches")
+    }
+
+    func testTheRootCaseIsUnchanged() {
+        // Every existing install has no path, and must be completely unaffected.
+        let sink = configuration("https://example.com")
+        XCTAssertEqual(sink.endpoint?.absoluteString, "https://example.com/v1/health/batches")
+        XCTAssertEqual(sink.pingEndpoint?.absoluteString, "https://example.com/v1/health/ping")
     }
 
     // MARK: - Query strings

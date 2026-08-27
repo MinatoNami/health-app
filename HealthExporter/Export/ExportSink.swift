@@ -30,7 +30,13 @@ struct SinkConfiguration: Codable, Equatable {
     /// Defaults point at the server deployed by `server/deploy.sh`. They are
     /// only defaults — both fields are editable in Settings, and uploading
     /// stays off until a token is entered and the toggle is flipped.
-    static let defaultBaseURL = "https://alena-server.tail03bec9.ts.net"
+    ///
+    /// The `/health-app` suffix is a mount prefix, not a route: nginx strips it
+    /// and every endpoint below is built by joining onto it. The root still
+    /// answers, so a device configured before this keeps working — but only
+    /// until someone puts something else on that server's root, which is the
+    /// reason for the move.
+    static let defaultBaseURL = "https://alena-server.tail03bec9.ts.net/health-app"
     /// Empty, because the server no longer needs pinning.
     ///
     /// It did for as long as `tailscale cert` refused to issue for this tailnet
@@ -77,53 +83,23 @@ struct SinkConfiguration: Codable, Equatable {
     /// the synthesized `==` — the token never reaches the settings file.
     var bearerToken: String { Keychain.shared.bearerToken }
 
-    var endpoint: URL? {
-        guard var components = URLComponents(string: baseURL) else { return nil }
-        // Require TLS. This is health data leaving a device; there is no version
-        // of this worth doing over plaintext. Tailscale already encrypts the
-        // link, but that is a property of the network, not of this request —
-        // one setting change and the same code would ship health data in clear.
-        guard components.scheme?.lowercased() == "https" else { return nil }
-        guard let host = components.host, !host.isEmpty else { return nil }
-        if components.path.isEmpty || components.path == "/" {
-            components.path = "/v1/health/batches"
-        }
-        return components.url
-    }
-
-    /// Sibling of `endpoint` used by Test Connection. Derived rather than
-    /// separately configured so the two can never point at different servers.
-    var pingEndpoint: URL? {
-        endpoint?.deletingLastPathComponent().appendingPathComponent("ping")
-    }
-
-    /// `/v1/auth/login` and `/v1/auth/logout`, derived from the same base so
-    /// credentials can never be sent to a different host than the data.
-    private func authEndpoint(_ action: String) -> URL? {
-        guard var components = URLComponents(string: baseURL) else { return nil }
-        guard components.scheme?.lowercased() == "https" else { return nil }
-        guard let host = components.host, !host.isEmpty else { return nil }
-        components.path = "/v1/auth/\(action)"
-        return components.url
-    }
-
-    var loginEndpoint: URL? { authEndpoint("login") }
-    var logoutEndpoint: URL? { authEndpoint("logout") }
-
-    var statsEndpoint: URL? {
-        endpoint?.deletingLastPathComponent().appendingPathComponent("stats")
-    }
-
-    var coverageEndpoint: URL? {
-        endpoint?.deletingLastPathComponent().appendingPathComponent("coverage")
-    }
-
-    /// Any path on the same host, over the same TLS requirement.
+    /// The path the server is mounted under, if it is not at the root.
     ///
-    /// Derived from `baseURL` rather than configured separately so no endpoint
-    /// can ever be pointed somewhere the health data is not already going.
-    func apiEndpoint(_ path: String) -> URL? {
-        apiEndpoint(path, query: [])
+    /// `https://host` gives `""`; `https://host/health-app` gives
+    /// `"/health-app"`. Everything else here is built by joining an API path
+    /// onto this, which is the whole reason it exists: `apiEndpoint` used to
+    /// assign `components.path` outright, so a base URL with a prefix had it
+    /// silently discarded and every call but one went to the host root.
+    ///
+    /// This also replaces an older reading of a base path — that a non-empty
+    /// path *was* the batches endpoint, with the sibling routes derived by
+    /// deleting the last component. That only ever worked at the root, and it
+    /// is the reason `pingEndpoint` used to resolve to `/ping`.
+    private var basePath: String {
+        guard let raw = URLComponents(string: baseURL)?.path else { return "" }
+        var path = raw
+        while path.hasSuffix("/") { path.removeLast() }
+        return path
     }
 
     /// Build a URL against the configured server.
@@ -137,13 +113,39 @@ struct SinkConfiguration: Codable, Equatable {
     /// stepped on it.
     func apiEndpoint(_ path: String, query: [URLQueryItem]) -> URL? {
         guard var components = URLComponents(string: baseURL) else { return nil }
+        // Require TLS. This is health data leaving a device; there is no version
+        // of this worth doing over plaintext. Tailscale already encrypts the
+        // link, but that is a property of the network, not of this request —
+        // one setting change and the same code would ship health data in clear.
         guard components.scheme?.lowercased() == "https" else { return nil }
         guard let host = components.host, !host.isEmpty else { return nil }
-        components.path = path
+        components.path = basePath + path
         // Empty rather than `[]`: an empty array still yields a trailing "?".
         components.queryItems = query.isEmpty ? nil : query
         return components.url
     }
+
+    /// Any path on the same host, over the same TLS requirement.
+    ///
+    /// Derived from `baseURL` rather than configured separately so no endpoint
+    /// can ever be pointed somewhere the health data is not already going.
+    func apiEndpoint(_ path: String) -> URL? {
+        apiEndpoint(path, query: [])
+    }
+
+    var endpoint: URL? { apiEndpoint("/v1/health/batches") }
+
+    /// Sibling of `endpoint` used by Test Connection. Built from the same
+    /// joiner so the two can never point at different servers.
+    var pingEndpoint: URL? { apiEndpoint("/v1/health/ping") }
+
+    /// Derived from the same base so credentials can never be sent to a
+    /// different host than the data.
+    var loginEndpoint: URL? { apiEndpoint("/v1/auth/login") }
+    var logoutEndpoint: URL? { apiEndpoint("/v1/auth/logout") }
+
+    var statsEndpoint: URL? { apiEndpoint("/v1/health/stats") }
+    var coverageEndpoint: URL? { apiEndpoint("/v1/health/coverage") }
 
     /// `/v1/analytics/overview` — the daily series behind the phone's charts.
     var overviewEndpoint: URL? { apiEndpoint("/v1/analytics/overview") }
