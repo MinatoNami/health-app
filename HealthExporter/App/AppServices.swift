@@ -181,7 +181,18 @@ final class AppServices: ObservableObject {
     /// own behaviour on a failed request: the last figures stay on screen with
     /// a line saying they are stale, because a snapshot from yesterday is worth
     /// more than a blank page.
-    @Published var startupServerError: String?
+    /// What went wrong reaching the server at startup, if anything.
+    ///
+    /// Carries its own title because "Can't reach the server" is only true for
+    /// one of the ways this fails. A 404 means the machine answered and does
+    /// not have the endpoint — usually an older build still deployed — and
+    /// saying it is unreachable sends someone to check their network when the
+    /// fix is a redeploy.
+    struct ServerProblem: Equatable {
+        var title: String
+        var detail: String
+    }
+    @Published var startupServerProblem: ServerProblem?
     /// True while the startup probe is in flight, so the alert's Retry button
     /// can show that something is happening.
     @Published var isCheckingServer = false
@@ -200,6 +211,7 @@ final class AppServices: ObservableObject {
         self.authorization = auth
         self.syncEngine = engine
         self.backgroundSync = BackgroundSync(authorization: auth, engine: engine)
+        LaunchTrace.mark("init-start")
         self.dailyBrief = DailyBriefScheduler(engine: engine)
         self.syncFailure = SyncFailureNotifier(engine: engine)
         // An install that already granted Health access predates this screen;
@@ -215,6 +227,7 @@ final class AppServices: ObservableObject {
         }
         #endif
         self.needsOnboarding = pending
+        LaunchTrace.mark("init-done")
     }
 
     /// Must run inside `didFinishLaunchingWithOptions`. `BGTaskScheduler.register`
@@ -223,6 +236,8 @@ final class AppServices: ObservableObject {
     /// the same constraint for a different reason: a tap that *launched* the app
     /// is delivered immediately, and is lost if nothing is listening yet.
     func bootstrap() {
+        LaunchTrace.mark("bootstrap-start")
+        defer { LaunchTrace.mark("bootstrap-done") }
         backgroundSync.registerTaskHandlers()
         UNUserNotificationCenter.current().delegate = NotificationRouter.shared
         dailyBrief.registerCategory()
@@ -251,14 +266,18 @@ final class AppServices: ObservableObject {
         // a local disk. Everything the first screen draws comes from here, so
         // the app opens on real content instead of on placeholder text that a
         // network round trip will eventually replace.
+        LaunchTrace.mark("onLaunch")
         await boot.step("cache") {
-            await syncEngine.restoreCachedViews()
+            await LaunchTrace.measure("restore-cache") {
+                await syncEngine.restoreCachedViews()
+            }
         }
 
         // The interface is ready. Not "ready except for the numbers" — ready.
         // Everything below runs behind it, and each piece updates the screen
         // when it lands.
         boot.finish()
+        LaunchTrace.mark("interface-ready")
 
         // Refreshing the figures is deliberately *not* awaited above. Cached
         // numbers with an "updated 2 hours ago" line beat a spinner over an
@@ -271,8 +290,18 @@ final class AppServices: ObservableObject {
         }
 
         await dailyBrief.refreshAuthorizationStatus()
-        await checkServerReachable()
-        guard authorization.hasRequested else { return }
+
+        // Concurrently, not before. This is a network round trip with a 15s
+        // timeout, and it used to sit between the interface being ready and the
+        // work that keeps the app alive — so a phone whose server was asleep
+        // waited the full timeout before a single HealthKit observer was
+        // registered. Nothing below depends on its result.
+        Task { [weak self] in await self?.checkServerReachable() }
+
+        guard authorization.hasRequested else {
+            LaunchTrace.summarise()
+            return
+        }
 
         // Registering ~130 observers takes real time on a first run and the
         // interface does not depend on it — it is what keeps background delivery
@@ -280,15 +309,26 @@ final class AppServices: ObservableObject {
         //
         // The sync behind it used to be awaited before the first screen could
         // finish appearing: the heaviest work in the app, scheduled at the exact
-        // moment the user is trying to touch it. Background priority so the UI
-        // wins every scheduling contest against it, and the task is retained so a
+        // moment the user is trying to touch it. The task is retained so a
         // second call joins the one already running rather than starting a
         // second sync.
+        //
+        // `priority: .background` buys less than it looks like it does, and the
+        // comment that used to sit here claimed otherwise. `SyncEngine` and
+        // `BackgroundSync` are both `@MainActor`, so every call below hops to
+        // the main actor and runs *there* whatever this task's priority is.
+        // Priority orders the queue; it does not choose the thread. Getting
+        // this work genuinely off the main thread means de-isolating it, which
+        // is a bigger change than a priority argument.
         launchWork = Task(priority: .background) { [weak self] in
             guard let self else { return }
-            await self.backgroundSync.startObserving()
+            await LaunchTrace.measure("observers") {
+                await self.backgroundSync.startObserving()
+            }
             self.backgroundSync.scheduleNextRun()
-            await self.syncEngine.syncAll(reason: "app launch")
+            await LaunchTrace.measure("first-sync") {
+                await self.syncEngine.syncAll(reason: "app launch")
+            }
 
             // Ask here, not only from the Settings toggle. The setting ships
             // enabled, so its `didSet` never fires on a fresh install — leaving
@@ -307,6 +347,7 @@ final class AppServices: ObservableObject {
             // than the one it started from.
             await self.syncFailure.evaluate()
             self.launchWork = nil
+            LaunchTrace.summarise()
         }
     }
 
@@ -357,7 +398,7 @@ final class AppServices: ObservableObject {
     /// working exactly as configured would be wrong.
     func checkServerReachable() async {
         guard syncEngine.settings.sink.isUsable else {
-            startupServerError = nil
+            startupServerProblem = nil
             return
         }
         isCheckingServer = true
@@ -365,7 +406,7 @@ final class AppServices: ObservableObject {
 
         switch await HTTPSink(configuration: syncEngine.settings.sink).probe() {
         case .success(let message):
-            startupServerError = nil
+            startupServerProblem = nil
             Log.shared.info("sink", "Startup check: \(message)")
         case .failure(let error):
             let detail = error.localizedDescription
@@ -376,12 +417,30 @@ final class AppServices: ObservableObject {
             // the fix is a sign-in, not a retry — so it goes to the Today
             // banner instead, where it arrives with a button that helps.
             if case SinkError.unauthorized = error {
-                startupServerError = nil
+                startupServerProblem = nil
                 syncEngine.reportCredentialRejected()
                 Log.shared.error("sink", "Startup check: credential rejected")
                 return
             }
-            startupServerError = detail
+            // A status code means the server answered. Nearly always a stale
+            // deployment: /v1/health/ping arrived with the auth endpoints, so a
+            // build older than those 404s every probe while looking perfectly
+            // healthy on /healthz.
+            if case SinkError.permanent(let status, _) = error {
+                startupServerProblem = ServerProblem(
+                    title: "The server answered, but not with this",
+                    detail: status == 404
+                        ? "HTTP 404 for /v1/health/ping. The address is right and something is listening, "
+                          + "but it does not have the endpoints this app needs — usually an older build "
+                          + "still deployed. Redeploying the server is the fix."
+                        : "The server returned HTTP \(status)."
+                )
+                Log.shared.error("sink", "Startup check: server answered \(status)")
+                return
+            }
+            startupServerProblem = ServerProblem(
+                title: "Can't reach the server", detail: detail
+            )
             Log.shared.error("sink", "Startup check failed: \(detail)")
         }
     }

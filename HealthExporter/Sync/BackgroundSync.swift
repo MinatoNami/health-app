@@ -186,22 +186,59 @@ final class BackgroundSync {
             }
             authorization.healthStore.execute(query)
             activeObservers.append(query)
-
-            // `.hourly` rather than `.immediate`: many types are throttled to
-            // hourly regardless, and requesting immediate delivery across ~170
-            // types is a good way to be woken constantly for no benefit.
-            do {
-                try await authorization.healthStore.enableBackgroundDelivery(
-                    for: type, frequency: .hourly
-                )
-            } catch {
-                Log.shared.warn("observer",
-                    "Background delivery refused for \(identifier): \(error.localizedDescription)")
-            }
         }
+
+        // Registering the queries above is local and cheap. *This* is the
+        // expensive half, and it used to be a third of this loop: one awaited
+        // XPC round trip to `healthd` per type, ~130 of them, one after
+        // another — and because this class is `@MainActor`, every one of those
+        // suspensions and resumptions happened on the main thread while
+        // somebody was trying to scroll.
+        //
+        // Hoisted out, moved off the actor, and run a few at a time.
+        await Self.enableBackgroundDelivery(for: types, store: authorization.healthStore)
 
         Log.shared.info("observer",
             "Observing \(types.count) type(s) with hourly background delivery")
+    }
+
+    /// Turns on hourly background delivery for every type, off the main actor.
+    ///
+    /// `nonisolated` is the point: `HKHealthStore` does its own synchronisation
+    /// and none of this touches actor state, so there is no reason for it to
+    /// occupy the main thread.
+    ///
+    /// Bounded concurrency rather than a task per type. Firing ~130 requests at
+    /// `healthd` at once trades a main-thread stall for a daemon queue, which is
+    /// not obviously better and is much harder to reason about; a handful in
+    /// flight gets nearly all of the win.
+    ///
+    /// `.hourly` rather than `.immediate`: many types are throttled to hourly
+    /// regardless, and requesting immediate delivery across ~170 types is a
+    /// good way to be woken constantly for no benefit.
+    nonisolated private static func enableBackgroundDelivery(
+        for types: Set<HKSampleType>,
+        store: HKHealthStore
+    ) async {
+        let inFlight = 6
+        var remaining = Array(types)
+
+        await withTaskGroup(of: Void.self) { group in
+            func addNext() {
+                guard let type = remaining.popLast() else { return }
+                group.addTask {
+                    do {
+                        try await store.enableBackgroundDelivery(for: type, frequency: .hourly)
+                    } catch {
+                        Log.shared.warn("observer",
+                            "Background delivery refused for \(type.identifier): "
+                            + error.localizedDescription)
+                    }
+                }
+            }
+            for _ in 0..<min(inFlight, remaining.count) { addNext() }
+            while await group.next() != nil { addNext() }
+        }
     }
 
     func stopObserving() async {

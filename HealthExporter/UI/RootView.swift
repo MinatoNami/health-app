@@ -44,7 +44,7 @@ struct RootView: View {
         // themselves in seconds. Continue is what keeps the app's own rule
         // intact — the cached figures are still on screen behind this, and a
         // snapshot from yesterday says more than a blank page.
-        .alert("Can't reach the server", isPresented: serverErrorBinding) {
+        .alert(services.startupServerProblem?.title ?? "", isPresented: serverErrorBinding) {
             Button("Retry") {
                 Task { await services.checkServerReachable() }
             }
@@ -54,10 +54,10 @@ struct RootView: View {
             // nothing about what continuing means. Carrying the role here both
             // removes it and makes the swipe-to-dismiss gesture land on the
             // sensible choice.
-            Button("Continue Offline", role: .cancel) { services.startupServerError = nil }
+            Button("Continue Offline", role: .cancel) { services.startupServerProblem = nil }
             Button("Close App", role: .destructive) { services.closeApp() }
         } message: {
-            Text(services.startupServerError ?? "")
+            Text(services.startupServerProblem?.detail ?? "")
         }
         // `Ink` is a fixed dark palette, not an adaptive one — see
         // `DesignTokens`. Without this the system draws its own chrome in the
@@ -93,8 +93,8 @@ struct RootView: View {
     /// dismissing this should mean.
     private var serverErrorBinding: Binding<Bool> {
         Binding(
-            get: { services.startupServerError != nil },
-            set: { if !$0 { services.startupServerError = nil } }
+            get: { services.startupServerProblem != nil },
+            set: { if !$0 { services.startupServerProblem = nil } }
         )
     }
 

@@ -538,10 +538,18 @@ struct FlowRow: Layout {
     var spacing: CGFloat = 8
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? .infinity
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        // Never `.infinity`. An unbounded proposal — which happens whenever
+        // this is measured outside a width-constraining parent — used to be
+        // returned verbatim as the layout's own width, and a `Layout` reporting
+        // an infinite size is how SwiftUI ends up in a layout loop that paints
+        // nothing. Unbounded means "as wide as you like", so the honest answer
+        // is the widest single row.
+        let natural = sizes.reduce(0) { $0 + $1.width + spacing }
+        let width = proposal.width ?? natural
+
         var x: CGFloat = 0, y: CGFloat = 0, lineHeight: CGFloat = 0
-        for view in subviews {
-            let size = view.sizeThatFits(.unspecified)
+        for size in sizes {
             if x + size.width > width, x > 0 {
                 x = 0
                 y += lineHeight + spacing
@@ -550,7 +558,7 @@ struct FlowRow: Layout {
             x += size.width + spacing
             lineHeight = max(lineHeight, size.height)
         }
-        return CGSize(width: width, height: y + lineHeight)
+        return CGSize(width: min(width, natural), height: y + lineHeight)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {

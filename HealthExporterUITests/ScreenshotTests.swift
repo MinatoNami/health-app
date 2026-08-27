@@ -164,6 +164,25 @@ final class ScreenshotTests: XCTestCase {
         capture("Rejected")
     }
 
+
+    /// Lays out the Steady chips, which sit below the fold.
+    ///
+    /// `LazyVStack` does not lay out what is off screen, so nothing had ever
+    /// exercised `FlowRow` — the one custom `Layout` in the app, and the only
+    /// place that can report a size back to SwiftUI rather than just consuming
+    /// one. It used to return `.infinity` for its own width under an unbounded
+    /// proposal, which is how a layout loop that paints nothing starts.
+    func testSteadyChipsLayOutAndTheAppSurvivesIt() throws {
+        show("Today")
+        for _ in 0..<4 { app.swipeUp() }
+        XCTAssertTrue(app.staticTexts["STEADY"].waitForExistence(timeout: 10), "no Steady section")
+        capture("Steady")
+        // Still alive after laying it out?
+        show("Trends")
+        XCTAssertTrue(app.staticTexts["Trends"].waitForExistence(timeout: 15),
+                      "the app stopped responding after laying out Steady")
+    }
+
     // MARK: - Steps
 
     private func signIn(server: String, user: String, password: String) throws {
@@ -186,7 +205,10 @@ final class ScreenshotTests: XCTestCase {
         signOutIfNeeded()
 
         let username = app.textFields["Username"].firstMatch
-        XCTAssertTrue(scrollTo(username), "username field")
+        XCTAssertTrue(
+            scrollTo(username),
+            "username field not reachable — keyboard up? \(app.keyboards.element.exists)"
+        )
         username.tap()
         username.typeText(user)
         dismissKeyboard()
@@ -311,9 +333,26 @@ final class ScreenshotTests: XCTestCase {
     /// reports failure. There is no Done button on these fields, so this taps
     /// the navigation title — inert, and always on screen.
     private func dismissKeyboard() {
-        guard app.keyboards.element.exists else { return }
-        app.staticTexts["Settings"].firstMatch.tap()
-        _ = app.keyboards.element.waitForNonExistence(timeout: 3)
+        let keyboard = app.keyboards.element
+        guard keyboard.exists else { return }
+
+        // The keyboard's own return key first. Tapping the navigation title —
+        // what this used to do — depends on that title being a hittable static
+        // text, and when it is not the keyboard simply stays up: the next field
+        // is behind it, `scrollTo` reports it unreachable, and the failure
+        // surfaces as "username field" three lines later with no hint that a
+        // keyboard was the cause.
+        let returnKey = app.keyboards.buttons["return"]
+        if returnKey.exists {
+            returnKey.tap()
+            if keyboard.waitForNonExistence(timeout: 2) { return }
+        }
+        app.navigationBars.firstMatch.tap()
+        if keyboard.waitForNonExistence(timeout: 2) { return }
+        // Last resort: a swipe down over the keyboard dismisses an
+        // interactively-dismissible one.
+        app.swipeDown()
+        _ = keyboard.waitForNonExistence(timeout: 2)
     }
 
     /// Empties a text field.
@@ -346,6 +385,17 @@ final class ScreenshotTests: XCTestCase {
     /// rather than returning false.
     @discardableResult
     private func scrollTo(_ element: XCUIElement, attempts: Int = 12) -> Bool {
+        // Down first, then back up past the start. One-directional searching is
+        // how this used to fail: `setServerURL` leaves the form scrolled to
+        // wherever the URL field is, the Account section can be either side of
+        // that, and a search that only swipes one way sails past it and never
+        // returns — surfacing as "username field" with the field sitting a
+        // screen above.
+        if scan(element, attempts: attempts, up: true) { return true }
+        return scan(element, attempts: attempts * 2, up: false)
+    }
+
+    private func scan(_ element: XCUIElement, attempts: Int, up: Bool) -> Bool {
         for _ in 0..<attempts {
             if element.exists && element.isHittable { return true }
             // Hittable, not merely existing: the chat history drawer is a
@@ -356,7 +406,7 @@ final class ScreenshotTests: XCTestCase {
                 + app.tables.allElementsBoundByIndex
                 + app.scrollViews.allElementsBoundByIndex
             let scroller: XCUIElement = candidates.first { $0.exists && $0.isHittable } ?? app
-            scroller.swipeUp()
+            if up { scroller.swipeUp() } else { scroller.swipeDown() }
         }
         return element.exists && element.isHittable
     }
