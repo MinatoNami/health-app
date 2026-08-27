@@ -29,18 +29,22 @@ class ForwardedPrefixTests(TestCase):
         response = self.client.post("/v1/health/batches", HTTP_X_FORWARDED_PREFIX="/health-app")
         self.assertEqual(response.status_code, 401)
 
-    def test_static_stays_at_the_origin_root(self):
-        # Deliberately *not* prefixed, both ways. STATIC_URL is absolute, so
-        # Django leaves it alone whatever the script prefix is, and every app
-        # on this origin shares /static/. A relative STATIC_URL would be
-        # prefixed instead — and worse, inconsistently: the staticfiles storage
-        # caches the value the first time it is built, so whichever request
-        # arrived first would decide it for the whole worker.
+    def test_static_is_under_the_prefix_and_does_not_vary(self):
+        # The same URL whether or not the request carried the header, which is
+        # the point: STATIC_URL is absolute, so the script prefix never touches
+        # it. A relative value would be prefixed instead, and inconsistently —
+        # the staticfiles storage caches it the first time it is built, so
+        # whichever request arrived first would decide it for the whole worker.
         prefixed = self.client.get("/admin/login/", HTTP_X_FORWARDED_PREFIX="/health-app")
         plain = self.client.get("/admin/login/")
         for response in (prefixed, plain):
-            self.assertContains(response, "/static/admin/css/base.css", status_code=200)
-            self.assertNotContains(response, "/health-app/static/")
+            self.assertContains(response, "/health-app/static/admin/css/base.css", status_code=200)
+
+    def test_static_is_not_double_prefixed(self):
+        # STATIC_URL already carries /health-app. If it were also picking up the
+        # script prefix we would be emitting /health-app/health-app/static/.
+        response = self.client.get("/admin/login/", HTTP_X_FORWARDED_PREFIX="/health-app")
+        self.assertNotContains(response, "/health-app/health-app/")
 
     def test_the_login_form_posts_back_inside_the_mount(self):
         # The one that matters for phishing: an action attribute pointing out

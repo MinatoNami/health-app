@@ -119,13 +119,25 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-# Absolute — "static/" would be relative, and Django prefixes a relative
-# STATIC_URL with the current script prefix. The staticfiles storage reads it
-# once when it is first instantiated, so under ForwardedPrefixMiddleware which
-# request happens to be in flight at that moment would decide, for the life of
-# the worker, whether every static URL carries /health-app. Static is served at
-# the origin root for every app on this host; say so and it cannot drift.
-STATIC_URL = "/static/"
+# Under the service's own prefix, like everything else this app owns. /static/
+# at the origin root looked shared and was not — it was this app's tree, and the
+# second Django app on the origin would have collided with it exactly the way
+# /admin/ did.
+#
+# Absolute and not relative ("static/"), even though a relative value is what
+# Django would prefix for us. That prefixing happens through the script prefix,
+# and the staticfiles storage reads STATIC_URL once when it is first
+# instantiated — so with ForwardedPrefixMiddleware varying the prefix per
+# request, whichever request happened to be in flight at that moment would
+# decide, for the life of the worker, what every static URL looked like. Stating
+# it outright is the only way it cannot drift.
+#
+# The prefix therefore has to survive to Django rather than be stripped by the
+# proxy: WhiteNoise matches on the request path against this value, and only
+# strips a prefix of its own when FORCE_SCRIPT_NAME is set, which this app does
+# not use. The gateway passes /health-app/static/ straight through — see the
+# admin's route, which does the opposite, for the contrast.
+STATIC_URL = env("DJANGO_STATIC_URL", "/health-app/static/")
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},

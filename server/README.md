@@ -103,12 +103,15 @@ on the network.
 
 On `alena-server`, an `alena-gateway` nginx vhost owns the origin: `tailscale
 serve` terminates TLS and hands it every request on loopback, and it routes
-`/v1/`, `/healthz` and `/static/` here at the origin root, `/health-app/admin/`
-with a prefix, and `/health-app/` from disk for the dashboard.
+`/v1/` and `/healthz` here at the origin root, `/health-app/admin/` and
+`/health-app/static/` under the service prefix, and `/health-app/` from disk for
+the dashboard.
 
-There is no `/admin/` at the root. It was removed once the admin could carry a
-prefix, so the path is free for whatever should own it on an origin with more
-than one Django app behind it.
+Only `/v1/` and `/healthz` are left at the root, and only because they have to
+be: the first is compiled into shipped iOS builds, and the second is what the
+deploy verifies against. `/admin/` and `/static/` used to sit there too. Both
+looked shared and neither was — they were this app's, and the second Django app
+on the origin would have collided with both.
 
 `/v1` deliberately stays at the **origin root** rather than moving under the
 prefix. Shipped iOS builds have `/v1/health/batches` compiled in, and Django
@@ -141,8 +144,30 @@ location = /health-app/admin { return 301 /health-app/admin/; }
 Two things about that header. It is only honoured if it names a prefix in
 `DJANGO_FORWARDED_PREFIXES` (default `/health-app`) — anyone can send it, and an
 unchecked value would let a caller choose the `action` on the admin's own login
-form. And `/static/` is deliberately *not* prefixed: `STATIC_URL` is absolute,
-every app on the origin shares it, and it is already routed at the root.
+form.
+
+`/health-app/static/` is the same idea with the opposite plumbing, and the
+difference is worth understanding before touching either. The admin's prefix is
+**stripped** and re-declared in a header. Static's prefix is **passed through
+untouched**: `STATIC_URL` is `/health-app/static/`, WhiteNoise matches the
+request path against exactly that, and it only strips a prefix of its own when
+`FORCE_SCRIPT_NAME` is set — which this app does not use. Strip it at the proxy
+and every admin stylesheet 404s.
+
+```nginx
+location ^~ /health-app/static/ {
+    include snippets/alena-gateway-proxy.conf;
+    proxy_pass http://127.0.0.1:8081;        # no trailing slash: keep the prefix
+    proxy_read_timeout 60s;
+}
+```
+
+`STATIC_URL` is also absolute rather than relative. A relative value is what
+Django would prefix for you, through the script prefix — but the staticfiles
+storage reads it once when first instantiated, so with the prefix varying per
+request, whichever request was in flight at that moment would decide what every
+static URL looked like for the life of the worker. `DJANGO_STATIC_URL`
+overrides it.
 
 `deploy.sh` therefore does not install its own vhost when it finds that gateway;
 both would claim 443. Set `HEALTH_MANAGE_NGINX=1` to own the vhost again, which
