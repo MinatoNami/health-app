@@ -137,22 +137,23 @@ struct InsightsView: View {
 
                         if let notice = engine.chatNotice {
                             Text(notice)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(Ink.faint)
                         }
 
                         if let error = engine.insightError ?? engine.snapshotError {
                             Text(error)
-                                .font(.caption)
-                                .foregroundStyle(.orange)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(Ink.absent)
                         }
 
                         Color.clear.frame(height: 1).id(bottomAnchor)
                     }
-                    .padding(16)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 16)
                 }
                 .overlay {
-                    if engine.isLoadingTranscript { ProgressView() }
+                    if engine.isLoadingTranscript { ProgressView().tint(Ink.muted) }
                 }
                 // The way back. Nothing drags the view to the newest message any
                 // more, which is right while reading and useless once you want
@@ -164,10 +165,12 @@ struct InsightsView: View {
                             proxy.scrollTo(bottomAnchor, anchor: .bottom)
                         } label: {
                             Label("Latest", systemImage: "arrow.down")
-                                .font(.caption)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(.regularMaterial, in: Capsule())
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Ink.secondary)
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 7)
+                                .background(Ink.raised, in: Capsule())
+                                .overlay(Capsule().strokeBorder(Ink.hairline, lineWidth: 1))
                         }
                         .buttonStyle(.plain)
                         .padding(.bottom, 8)
@@ -214,7 +217,7 @@ struct InsightsView: View {
 
             composer
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Ink.ground)
         .refreshable { await engine.refreshSnapshot() }
     }
 
@@ -224,73 +227,18 @@ struct InsightsView: View {
     private static let nearBottom: CGFloat = 120
 
     private var composer: some View {
-        VStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    if engine.transcript.isEmpty {
-                        ForEach(Self.suggestions, id: \.self) { suggestion in
-                            Button(suggestion) { send(suggestion) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                        }
-                    }
-                    Button("Weekly review") {
-                        composerFocused = false
-                        Task { await engine.requestWeeklyReview() }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, 16)
+        Composer(
+            question: $question,
+            focused: $composerFocused,
+            showsSuggestions: engine.transcript.isEmpty,
+            suggestions: Self.suggestions,
+            isAsking: engine.isAsking,
+            onSend: { send($0) },
+            onWeeklyReview: {
+                composerFocused = false
+                Task { await engine.requestWeeklyReview() }
             }
-            .disabled(engine.isAsking)
-
-            // Computed once. It was evaluated twice per keystroke — once for
-            // `disabled`, once for `opacity` — on a view that rebuilds on every
-            // character typed.
-            let canSend = !engine.isAsking
-                && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-
-            HStack(spacing: 9) {
-                TextField("Ask about your health data…", text: $question, axis: .vertical)
-                    .lineLimit(1...4)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 9)
-                    .background(Color(.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 19))
-                    .focused($composerFocused)
-
-                Button {
-                    send(question)
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 34, height: 34)
-                        .background(Color.accentColor, in: Circle())
-                        .foregroundStyle(.white)
-                }
-                .disabled(!canSend)
-                .opacity(canSend ? 1 : 0.4)
-            }
-            .padding(.horizontal, 16)
-
-            Text("Wellness guidance from your own data. Not medical advice.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(.bottom, 4)
-        }
-        .padding(.top, 10)
-        // An opaque background with a hairline, rather than the `.bar` material.
-        // A material is a live blur of whatever is behind it, recomposited as
-        // that content moves — and the moment it moves most is the keyboard
-        // animating in underneath this exact view. Visually near-identical here,
-        // because the composer sits against a plain grouped background anyway.
-        .background(alignment: .top) {
-            Color(.secondarySystemGroupedBackground)
-                .overlay(alignment: .top) { Divider() }
-                .ignoresSafeArea()
-        }
+        )
     }
 
     private func send(_ text: String) {
@@ -299,6 +247,144 @@ struct InsightsView: View {
         composerFocused = false
         question = ""
         Task { await engine.ask(asked) }
+    }
+}
+
+/// The ask bar and the chips above it.
+///
+/// Its own view because it is the most-changed control on this screen and the
+/// one that cannot be seen without a signed-in app and a running model. Taking
+/// plain values rather than the environment is what lets `InsightsRenderTests`
+/// draw it in both states — empty and armed — which is the whole difference
+/// between "it compiles" and "it looks right".
+private struct Composer: View {
+    @Binding var question: String
+    @FocusState.Binding var focused: Bool
+    let showsSuggestions: Bool
+    let suggestions: [String]
+    let isAsking: Bool
+    let onSend: (String) -> Void
+    let onWeeklyReview: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if showsSuggestions {
+                        ForEach(suggestions, id: \.self) { suggestion in
+                            Button(suggestion) { onSend(suggestion) }
+                                .buttonStyle(ChipStyle())
+                        }
+                    }
+                    Button("Weekly review", action: onWeeklyReview)
+                        .buttonStyle(ChipStyle())
+                }
+                .padding(.horizontal, 20)
+            }
+            .disabled(isAsking)
+
+            // Computed once. It was evaluated twice per keystroke — once for
+            // `disabled`, once for `opacity` — on a view that rebuilds on every
+            // character typed.
+            let canSend = !isAsking
+                && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+            // One field, with the button inside it. The board draws a single
+            // 24pt pill rather than a field and a detached circle: at this
+            // corner radius two shapes side by side read as a control that did
+            // not finish laying out.
+            HStack(spacing: 10) {
+                TextField("", text: $question, axis: .vertical)
+                    .prompt(showsSuggestions ? "Ask about your health data" : "Ask a follow-up",
+                            visible: question.isEmpty)
+                    .lineLimit(1...4)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Ink.primary)
+                    .tint(Ink.accent)
+                    .focused($focused)
+
+                // Accent once there is something to send, inert grey before —
+                // straight from the two boards, and the only moving part in the
+                // composer. It is how the control says it is armed without a
+                // label saying so.
+                Button {
+                    onSend(question)
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(canSend ? Ink.ground : Ink.faint)
+                        .frame(width: 32, height: 32)
+                        .background(canSend ? Ink.accent : Ink.hairline, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSend)
+                .animation(.easeOut(duration: 0.15), value: canSend)
+                .accessibilityLabel("Send")
+            }
+            .padding(.leading, 15)
+            .padding(.trailing, 12)
+            .padding(.vertical, 8)
+            .frame(minHeight: 48)
+            .background(Ink.field, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .strokeBorder(Ink.hairline, lineWidth: 1)
+            )
+            .padding(.horizontal, 20)
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+        // An opaque background with a hairline, rather than the `.bar` material.
+        // A material is a live blur of whatever is behind it, recomposited as
+        // that content moves — and the moment it moves most is the keyboard
+        // animating in underneath this exact view.
+        .background(alignment: .top) {
+            Ink.ground
+                .overlay(alignment: .top) { Rectangle().fill(Ink.divider).frame(height: 1) }
+                .ignoresSafeArea()
+        }
+    }
+}
+
+/// A suggestion chip: 40pt tall, hairline, quiet until tapped.
+private struct ChipStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 12.5))
+            .foregroundStyle(Ink.secondary)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 40)
+            .background(Ink.raised, in: Capsule())
+            .overlay(Capsule().strokeBorder(Ink.hairline, lineWidth: 1))
+            .opacity(configuration.isPressed ? 0.6 : 1)
+    }
+}
+
+private extension View {
+    /// `TextField`'s own placeholder cannot be coloured, and the default is far
+    /// brighter than the boards' `faint`. Drawing it behind an empty field is
+    /// the only way to hit the specified colour.
+    func prompt(_ text: String, visible: Bool) -> some View {
+        modifier(PlaceholderPrompt(text: text, visible: visible))
+    }
+}
+
+private struct PlaceholderPrompt: ViewModifier {
+    let text: String
+    /// Drawn behind the field, so it has to be taken away by hand the moment
+    /// there is anything to overlap with.
+    let visible: Bool
+
+    func body(content: Content) -> some View {
+        content.background(alignment: .leading) {
+            if visible {
+                Text(text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Ink.faint)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }
 
@@ -316,50 +402,55 @@ private struct BriefBubble: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Label("Morning brief", systemImage: "sun.horizon")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+            Text("Morning brief").sectionLabelStyle()
 
             Text(brief.headline)
-                .font(.headline)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Ink.primary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if !brief.detail.isEmpty {
                 Text(brief.detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(Ink.secondary)
+                    .lineSpacing(2.5)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             ForEach(brief.movers) { mover in
                 HStack(alignment: .firstTextBaseline) {
-                    Text(mover.label).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
+                    Text(mover.label)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Ink.secondary)
+                    Spacer(minLength: 6)
                     if let value = mover.current.value {
                         Text(value.formatted(.number.precision(.fractionLength(value < 10 ? 1 : 0))))
-                            .font(.caption.weight(.semibold))
-                            .monospacedDigit()
+                            .font(.figure(13))
+                            .foregroundStyle(Ink.primary)
                     }
                     if let pct = mover.changePct {
                         Text("\(pct > 0 ? "+" : "−")\(Int(abs(pct).rounded()))%")
-                            .font(.caption2.weight(.semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 40, alignment: .trailing)
+                            .foregroundStyle(Ink.muted)
+                            .frame(width: 46, alignment: .trailing)
                     }
                 }
             }
 
             Button("Why did that change?", action: onAskWhy)
-                .font(.caption)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Ink.accent)
+                .buttonStyle(.plain)
                 .padding(.top, 2)
 
             Text("Through \(brief.asOf)")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(.figure(11, weight: .regular))
+                .foregroundStyle(Ink.faint)
         }
-        .padding(14)
+        .padding(15)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 16))
+        .cardStyle()
     }
 }
 
@@ -371,35 +462,57 @@ private struct SnapshotBubble: View {
     let snapshot: HealthSnapshot
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("This week vs your 28-day baseline")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            ForEach(snapshot.metrics) { metric in
-                MetricLine(metric: metric)
-            }
-
-            if let stale = snapshot.metricsNotSyncing, !stale.isEmpty {
-                Divider()
-                ForEach(stale) { item in
-                    HStack {
-                        Text(item.label).font(.caption)
-                        Spacer()
-                        Text("\(item.daysSince ?? 0)d ago")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Your measured week").sectionLabelStyle()
+                    Spacer(minLength: 0)
                 }
-                Text("Not syncing. A gap is not a zero.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 12)
+
+                ForEach(snapshot.metrics) { metric in
+                    Rectangle().fill(Ink.divider).frame(height: 1)
+                    MetricLine(metric: metric)
+                        .padding(.horizontal, 15)
+                        .padding(.vertical, 11)
+                }
+
+                if let stale = snapshot.metricsNotSyncing, !stale.isEmpty {
+                    Rectangle().fill(Ink.divider).frame(height: 1)
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(stale) { item in
+                            HStack {
+                                Text(item.label)
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Ink.secondary)
+                                Spacer(minLength: 6)
+                                Text("\(item.daysSince ?? 0)d ago")
+                                    .font(.figure(12))
+                                    .foregroundStyle(Ink.absent)
+                            }
+                        }
+                        // The rule the whole app is built around, said where a
+                        // reader is most likely to mistake absence for a zero.
+                        Text("Not syncing. A gap is not a zero.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Ink.faint)
+                    }
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 11)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .cardStyle()
+
+            // Outside the card, in the board, and it belongs there: it is an
+            // instruction about the screen rather than a row of the table.
+            Text("Ask anything about these figures. Answers cite the days they were measured from.")
+                .font(.system(size: 13))
+                .foregroundStyle(Ink.faint)
+                .lineSpacing(2.5)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -410,19 +523,27 @@ private struct MetricLine: View {
     let metric: HealthSnapshot.Comparison
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(Self.short[metric.metricSlug] ?? metric.label)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            Text(MetricStyle.shortLabel(metric.metricSlug, fallback: metric.label))
+                .font(.system(size: 13))
+                .foregroundStyle(Ink.secondary)
             Spacer(minLength: 6)
-            Text(format(metric.current.value))
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
+            // Both shared with Today rather than reimplemented here, which is
+            // what this was: a private abbreviation table and a private number
+            // formatter, one screen apart from the ones Today uses. Two
+            // renderings of the same figure that can drift is precisely the
+            // thing the server-side-analysis rule exists to avoid.
+            Text(MetricFormat.value(metric.current.value, slug: metric.metricSlug))
+                .font(.figure(13))
+                .foregroundStyle(Ink.primary)
+            Text(MetricStyle.unit(metric.unit, slug: metric.metricSlug))
+                .font(.system(size: 11))
+                .foregroundStyle(Ink.faint)
             Text(delta)
-                .font(.caption.weight(.semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(tint)
-                .frame(minWidth: 44, alignment: .trailing)
+                .frame(width: 46, alignment: .trailing)
         }
     }
 
@@ -434,31 +555,11 @@ private struct MetricLine: View {
 
     private var tint: Color {
         switch metric.tone {
-        case .good: return .green
-        case .watch: return .red
-        case .neutral: return .secondary
+        case .good: return Ink.measured
+        case .watch: return Ink.absent
+        case .neutral: return Ink.muted
         }
     }
-
-    private func format(_ value: Double?) -> String {
-        guard let value else { return "—" }
-        let magnitude = abs(value)
-        if magnitude >= 10_000 { return String(format: "%.1fK", value / 1000) }
-        if magnitude >= 100 { return value.formatted(.number.precision(.fractionLength(0))) }
-        return value.formatted(.number.precision(.fractionLength(magnitude < 10 ? 1 : 0)))
-    }
-
-    /// Standard abbreviations. A phone row is not wide enough for
-    /// "Heart-rate variability" beside a value and a delta.
-    static let short = [
-        "resting_heart_rate": "Resting HR",
-        "heart_rate_variability_sdnn": "HRV",
-        "walking_heart_rate_average": "Walking HR",
-        "apple_exercise_time": "Exercise",
-        "sleep_analysis": "Sleep",
-        "active_energy_burned": "Active energy",
-        "distance_walking_running": "Distance",
-    ]
 }
 
 private struct UserBubble: View {
@@ -468,11 +569,22 @@ private struct UserBubble: View {
         HStack {
             Spacer(minLength: 40)
             Text(text)
-                .font(.callout)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.accentColor.opacity(0.16),
-                            in: RoundedRectangle(cornerRadius: 16))
+                .font(.system(size: 14))
+                .foregroundStyle(Ink.primary)
+                .lineSpacing(2)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 11)
+                .background(
+                    Ink.quoted,
+                    // Square on the corner nearest the sender. It is the one
+                    // cue that says which side said this without a label, and
+                    // it is why the answers below need no bubble at all.
+                    in: UnevenRoundedRectangle(
+                        topLeadingRadius: 17, bottomLeadingRadius: 17,
+                        bottomTrailingRadius: 5, topTrailingRadius: 17,
+                        style: .continuous
+                    )
+                )
         }
     }
 }
@@ -484,17 +596,14 @@ private struct PendingBubble: View {
     var label: String = ""
 
     var body: some View {
-        HStack(spacing: 9) {
-            ProgressView()
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small).tint(Ink.muted)
             Text("\(label.isEmpty ? "Reading your summaries" : label)…")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 14))
+                .foregroundStyle(Ink.muted)
                 .contentTransition(.opacity)
                 .animation(.easeInOut(duration: 0.2), value: label)
         }
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 16))
     }
 }
 
@@ -520,63 +629,77 @@ private struct AnswerBubble: View {
                 Label(safety.headline,
                       systemImage: safety.level == "urgent"
                         ? "exclamationmark.triangle.fill" : "stethoscope")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(safety.level == "urgent" ? Color.red : Color.orange)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(safety.level == "urgent" ? Ink.accent : Ink.absent)
                 ForEach(safety.reasons, id: \.self) { reason in
-                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                    Text(reason).font(.system(size: 12.5)).foregroundStyle(Ink.muted)
                 }
             }
 
             if let error = turn.error {
-                Text(error).font(.caption).foregroundStyle(.secondary)
+                Text(error).font(.system(size: 12.5)).foregroundStyle(Ink.muted)
             }
 
             if let answer = turn.answer {
-                Text(answer.summary).font(.callout)
+                // No bubble. The board gives the question a bubble and leaves
+                // the answer plain on the ground: on a screen where answers are
+                // long and questions are one line, boxing both makes the answer
+                // look like a quotation of itself.
+                Text(answer.summary)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Ink.primary)
+                    .lineSpacing(3.5)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 ForEach(answer.observations) { observation in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\u{2022} \(observation.statement)").font(.callout)
-                        Text(observation.evidence)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 12)
-                    }
+                    Text(observation.statement)
+                        .font(.system(size: 15))
+                        .foregroundStyle(Ink.primary)
+                        .lineSpacing(3.5)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+
+                evidence(for: answer)
 
                 let detailCount = answer.actions.count + answer.limitations.count
                 if detailCount > 0 {
                     Button(showDetail ? "Less" : "Suggestions and limits (\(detailCount))") {
                         withAnimation { showDetail.toggle() }
                     }
-                    .font(.caption)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(Ink.muted)
+                    .buttonStyle(.plain)
                 }
 
                 if showDetail {
                     if !answer.actions.isEmpty {
-                        Text("TRY").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                        Text("Try").sectionLabelStyle().padding(.top, 2)
                         ForEach(answer.actions) { action in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\u{2022} \(action.action)").font(.callout)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("\u{2022} \(action.action)")
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Ink.primary)
                                 Text("\(action.reason) \u{b7} \(action.timeframe)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(Ink.faint)
                                     .padding(.leading, 12)
                             }
                         }
                     }
                     if !answer.limitations.isEmpty {
-                        Text("LIMITS").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
+                        Text("Limits").sectionLabelStyle().padding(.top, 2)
                         ForEach(answer.limitations, id: \.self) { limitation in
-                            Text("\u{2022} \(limitation)").font(.caption).foregroundStyle(.secondary)
+                            Text("\u{2022} \(limitation)")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Ink.secondary)
                         }
                     }
                 }
 
                 if answer.professionalReviewRecommended {
                     Text("Worth raising with a healthcare professional.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Ink.absent)
                 }
             }
 
@@ -584,34 +707,107 @@ private struct AnswerBubble: View {
 
             if !turn.note.isEmpty && !editingNote {
                 Text(turn.note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 8)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Ink.muted)
+                    .padding(.leading, 9)
                     .overlay(alignment: .leading) {
-                        Rectangle().frame(width: 2).foregroundStyle(Color.accentColor)
+                        Rectangle().frame(width: 2).foregroundStyle(Ink.accent)
                     }
             }
 
             if editingNote {
                 TextField("What was wrong or right about this answer?", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
-                    .font(.caption)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
+                    .font(.system(size: 13))
+                    .textFieldStyle(.plain)
+                    .foregroundStyle(Ink.primary)
+                    .tint(Ink.accent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Ink.field, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Ink.hairline, lineWidth: 1)
+                    )
+                HStack(spacing: 14) {
                     Spacer()
-                    Button("Cancel") { editingNote = false }.font(.caption)
+                    Button("Cancel") { editingNote = false }
+                        .font(.system(size: 13))
+                        .foregroundStyle(Ink.muted)
+                        .buttonStyle(.plain)
                     Button("Save") {
                         onFeedback(turn.rating, draft)
                         editingNote = false
                     }
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .buttonStyle(.plain)
                 }
             }
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    /// The days the answer rests on, and the disclaimer that belongs with it.
+    ///
+    /// The board draws this as a table of metrics with a coverage strip on each
+    /// row. That cannot be built from what an answer returns: `Observation`
+    /// carries `statement`, a prose `evidence` string and `confidence` — no
+    /// metric slug, no figure, and no valid/window days. Inventing strips here
+    /// would be drawing coverage nobody measured, which is the exact failure
+    /// the strip exists to expose. So the card holds the period and the real
+    /// evidence lines, and the strips wait for the server to send the numbers.
+    @ViewBuilder
+    private func evidence(for answer: HealthInsight) -> some View {
+        let lines = answer.observations.filter { !$0.evidence.isEmpty }
+        VStack(spacing: 0) {
+            HStack {
+                Text("Measured from").sectionLabelStyle()
+                Spacer(minLength: 8)
+                if !answer.periodExamined.isEmpty {
+                    Text(answer.periodExamined)
+                        .font(.figure(10, weight: .regular))
+                        .foregroundStyle(Ink.faint)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            ForEach(lines) { observation in
+                Rectangle().fill(Ink.divider).frame(height: 1)
+                HStack(alignment: .top, spacing: 10) {
+                    Text(observation.evidence)
+                        .font(.system(size: 13))
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 6)
+                    if !observation.confidence.isEmpty {
+                        Text(observation.confidence)
+                            .font(.figure(10, weight: .regular))
+                            .textCase(.uppercase)
+                            .foregroundStyle(Ink.faint)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+            }
+
+            Rectangle().fill(Ink.divider).frame(height: 1)
+            // Attached to the answer rather than parked under the composer,
+            // where it was shown on every screen including the empty one. It
+            // qualifies advice, so it belongs where advice appears.
+            Text("Wellness guidance from your own data. Not medical advice.")
+                .font(.system(size: 11))
+                .foregroundStyle(Ink.faint)
+                .lineSpacing(1.5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(Ink.ground.opacity(0.5))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardStyle()
     }
 
     /// What produced the answer, and what you made of it.
@@ -634,10 +830,10 @@ private struct AnswerBubble: View {
                     Text("\(at) \u{b7} No model ran.")
                 }
             }
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .font(.figure(10.5, weight: .regular))
+            .foregroundStyle(Ink.faint)
 
-            Spacer()
+            Spacer(minLength: 8)
 
             if turn.answer != nil {
                 Button {
@@ -648,7 +844,7 @@ private struct AnswerBubble: View {
                 }
                 .font(.caption)
                 .buttonStyle(.plain)
-                .foregroundStyle(didCopy ? Color.accentColor : .secondary)
+                .foregroundStyle(didCopy ? Ink.accent : Ink.faint)
                 .task(id: didCopy) {
                     guard didCopy else { return }
                     try? await Task.sleep(for: .seconds(1.6))
@@ -664,9 +860,9 @@ private struct AnswerBubble: View {
                     Button { onAgain(turn.question) } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .font(.caption)
+                    .font(.system(size: 13))
                     .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.faint)
                 }
             }
 
@@ -682,9 +878,9 @@ private struct AnswerBubble: View {
                 } label: {
                     Image(systemName: turn.note.isEmpty ? "text.bubble" : "text.bubble.fill")
                 }
-                .font(.caption)
+                .font(.system(size: 13))
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(turn.note.isEmpty ? Ink.faint : Ink.accent)
             }
         }
     }
@@ -697,9 +893,9 @@ private struct AnswerBubble: View {
         } label: {
             Image(systemName: turn.rating == value ? filled : hollow)
         }
-        .font(.caption)
+        .font(.system(size: 13))
         .buttonStyle(.plain)
-        .foregroundStyle(turn.rating == value ? Color.accentColor : .secondary)
+        .foregroundStyle(turn.rating == value ? Ink.accent : Ink.faint)
         .accessibilityLabel(value > 0 ? "Useful" : "Not useful")
     }
 }
@@ -716,27 +912,87 @@ private struct CompactionSeam: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Rectangle().frame(height: 1).foregroundStyle(.quaternary)
+                Rectangle().fill(Ink.divider).frame(height: 1)
                 Button {
                     withAnimation { expanded.toggle() }
                 } label: {
                     Text("\(turns) earlier message\(turns == 1 ? "" : "s") compacted")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.figure(10.5, weight: .regular))
+                        .foregroundStyle(Ink.faint)
                 }
                 .buttonStyle(.plain)
-                Rectangle().frame(height: 1).foregroundStyle(.quaternary)
+                Rectangle().fill(Ink.divider).frame(height: 1)
             }
 
             if expanded, let summary {
                 Text(summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(10)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Ink.muted)
+                    .lineSpacing(2)
+                    .padding(11)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 10))
+                    .background(Ink.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Ink.hairline, lineWidth: 1)
+                    )
             }
         }
     }
 }
+
+
+#if DEBUG
+/// A way to render the pieces of this screen without a server behind them.
+///
+/// The bubbles are file-private and should stay that way; this is the one seam
+/// out, and it exists because "it compiles" says nothing about whether a
+/// restyle clipped a figure or lost a divider. `InsightsRenderTests` draws each
+/// of these to a PNG so the layout can actually be looked at.
+enum InsightsPreview {
+    static func measuredWeek(_ snapshot: HealthSnapshot) -> some View {
+        SnapshotBubble(snapshot: snapshot)
+    }
+
+    static func question(_ text: String) -> some View {
+        UserBubble(text: text)
+    }
+
+    static func answer(_ turn: ChatTurn) -> some View {
+        AnswerBubble(turn: turn, onFeedback: { _, _ in }, onAgain: { _ in })
+    }
+
+    static func pending(_ label: String) -> some View {
+        PendingBubble(label: label)
+    }
+
+    /// A chip on its own. `ImageRenderer` will not draw the `ScrollView` the
+    /// real ones sit in, so this is the only way to see one.
+    static func chip(_ label: String) -> some View {
+        Button(label) {}.buttonStyle(ChipStyle())
+    }
+
+    /// Needs a `@FocusState` to bind to, which only a view can own.
+    struct ComposerHarness: View {
+        let text: String
+        let showsSuggestions: Bool
+        @State private var question: String
+        @FocusState private var focused: Bool
+
+        init(text: String, showsSuggestions: Bool) {
+            self.text = text
+            self.showsSuggestions = showsSuggestions
+            _question = State(initialValue: text)
+        }
+
+        var body: some View {
+            Composer(
+                question: $question, focused: $focused,
+                showsSuggestions: showsSuggestions,
+                suggestions: ["How is my sleep?", "Am I more active?"],
+                isAsking: false, onSend: { _ in }, onWeeklyReview: {}
+            )
+        }
+    }
+}
+#endif

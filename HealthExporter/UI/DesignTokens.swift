@@ -31,6 +31,14 @@ enum Ink {
     static let muted = Color(red: 0.604, green: 0.576, blue: 0.608)    // #9A939B
     static let faint = Color(red: 0.400, green: 0.373, blue: 0.408)    // #665F68
 
+    /// What you said, behind your own words.
+    ///
+    /// A step above `raised` so a question reads as quoted rather than as
+    /// another card. Deliberately not `accent.opacity(_:)`, which is what this
+    /// was: a tinted bubble makes the question the loudest thing on a screen
+    /// whose whole point is the answer.
+    static let quoted = Color(red: 0.165, green: 0.141, blue: 0.161)   // #2A2429
+
     /// The existing brand red, unchanged: `AccentColor` is rgb(0.902, 0.310, 0.353).
     static let accent = Color(red: 0.902, green: 0.310, blue: 0.353)   // #E64F5A
 

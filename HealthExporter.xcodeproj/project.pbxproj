@@ -30,6 +30,7 @@
 		73D70CEB1C74454AB498EF5D /* TrendCharts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68EB17D3BB52F3A64037C678 /* TrendCharts.swift */; };
 		74B8C76B0EC19012FD44A6AD /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 135534E4FF2D04C53B11672F /* Keychain.swift */; };
 		7E4344FAD25252CEE1A124AD /* SinkConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53954C1906774CFFFFB45A94 /* SinkConfigurationTests.swift */; };
+		7E4344FAD25252CEE1A1F002 /* InsightsRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53954C1906774CFFFFB4F002 /* InsightsRenderTests.swift */; };
 		7E4344FAD25252CEE1A1F001 /* LogPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53954C1906774CFFFFB4F001 /* LogPersistenceTests.swift */; };
 		81EA6E85D6164E1B6CDFC146 /* TrendsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 498E558BF82426ADAEB6DEA3 /* TrendsView.swift */; };
 		86C1DAB1934763BD430F7712 /* Timestamps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 163CD59149FBA4734FDACEDA /* Timestamps.swift */; };
@@ -103,6 +104,7 @@
 		4B952AAA36F04C319250B37A /* MetricDetailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetricDetailView.swift; sourceTree = "<group>"; };
 		51F5809C93CBEECB48694014 /* HealthAuthorization.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = HealthAuthorization.swift; sourceTree = "<group>"; };
 		53954C1906774CFFFFB45A94 /* SinkConfigurationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SinkConfigurationTests.swift; sourceTree = "<group>"; };
+		53954C1906774CFFFFB4F002 /* InsightsRenderTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InsightsRenderTests.swift; sourceTree = "<group>"; };
 		53954C1906774CFFFFB4F001 /* LogPersistenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LogPersistenceTests.swift; sourceTree = "<group>"; };
 		547823C34B943B56BF8284E9 /* InsightsView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
 		5A8B79E9A26830058FB05C64 /* LaunchTrace.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LaunchTrace.swift; sourceTree = "<group>"; };
@@ -219,6 +221,7 @@
 			children = (
 				F08F3BF8E229DE4469D7C8BF /* ServerDateTests.swift */,
 				53954C1906774CFFFFB45A94 /* SinkConfigurationTests.swift */,
+				53954C1906774CFFFFB4F002 /* InsightsRenderTests.swift */,
 				53954C1906774CFFFFB4F001 /* LogPersistenceTests.swift */,
 				D47CCDCADE274CCA6BE1ADC8 /* SyncFailureNotifierTests.swift */,
 			);
@@ -468,6 +471,7 @@
 			files = (
 				6F40B37ABABFBB6085DB7528 /* ServerDateTests.swift in Sources */,
 				7E4344FAD25252CEE1A124AD /* SinkConfigurationTests.swift in Sources */,
+				7E4344FAD25252CEE1A1F002 /* InsightsRenderTests.swift in Sources */,
 				7E4344FAD25252CEE1A1F001 /* LogPersistenceTests.swift in Sources */,
 				90AC757E02DBB26BFB597E25 /* SyncFailureNotifierTests.swift in Sources */,
 			);

@@ -3,7 +3,8 @@
 Source for a proposed redesign of the iOS app: six screens, a navigation map,
 a teardown of what ships today, and the competitor research behind it.
 
-Nothing here is built. It is a proposal to argue with.
+Built, except where noted below. It started as a proposal to argue with; the
+argument is over and the screens exist.
 
 ---
 
@@ -37,7 +38,24 @@ cannot tell you.
 | `DirectionB.dc.html` | An alternate direction: data-forward, light, six sparklines on one axis |
 | `Teardown.dc.html` | What is wrong (and right) with the current Summary tab |
 | `Research.dc.html` | What the popular apps do, and what was deliberately not copied |
+| `Onboarding.dc.html` | First run, built around the one Health prompt iOS gives you once |
+| `FirstRun.dc.html` | The first week, before there is a baseline to compare against |
+| `ErrorStates.dc.html` | Server unreachable, credential rejected, sync stalled |
+| `ChatHistory.dc.html` | The conversation drawer |
+| `Settings.dc.html` | Settings, pushed from Data |
 | `canvas.json` | Layout: positions, pages, sticky notes |
+
+**Still to build.** `Settings.dc.html` and `ChatHistory.dc.html` are drawn but
+their screens are barely restyled — one and two token references respectively.
+`DirectionB.dc.html` is the rejected alternative and is not meant to be built.
+
+**Drawn but not buildable yet.** `InsightsAnswer.dc.html` shows the evidence
+table with a coverage strip on every row. An answer does not carry that: an
+`Observation` has a statement, a prose `evidence` string and a confidence word —
+no metric slug, no figure, no valid/window days. The card is built from what the
+answer really returns, and the strips wait on the server sending the numbers.
+Drawing them from anything else would be inventing coverage, which is the exact
+failure the strip exists to expose.
 
 `.dc.html` is Claude Design's component format. Each file is one artboard and
 opens in a browser on its own, though it needs the canvas runtime to render
@@ -59,6 +77,7 @@ the artboards, not an idealised palette.
 | Surface raised | `#1A181B` | Chips, secondary buttons |
 | Field | `#1E1B20` | The ask bar |
 | Hairline | `#2E2A30` | Every border |
+| Quoted | `#2A2429` | The bubble holding your own question |
 | Divider | `#201D22` | Between rows inside a card |
 | Ink | `#F4F1EC` | Primary text. Warm off-white. |
 | Ink secondary | `#C9C2C8` | Body copy inside cards |
