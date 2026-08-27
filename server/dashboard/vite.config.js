@@ -3,8 +3,12 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
-  // Served by nginx under /dashboard/, so every asset URL has to be prefixed.
-  base: '/dashboard/',
+  // Served by alena-gateway under /health-app/, straight off disk from
+  // /var/www/health-dashboard, so every asset URL has to be prefixed. The API
+  // calls in src/api.js stay root-absolute (/v1/...) on purpose: the gateway
+  // keeps that prefix at the origin root for the iOS app, and the dashboard
+  // rides along on the same routes.
+  base: '/health-app/',
   build: { outDir: 'dist', emptyOutDir: true },
   server: {
     // `npm run dev` against the real server; same-origin in production so no

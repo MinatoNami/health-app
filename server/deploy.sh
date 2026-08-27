@@ -231,8 +231,38 @@ CRON"
   info "→ /var/log/health-cert.log"
 }
 
+# alena-gateway owns nginx on alena-server. It terminates no TLS of its own —
+# `tailscale serve` does that — and routes /v1, /healthz, /admin, /static and
+# /health-app here. Two sites both claiming 443 would fight over it, so this
+# app no longer installs one where the gateway is present.
+#
+# Set HEALTH_MANAGE_NGINX=1 to go back to owning the vhost. That is only right
+# on a host where alena-gateway is not deployed.
 configure_nginx() {
   step "nginx"
+
+  if [ "${HEALTH_MANAGE_NGINX:-0}" != "1" ] \
+     && remote "test -e /etc/nginx/sites-enabled/alena-gateway"; then
+    if remote "test -e /etc/nginx/sites-enabled/$NGINX_SITE"; then
+      # First deploy behind the gateway: retire the standalone vhost.
+      remote "sudo rm -f /etc/nginx/sites-enabled/$NGINX_SITE"
+      if ! remote 'sudo nginx -t' >/dev/null 2>&1; then
+        remote "sudo ln -sfn /etc/nginx/sites-available/$NGINX_SITE /etc/nginx/sites-enabled/$NGINX_SITE"
+        die "removing $NGINX_SITE left nginx unable to validate; it has been put back"
+      fi
+      remote "sudo systemctl reload nginx"
+      ok "retired the standalone $NGINX_SITE vhost — alena-gateway routes this app now"
+    else
+      ok "routed by alena-gateway — nothing to configure"
+    fi
+    return
+  fi
+
+  if [ "${HEALTH_MANAGE_NGINX:-0}" != "1" ]; then
+    warn "alena-gateway is not installed on $SSH_HOST — installing the standalone"
+    warn "$NGINX_SITE vhost so the app stays reachable"
+  fi
+
   local tmp="/tmp/${NGINX_SITE}.conf"
   sed "s/__SERVER_NAME__/$SERVER_NAME/g" "$LOCAL_DIR/deploy/nginx-health.conf" \
     | remote "cat > $tmp"
@@ -317,7 +347,7 @@ print_summary() {
   step "Done"
   cat <<EOF
 
-    Dashboard   https://$SERVER_NAME/dashboard/
+    Dashboard   https://$SERVER_NAME/health-app/
     Endpoint    https://$SERVER_NAME/v1/health/batches
     Admin       https://$SERVER_NAME/admin/
     Health      https://$SERVER_NAME/healthz
