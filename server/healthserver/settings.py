@@ -45,7 +45,16 @@ INSTALLED_APPS = [
     "ingest",
 ]
 
+# Path prefixes a gateway may mount this instance under, named in
+# X-Forwarded-Prefix. An allowlist, deliberately — see
+# ingest.middleware.ForwardedPrefixMiddleware for why an unchecked header here
+# would be a phishing primitive.
+FORWARDED_PREFIXES = env_list("DJANGO_FORWARDED_PREFIXES", "/health-app")
+
 MIDDLEWARE = [
+    # First: everything below it reads request.path, and SecurityMiddleware
+    # redirects on it.
+    "ingest.middleware.ForwardedPrefixMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -110,7 +119,13 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = "static/"
+# Absolute — "static/" would be relative, and Django prefixes a relative
+# STATIC_URL with the current script prefix. The staticfiles storage reads it
+# once when it is first instantiated, so under ForwardedPrefixMiddleware which
+# request happens to be in flight at that moment would decide, for the life of
+# the worker, whether every static URL carries /health-app. Static is served at
+# the origin root for every app on this host; say so and it cannot drift.
+STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {
     "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},

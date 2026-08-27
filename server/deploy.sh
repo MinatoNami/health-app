@@ -349,7 +349,7 @@ print_summary() {
 
     Dashboard   https://$SERVER_NAME/health-app/
     Endpoint    https://$SERVER_NAME/v1/health/batches
-    Admin       https://$SERVER_NAME/admin/
+    Admin       https://$SERVER_NAME/health-app/admin/
     Health      https://$SERVER_NAME/healthz
 
     In the app: Settings → HTTP destination

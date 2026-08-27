@@ -112,6 +112,34 @@ would need `FORCE_SCRIPT_NAME` to live under a prefix — which applies to the
 whole instance, so the admin could not have one without the ingest endpoint
 having one too.
 
+### Mounting the admin on a path
+
+The admin lives at **`/health-app/admin/`**, so it does not collide with the
+admin of every other Django app sharing the origin. `/v1` cannot move with it —
+shipped iOS builds have it compiled in — and `FORCE_SCRIPT_NAME` is
+instance-wide, so it cannot prefix one without the other.
+
+`ForwardedPrefixMiddleware` resolves that by making the prefix a property of the
+request. The gateway strips it and names it in a header; Django turns that into
+a per-request `SCRIPT_NAME`, and the same instance generates prefixed URLs for
+the admin and unprefixed ones for `/v1`:
+
+```nginx
+location ^~ /health-app/admin/ {
+    include snippets/alena-gateway-proxy.conf;
+    proxy_pass http://127.0.0.1:8081/admin/;   # trailing slash strips the prefix
+    proxy_set_header X-Forwarded-Prefix /health-app;
+    proxy_read_timeout 120s;
+}
+location = /health-app/admin { return 301 /health-app/admin/; }
+```
+
+Two things about that header. It is only honoured if it names a prefix in
+`DJANGO_FORWARDED_PREFIXES` (default `/health-app`) — anyone can send it, and an
+unchecked value would let a caller choose the `action` on the admin's own login
+form. And `/static/` is deliberately *not* prefixed: `STATIC_URL` is absolute,
+every app on the origin shares it, and it is already routed at the root.
+
 `deploy.sh` therefore does not install its own vhost when it finds that gateway;
 both would claim 443. Set `HEALTH_MANAGE_NGINX=1` to own the vhost again, which
 is only right on a host where the gateway is absent —
