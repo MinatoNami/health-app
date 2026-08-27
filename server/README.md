@@ -103,8 +103,12 @@ on the network.
 
 On `alena-server`, an `alena-gateway` nginx vhost owns the origin: `tailscale
 serve` terminates TLS and hands it every request on loopback, and it routes
-`/v1/`, `/healthz`, `/admin/` and `/static/` here, plus `/health-app/` from disk
-for the dashboard.
+`/v1/`, `/healthz` and `/static/` here at the origin root, `/health-app/admin/`
+with a prefix, and `/health-app/` from disk for the dashboard.
+
+There is no `/admin/` at the root. It was removed once the admin could carry a
+prefix, so the path is free for whatever should own it on an origin with more
+than one Django app behind it.
 
 `/v1` deliberately stays at the **origin root** rather than moving under the
 prefix. Shipped iOS builds have `/v1/health/batches` compiled in, and Django
@@ -254,7 +258,7 @@ The full reference, with request shapes and every filter, is
 | GET | `/v1/health/ping` | Bearer | Cheap probe — powers Test Connection |
 | GET | `/v1/health/stats` | Bearer | Per-device counts, top metrics |
 | GET | `/healthz` | none | Liveness, touches the database |
-| — | `/admin/` | session | Browse records, revoke tokens |
+| — | `/health-app/admin/` | session | Browse records, revoke tokens |
 
 `gzip` request bodies are accepted (`Content-Encoding: gzip`) even though the
 current client uploads uncompressed.

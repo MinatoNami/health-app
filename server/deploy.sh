@@ -519,7 +519,7 @@ cmd_backup_verify() {
 cmd_admin() {
   [ $# -ge 1 ] || die "usage: ./deploy.sh admin <username>"
   require_host
-  info "creating a Django admin account for https://$SERVER_NAME/admin/"
+  info "creating a Django admin account for https://$SERVER_NAME/health-app/admin/"
   # Separate from `user`: a phone sign-in should not carry admin rights, so the
   # account the app authenticates with is deliberately not a superuser.
   ssh -t "$SSH_HOST" "cd $REMOTE_DIR && docker compose run --rm -it web python manage.py createsuperuser --username '$1'"

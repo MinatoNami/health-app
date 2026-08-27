@@ -143,7 +143,7 @@ reading the whole history will quietly take the last thirty days for everything.
 | Path | Auth | Purpose |
 |---|---|---|
 | `/health-app/` | session | The Vue dashboard (`/dashboard/` redirects here) |
-| `/admin/` | session | Browse records, revoke tokens, read stored turns |
+| `/health-app/admin/` | session | Browse records, revoke tokens, read stored turns |
 
 ---
 
