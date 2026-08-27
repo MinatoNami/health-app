@@ -88,7 +88,8 @@ both use.
 
 **The dashboard is not a port.** It is a static build on disk at
 `/var/www/health-dashboard`, served straight from the filesystem. Anything
-fronting this needs a file route for it, not an upstream.
+fronting this needs a file route for it, not an upstream — mounted at
+`/health-app/`, matching `base` in `dashboard/vite.config.js`.
 
 The `127.0.0.1` prefixes are the entire point. A bare `"5432:5432"` binds
 `0.0.0.0`, which on a host with a VPN interface means every machine on the
@@ -97,6 +98,25 @@ in is an SSH tunnel, which reuses the access control already governing the host
 instead of inventing a second one. The same reasoning applies to 8081: it speaks
 plaintext HTTP, so publishing it would put an unencrypted copy of the endpoint
 on the network.
+
+### What is in front of this today
+
+On `alena-server`, an `alena-gateway` nginx vhost owns the origin: `tailscale
+serve` terminates TLS and hands it every request on loopback, and it routes
+`/v1/`, `/healthz`, `/admin/` and `/static/` here, plus `/health-app/` from disk
+for the dashboard.
+
+`/v1` deliberately stays at the **origin root** rather than moving under the
+prefix. Shipped iOS builds have `/v1/health/batches` compiled in, and Django
+would need `FORCE_SCRIPT_NAME` to live under a prefix — which applies to the
+whole instance, so the admin could not have one without the ingest endpoint
+having one too.
+
+`deploy.sh` therefore does not install its own vhost when it finds that gateway;
+both would claim 443. Set `HEALTH_MANAGE_NGINX=1` to own the vhost again, which
+is only right on a host where the gateway is absent —
+[deploy/nginx-health.conf](deploy/nginx-health.conf) is that standalone
+fallback, and a worked example of everything below.
 
 ### Putting a proxy in front
 
@@ -127,9 +147,6 @@ onto whatever path its base URL carries — `SinkConfiguration.basePath` — so 
 Server URL of `https://host/some-prefix` reaches `/some-prefix/v1/health/batches`
 and every sibling. Strip the prefix before proxying; Django's URLconf does not
 know about it and does not need to.
-
-[deploy/nginx-health.conf](deploy/nginx-health.conf) is a worked example of all
-of the above.
 
 ---
 
@@ -178,7 +195,7 @@ The full reference, with request shapes and every filter, is
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/dashboard/` | session | Vue analytics dashboard |
+| GET | `/health-app/` | session | Vue analytics dashboard (static; `/dashboard/` redirects here) |
 | GET | `/v1/analytics/overview` | session/bearer | KPIs + headline charts |
 | GET | `/v1/analytics/metrics` | session/bearer | Metric catalog |
 | GET | `/v1/analytics/series` | session/bearer | Daily series for one metric |
@@ -302,9 +319,16 @@ running periodically, or wiring into a cron on your laptop.
 
 ## Dashboard
 
-`https://alena-server.tail03bec9.ts.net/dashboard/` — Vue 3 + Vite, built by
+`https://alena-server.tail03bec9.ts.net/health-app/` — Vue 3 + Vite, built by
 `./deploy.sh` and served as static files by nginx. Sign in with the same account
-the app uses (`./deploy.sh user <name>`).
+the app uses (`./deploy.sh user <name>`). It was at `/dashboard/` until the
+gateway took over routing; that path still redirects here.
+
+The mount lives in two places that have to agree: `base` in
+`dashboard/vite.config.js`, and whichever nginx serves the files. The build
+bakes its prefix into every asset URL, so a mismatch gives you the shell and two
+404s. Its API calls are deliberately *not* prefixed — they stay root-absolute on
+`/v1/`, the same routes the iOS app uses. See [Ports](#ports).
 
 Five views: **Overview** (KPI tiles and headline charts), **Insights** (chats
 down the left, the conversation in the middle, the measured week on the right),

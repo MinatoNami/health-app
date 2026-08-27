@@ -100,7 +100,7 @@ one of the suggestion chips. Expect ~25–40s for a local 35B model; the button
 says "Thinking…" throughout.
 
 ```
-https://alena-server.tail03bec9.ts.net/dashboard/
+https://alena-server.tail03bec9.ts.net/health-app/
 ```
 
 **From the command line**, with a token:

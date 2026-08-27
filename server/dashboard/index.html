@@ -3,7 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="icon" type="image/svg+xml" href="/dashboard/favicon.svg" />
+    <!-- The href below is Vite's base placeholder, rewritten at build time to
+         whatever `base` is set to in vite.config.js. A root-absolute path
+         written by hand is left untouched, so it goes stale the moment the app
+         is mounted somewhere else — which is what happened to /dashboard/,
+         where this link kept pointing after everything else had moved. -->
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
     <title>Health Dashboard</title>
   </head>
   <body>

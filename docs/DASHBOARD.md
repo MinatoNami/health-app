@@ -1,7 +1,13 @@
 # The dashboard
 
 Vue 3 + Vite, built by `./deploy.sh` and served as static files by nginx at
-`/dashboard/`. Sign in with the same account the phone uses.
+`/health-app/`. Sign in with the same account the phone uses. It was at
+`/dashboard/` until the gateway took over routing; that path still redirects.
+
+That prefix is set by `base` in `vite.config.js` and baked into every asset URL
+at build time, so it has to match wherever nginx serves the files from. The API
+calls do not carry it — they stay root-absolute on `/v1/`, the same routes the
+phone uses.
 
 Same-origin, session-cookie auth, CSRF token echoed on unsafe methods. There is
 no build-time API host — the dashboard is served by the server it talks to.
