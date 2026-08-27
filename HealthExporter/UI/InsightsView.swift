@@ -361,33 +361,6 @@ private struct ChipStyle: ButtonStyle {
     }
 }
 
-private extension View {
-    /// `TextField`'s own placeholder cannot be coloured, and the default is far
-    /// brighter than the boards' `faint`. Drawing it behind an empty field is
-    /// the only way to hit the specified colour.
-    func prompt(_ text: String, visible: Bool) -> some View {
-        modifier(PlaceholderPrompt(text: text, visible: visible))
-    }
-}
-
-private struct PlaceholderPrompt: ViewModifier {
-    let text: String
-    /// Drawn behind the field, so it has to be taken away by hand the moment
-    /// there is anything to overlap with.
-    let visible: Bool
-
-    func body(content: Content) -> some View {
-        content.background(alignment: .leading) {
-            if visible {
-                Text(text)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Ink.faint)
-                    .allowsHitTesting(false)
-            }
-        }
-    }
-}
-
 // MARK: - Bubbles
 
 /// What the morning alert said, expanded.

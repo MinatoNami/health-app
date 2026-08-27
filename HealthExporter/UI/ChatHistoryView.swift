@@ -26,7 +26,10 @@ struct ChatHistoryView: View {
     @State private var newTitle = ""
 
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            header
+            searchField
+
             List {
                 if !engine.chatProjects.isEmpty {
                     ForEach(engine.chatProjects) { project in
@@ -34,27 +37,32 @@ struct ChatHistoryView: View {
                             let chats = engine.chats.filter { $0.projectId == project.id }
                             if chats.isEmpty {
                                 Text("No chats in here yet.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(Ink.faint)
+                                    .listRowBackground(Ink.surface)
                             }
                             ForEach(chats) { row(for: $0) }
                         } header: {
-                            Text(project.name)
+                            Text(project.name).sectionLabelStyle()
                         } footer: {
                             // The one thing that makes a project more than a
                             // folder: standing context every chat in it starts
                             // with. Worth showing, because it silently shapes
                             // every answer inside.
                             if !project.instructions.isEmpty {
-                                Text(project.instructions).font(.caption2)
+                                Text(project.instructions)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(Ink.faint)
                             }
                         }
                     }
                 }
 
                 ForEach(buckets, id: \.name) { bucket in
-                    Section(bucket.name) {
+                    Section {
                         ForEach(bucket.chats) { row(for: $0) }
+                    } header: {
+                        Text(bucket.name).sectionLabelStyle()
                     }
                 }
 
@@ -62,7 +70,10 @@ struct ChatHistoryView: View {
                     Button("Load older chats") {
                         Task { await engine.loadChats(search: search, more: true) }
                     }
-                    .font(.subheadline)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Ink.accent)
+                    .buttonStyle(.plain)
+                    .listRowBackground(Ink.surface)
                 }
 
                 if engine.chats.isEmpty && !engine.isLoadingChats {
@@ -71,71 +82,139 @@ struct ChatHistoryView: View {
                     if let problem = engine.chatsError {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Could not load your chats.")
-                            Text(problem).font(.caption).foregroundStyle(.secondary)
+                                .font(.system(size: 14))
+                                .foregroundStyle(Ink.primary)
+                            Text(problem)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(Ink.muted)
                             Button("Try again") { Task { await engine.loadChats(search: search) } }
-                                .font(.subheadline)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Ink.accent)
+                                .buttonStyle(.plain)
                         }
+                        .listRowBackground(Ink.surface)
                     } else {
                         Text(search.isEmpty
                              ? "No chats yet. Ask something to start one."
                              : "Nothing matched.")
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(Ink.muted)
+                            .listRowBackground(Ink.surface)
                     }
                 }
             }
-            .listStyle(.insetGrouped)
-            .navigationTitle("Chats")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $search, prompt: "Search chats")
-            // Server-side, so it reaches the questions inside a chat and not
-            // just the title — a title here is only ever the first question
-            // truncated, so searching titles alone would miss most of what was
-            // asked.
-            .onSubmit(of: .search) { Task { await engine.loadChats(search: search) } }
-            .onChange(of: search) { _, value in
-                if value.isEmpty { Task { await engine.loadChats() } }
-            }
-            .overlay {
-                if engine.isLoadingChats && engine.chats.isEmpty { ProgressView() }
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        engine.newChat()
-                        dismiss()
-                    } label: {
-                        Label("New chat", systemImage: "square.and.pencil")
-                    }
-                }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if let days = engine.insightStatus?.retentionDays {
-                    // Stated, not buried in Settings. A history that silently
-                    // drops conversations after a month reads as data loss the
-                    // first time somebody notices.
-                    Text("Chats are deleted after \(days) days.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(.bar)
-                }
-            }
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(Ink.surface)
-            .alert("Rename chat", isPresented: renameBinding) {
-                TextField("Title", text: $newTitle)
-                Button("Cancel", role: .cancel) { renaming = nil }
-                Button("Save") {
-                    if let chat = renaming {
-                        let title = newTitle
-                        Task { await engine.renameChat(chat.id, to: title) }
-                    }
-                    renaming = nil
+            .environment(\.defaultMinListRowHeight, 0)
+            .overlay {
+                if engine.isLoadingChats && engine.chats.isEmpty {
+                    ProgressView().tint(Ink.muted)
                 }
+            }
+
+            retentionFooter
+        }
+        .background(Ink.surface)
+        // The drawer's own edge. Without it the panel and a dark screen behind
+        // it are the same colour at the seam, and the thing reads as the page
+        // having scrolled sideways rather than as a panel over it.
+        .overlay(alignment: .trailing) {
+            Rectangle().fill(Ink.hairline).frame(width: 1).ignoresSafeArea()
+        }
+        .alert("Rename chat", isPresented: renameBinding) {
+            TextField("Title", text: $newTitle)
+            Button("Cancel", role: .cancel) { renaming = nil }
+            Button("Save") {
+                if let chat = renaming {
+                    let title = newTitle
+                    Task { await engine.renameChat(chat.id, to: title) }
+                }
+                renaming = nil
             }
         }
         .task { await engine.loadChats() }
+    }
+
+    private var header: some View {
+        HStack {
+            Text("Chats")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Ink.primary)
+            Spacer(minLength: 8)
+            Button {
+                engine.newChat()
+                dismiss()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Ink.accent)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("New chat")
+        }
+        .padding(.leading, 18)
+        .padding(.trailing, 4)
+        .padding(.bottom, 6)
+    }
+
+    /// Drawn rather than `.searchable`.
+    ///
+    /// A system search bar inside a hand-built drawer brings its own chrome —
+    /// a cancel button, a scope row, and a background that is not this panel's
+    /// — none of which the board has room for at 306pt wide.
+    private var searchField: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Ink.faint)
+            TextField("", text: $search)
+                .prompt("Search questions", visible: search.isEmpty, size: 13)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+                .foregroundStyle(Ink.primary)
+                .tint(Ink.accent)
+                .submitLabel(.search)
+                // Server-side, so it reaches the questions inside a chat and
+                // not just the title — a title here is only ever the first
+                // question truncated, so searching titles alone would miss most
+                // of what was asked.
+                .onSubmit { Task { await engine.loadChats(search: search) } }
+            if !search.isEmpty {
+                Button {
+                    search = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Ink.faint)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(minHeight: 38)
+        .background(Ink.field, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Ink.hairline, lineWidth: 1)
+        )
+        .padding(.horizontal, 18)
+        .padding(.bottom, 12)
+        .onChange(of: search) { _, value in
+            if value.isEmpty { Task { await engine.loadChats() } }
+        }
+    }
+
+    /// Stated, not buried in Settings. A history that silently drops
+    /// conversations after a month reads as data loss the first time somebody
+    /// notices.
+    @ViewBuilder
+    private var retentionFooter: some View {
+        if let days = engine.insightStatus?.retentionDays {
+            RetentionNote(days: days, keepRated: engine.insightStatus?.keepRated == true)
+        }
     }
 
     private var renameBinding: Binding<Bool> {
@@ -160,30 +239,21 @@ struct ChatHistoryView: View {
                 dismiss()
             }
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(chat.title)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                HStack(spacing: 6) {
-                    if let count = chat.messageCount {
-                        Text("\(count) message\(count == 1 ? "" : "s")")
-                    }
-                    if chat.summaryTurns > 0 {
-                        Text("· \(chat.summaryTurns) compacted")
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            ChatHistoryRow(
+                title: chat.title,
+                subtitle: ChatHistoryRow.subtitle(
+                    for: chat.lastMessageAt, compacted: chat.summaryTurns
+                )
+            )
         }
         // Without this a `Button` inside a `List` tints its entire label with
         // the accent colour, so every chat title read as a link. The row is
         // still tappable across its full width — that is what the content shape
         // above is for.
         .buttonStyle(.plain)
+        .listRowBackground(Ink.surface)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 7, leading: 18, bottom: 7, trailing: 18))
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) {
                 Task { await engine.deleteChat(chat.id) }
@@ -195,14 +265,82 @@ struct ChatHistoryView: View {
             } label: {
                 Label("Archive", systemImage: "archivebox")
             }
-            .tint(.gray)
+            .tint(Ink.hairline)
             Button {
                 newTitle = chat.title
                 renaming = chat
             } label: {
                 Label("Rename", systemImage: "pencil")
             }
-            .tint(.blue)
+            .tint(Ink.raised)
+        }
+    }
+
+}
+
+/// One chat: what was asked, and roughly when.
+///
+/// When, not how many. A chat is found by roughly when it happened — that is
+/// what the buckets above it are for, and the message count answered a question
+/// nobody was asking. The compacted count stays, because it explains why a
+/// reopened conversation reads shorter to the model than it looks.
+struct ChatHistoryRow: View {
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 14))
+                .foregroundStyle(Ink.primary)
+                .lineSpacing(1.5)
+                .lineLimit(1)
+            Text(subtitle)
+                .font(.figure(11.5, weight: .regular))
+                .foregroundStyle(Ink.faint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    static func subtitle(for date: Date, compacted: Int) -> String {
+        let when = ago.localizedString(for: date, relativeTo: Date())
+        return compacted > 0 ? "\(when) · \(compacted) compacted" : when
+    }
+
+    /// "2h ago", not "2 hours ago" — the column is 11.5pt mono in a 306pt
+    /// panel, and the long form wraps.
+    private static let ago: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+}
+
+/// How long a conversation lives, said in the drawer rather than buried in
+/// Settings. A history that silently drops chats after a month reads as data
+/// loss the first time somebody notices.
+struct RetentionNote: View {
+    let days: Int
+    /// Only claimed when the server confirms it. `INSIGHT_KEEP_RATED` can turn
+    /// the exemption off, and printing a retention promise this app is not
+    /// keeping is worse than printing none.
+    let keepRated: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(Ink.divider).frame(height: 1)
+            Text(keepRated
+                 ? "Chats are deleted after \(days) days. Rated answers are kept."
+                 : "Chats are deleted after \(days) days.")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Ink.faint)
+                .lineSpacing(2.5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18)
+                .padding(.top, 12)
+                .padding(.bottom, 4)
         }
     }
 }
@@ -255,8 +393,12 @@ struct SideDrawer<Panel: View, Content: View>: View {
                     .accessibilityHidden(isOpen)
 
                 if progress > 0 {
-                    Color.black
-                        .opacity(0.35 * progress)
+                    // Deeper than a stock scrim: at 0.35 over a near-black
+                    // ground the conversation behind stayed legible enough to
+                    // keep reading, which makes the drawer look like a panel
+                    // that failed to take focus.
+                    Color(red: 0.031, green: 0.027, blue: 0.035)
+                        .opacity(0.62 * progress)
                         .ignoresSafeArea()
                         .contentShape(Rectangle())
                         .onTapGesture { close() }
@@ -299,3 +441,25 @@ struct SideDrawer<Panel: View, Content: View>: View {
         withAnimation(.snappy(duration: 0.28)) { isOpen = false }
     }
 }
+
+
+#if DEBUG
+/// The drawer's hand-built parts, without the `List` around them.
+///
+/// `ImageRenderer` draws neither a `List` nor a `TextField`, so the row layout,
+/// the header and the retention footer are what can be checked this way. The
+/// search field and the sectioned list itself are verified only by building and
+/// by using the app.
+enum ChatHistoryPreview {
+    static func row(_ title: String, ago: Date, compacted: Int = 0) -> some View {
+        ChatHistoryRow(
+            title: title,
+            subtitle: ChatHistoryRow.subtitle(for: ago, compacted: compacted)
+        )
+    }
+
+    static func footer(retentionDays: Int, keepRated: Bool) -> some View {
+        RetentionNote(days: retentionDays, keepRated: keepRated)
+    }
+}
+#endif

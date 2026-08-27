@@ -45,9 +45,14 @@ cannot tell you.
 | `Settings.dc.html` | Settings, pushed from Data |
 | `canvas.json` | Layout: positions, pages, sticky notes |
 
-**Still to build.** `Settings.dc.html` and `ChatHistory.dc.html` are drawn but
-their screens are barely restyled — one and two token references respectively.
-`DirectionB.dc.html` is the rejected alternative and is not meant to be built.
+**Still to build.** Nothing, on the screens. `DirectionB.dc.html` is the
+rejected alternative and is not meant to be built.
+
+Settings keeps its `Form` rather than becoming the artboard's custom cards. It
+carries sign-in, a date picker, a stepper and two destructive confirmations, and
+rebuilding those to match a drawing would risk the app's critical path for a
+visual change. Headers, surfaces, footnotes and controls are on the palette; the
+row *shapes* are the system's.
 
 **Drawn but not buildable yet.** `InsightsAnswer.dc.html` shows the evidence
 table with a coverage strip on every row. An answer does not carry that: an
@@ -83,6 +88,7 @@ the artboards, not an idealised palette.
 | Ink secondary | `#C9C2C8` | Body copy inside cards |
 | Ink muted | `#9A939B` | Supporting figures, captions |
 | Ink faint | `#665F68` | Section labels, units, timestamps |
+| Danger | `#E86A62` | Destructive rows, where `accent` would read as ordinary emphasis |
 | **Accent** | `#E64F5A` | The existing brand red, unchanged — `AccentColor` is `rgb(0.902, 0.310, 0.353)` |
 | **Measured** | `#6FBFA8` | Coverage, confidence, a change in the good direction |
 | **Absent** | `#E0A458` | Stopped arriving, stale, missing |

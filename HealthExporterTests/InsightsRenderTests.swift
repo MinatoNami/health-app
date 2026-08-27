@@ -149,6 +149,36 @@ final class InsightsRenderTests: XCTestCase {
         XCTAssertGreaterThan(size.height, 60, "a 40pt chip plus 20pt padding either side")
     }
 
+    // MARK: - The chat drawer
+    //
+    // Same limits: the sectioned `List` and the search field are not drawable,
+    // so these cover the row and the retention footer, which are the two pieces
+    // the restyle actually rewrote.
+
+    func testChatRowRenders() throws {
+        let size = try render(
+            "chat-row",
+            VStack(alignment: .leading, spacing: 14) {
+                ChatHistoryPreview.row("Why did sleep improve?",
+                                       ago: Date().addingTimeInterval(-2 * 3600))
+                ChatHistoryPreview.row("What changed after the trip?",
+                                       ago: Date().addingTimeInterval(-26 * 3600), compacted: 3)
+            }
+        )
+        XCTAssertGreaterThan(size.height, 80)
+    }
+
+    func testRetentionFooterOnlyPromisesWhatTheServerConfirms() throws {
+        let size = try render(
+            "chat-retention",
+            VStack(alignment: .leading, spacing: 18) {
+                ChatHistoryPreview.footer(retentionDays: 30, keepRated: true)
+                ChatHistoryPreview.footer(retentionDays: 30, keepRated: false)
+            }
+        )
+        XCTAssertGreaterThan(size.height, 80)
+    }
+
     func testPendingRenders() throws {
         let size = try render("insights-pending", InsightsPreview.pending("Reading your summaries"))
         XCTAssertGreaterThan(size.height, 40)

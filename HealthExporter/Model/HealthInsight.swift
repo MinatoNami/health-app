@@ -298,11 +298,17 @@ struct InsightStatus: Codable, Equatable {
     var detail: String?
     var destination: Destination?
     var retentionDays: Int?
+    /// Whether a rated answer outlives the retention window. Optional because
+    /// an older server does not send it, and in that case the drawer says
+    /// nothing rather than guessing — the claim is only worth making when the
+    /// server has confirmed it.
+    var keepRated: Bool?
 
     var isReady: Bool { enabled && reachable }
 
     enum CodingKeys: String, CodingKey {
         case enabled, reachable, model, detail, destination
         case retentionDays = "retention_days"
+        case keepRated = "keep_rated"
     }
 }

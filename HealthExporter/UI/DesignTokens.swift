@@ -42,6 +42,13 @@ enum Ink {
     /// The existing brand red, unchanged: `AccentColor` is rgb(0.902, 0.310, 0.353).
     static let accent = Color(red: 0.902, green: 0.310, blue: 0.353)   // #E64F5A
 
+    /// Destructive actions. Warmer and a shade lighter than `accent`, which is
+    /// the point: on this palette the brand colour is already red, so a delete
+    /// row tinted with it is indistinguishable from every other emphasis on the
+    /// screen. Close enough to read as the same family, far enough to read as a
+    /// warning.
+    static let danger = Color(red: 0.910, green: 0.416, blue: 0.384)   // #E86A62
+
     /// Reserved status colours. `measured` means "this rests on real days" and
     /// `absent` means "this stopped arriving" — neither is ever borrowed to
     /// distinguish one metric from another.
@@ -85,5 +92,25 @@ extension View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(Ink.hairline, lineWidth: 1)
             )
+    }
+}
+
+extension View {
+    /// A placeholder in the design's own colour.
+    ///
+    /// `TextField`'s built-in placeholder cannot be tinted, and the system
+    /// default is far brighter than `faint` — bright enough on this ground to
+    /// read as text somebody typed. Drawing it behind an empty field is the
+    /// only way to hit the specified colour, which means taking it away by hand
+    /// the moment there is anything to overlap with.
+    func prompt(_ text: String, visible: Bool, size: CGFloat = 14) -> some View {
+        background(alignment: .leading) {
+            if visible {
+                Text(text)
+                    .font(.system(size: size))
+                    .foregroundStyle(Ink.faint)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 }

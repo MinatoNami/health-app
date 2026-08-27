@@ -343,6 +343,11 @@ def llm_status(request):
     """
     info = llm_client.status()
     info["retention_days"] = InsightTurn.retention_days()
+    # Whether rating an answer exempts it from that window. Reported rather than
+    # assumed, because INSIGHT_KEEP_RATED can turn it off — and the phone prints
+    # this as a promise next to the retention figure. A promise the server is
+    # not keeping is worse than no promise.
+    info["keep_rated"] = InsightTurn.keep_rated()
     # What a conversation has to fit into, and how much of it history may use
     # before older turns are folded into a summary. Reported here rather than
     # left to be inferred: "why did my chat just compact?" is otherwise

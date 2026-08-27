@@ -15,7 +15,7 @@ struct SettingsView: View {
     /// navigation bar and swallow the back button.
     var body: some View {
             Form {
-                Section("History") {
+                Section(header: Text("History").sectionLabelStyle()) {
                     DatePicker("Backfill from",
                                selection: Binding(
                                    get: { engine.settings.backfillStartDate },
@@ -25,16 +25,26 @@ struct SettingsView: View {
                     Text("Samples older than this are read — so the sync cursor still "
                          + "advances past them — but not exported. Reaching back years "
                          + "mostly buys you per-second heart rate data.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Moving this date **earlier does not fetch older data on its own**. "
-                         + "The cursor has already advanced past those samples, so you also "
-                         + "have to reset it below.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
+                    // One literal, not three joined with `+`. `Text` only parses
+                    // markdown through its `LocalizedStringKey` overload, and
+                    // that overload is chosen for a string *literal*; a runtime
+                    // concatenation picks the plain `String` one instead. The
+                    // asterisks were being drawn on screen.
+                    Text("""
+                        Moving this date **earlier does not fetch older data on its own**. \
+                        The cursor has already advanced past those samples, so you also have \
+                        to reset it below.
+                        """)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("Daily rollups") {
+                Section(header: Text("Daily rollups").sectionLabelStyle()) {
                     Stepper(
                         "Re-emit last \(engine.settings.statisticsLookbackDays) days",
                         value: Binding(
@@ -46,11 +56,13 @@ struct SettingsView: View {
                     Text("Rollup IDs are deterministic per metric and day, so re-sending "
                          + "recent days is an upsert, not a duplicate. Covers samples that "
                          + "arrive late and change a past day's total.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("HTTP destination") {
+                Section(header: Text("HTTP destination").sectionLabelStyle()) {
                     Toggle("Upload automatically", isOn: Binding(
                         get: { engine.settings.sink.enabled },
                         set: { engine.settings.sink.enabled = $0 }
@@ -69,11 +81,13 @@ struct SettingsView: View {
                     }
                     Text("HTTPS only. Batches that fail to upload stay in the outbox and "
                          + "are retried; permanent failures are parked rather than looped.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("Certificate pin") {
+                Section(header: Text("Certificate pin").sectionLabelStyle()) {
                     TextField("SHA-256 of the server certificate", text: Binding(
                         get: { engine.settings.sink.pinnedCertificateSHA256 },
                         set: { engine.settings.sink.pinnedCertificateSHA256 = $0 }
@@ -86,21 +100,25 @@ struct SettingsView: View {
                          + "than installing a CA profile, which would trust that CA for every "
                          + "site. Get the value from ./deploy.sh pin. Leave empty to validate "
                          + "normally against system roots instead.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("Account") {
+                Section(header: Text("Account").sectionLabelStyle()) {
                     if engine.isSignedIn {
                         Label("Signed in", systemImage: "person.crop.circle.badge.checkmark")
                             .foregroundStyle(.green)
                         Button("Sign Out", role: .destructive) {
                             Task { await engine.signOut() }
                         }
+                        .foregroundStyle(Ink.danger)
                         Text("Signing out revokes this device's token on the server, so a "
                              + "copy of it left anywhere else stops working too.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Ink.faint)
+                            .lineSpacing(2)
                     } else {
                         TextField("Username", text: $username)
                             .textInputAutocapitalization(.never)
@@ -129,12 +147,14 @@ struct SettingsView: View {
                                   || engine.settings.sink.endpoint == nil)
                         Text("The server returns a token, which is kept in the Keychain. Your "
                              + "password is never stored on the device.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Ink.faint)
+                            .lineSpacing(2)
                     }
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("Connection") {
+                Section(header: Text("Connection").sectionLabelStyle()) {
                     Button {
                         Task { await engine.testConnection() }
                     } label: {
@@ -154,8 +174,9 @@ struct SettingsView: View {
                     case .untested:
                         Text("Checks the URL, the certificate pin, and the token in one "
                              + "request. Sends no health data.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Ink.faint)
+                            .lineSpacing(2)
                     case .running:
                         EmptyView()
                     case .succeeded(let message):
@@ -168,16 +189,19 @@ struct SettingsView: View {
                             .foregroundStyle(.red)
                     }
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("Permissions") {
+                Section(header: Text("Permissions").sectionLabelStyle()) {
                     Button("Open Settings") { authorization.openHealthSettings() }
                     Text("iOS will not re-prompt for a data type once you've decided on "
                          + "it. Settings is the only way to change your mind.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("Insights") {
+                Section(header: Text("Insights").sectionLabelStyle()) {
                     NavigationLink("Morning brief") { DailyBriefSettingsView() }
                     NavigationLink("How insights work") { InsightsAboutView() }
                     if let status = engine.insightStatus {
@@ -195,32 +219,39 @@ struct SettingsView: View {
                                        value: "\(status.retentionDays ?? 30) days")
                     }
                 }
+                .listRowBackground(Ink.surface)
 
-                Section("Diagnostics") {
+                Section(header: Text("Diagnostics").sectionLabelStyle()) {
                     NavigationLink("Batch Files & Log") { ExportsView() }
                     NavigationLink("Diagnostics") { DiagnosticsView() }
                     Button("Reset Sync Cursors", role: .destructive) {
                         showResetConfirmation = true
                     }
+                    .foregroundStyle(Ink.danger)
                     Text("Clears every anchor. The next sync re-reads all history from "
                          + "the backfill date and re-uploads it — hundreds of megabytes, "
                          + "and hours of background time.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                     Text("It does not duplicate anything: every record carries a stable "
                          + "id, so the server updates in place rather than inserting again. "
                          + "Deletions also survive — a re-sent record cannot resurrect one "
                          + "you removed from Health.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                     Button("Delete Pending Batches", role: .destructive) {
                         showDeleteConfirmation = true
                     }
+                    .foregroundStyle(Ink.danger)
                     Text("Empties the outbox. Use after a failed run leaves duplicate "
                          + "batches behind.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
+                .listRowBackground(Ink.surface)
             }
             // Surfaces only. The `Form` itself is left alone deliberately:
             // it carries sign-in, a date picker, a stepper and two destructive
@@ -228,6 +259,11 @@ struct SettingsView: View {
             // artboard would risk the app's critical path for a visual change.
             .scrollContentBackground(.hidden)
             .background(Ink.ground)
+            // Toggles, the date picker's selection, the stepper and every
+            // NavigationLink chevron take their colour from here. Set once on
+            // the Form rather than per control, which is how the old screen
+            // ended up with a system-blue toggle over a warm near-black ground.
+            .tint(Ink.accent)
             .navigationTitle("Settings")
             .confirmationDialog("Reset all sync cursors?",
                                 isPresented: $showResetConfirmation,
@@ -250,36 +286,40 @@ struct SettingsView: View {
 struct DiagnosticsView: View {
     var body: some View {
         List {
-            Section("Unresolved identifiers") {
+            Section(header: Text("Unresolved identifiers").sectionLabelStyle()) {
                 if MetricCatalog.unresolved.isEmpty {
                     Text("All catalog identifiers resolved on this OS.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Ink.faint)
                 } else {
                     Text("These are in the catalog but unknown to this iOS version, so "
                          + "they're skipped rather than crashing. Listed here so a typo "
                          + "or version gap never silently loses a metric.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                     ForEach(MetricCatalog.unresolved, id: \.self) { name in
                         Text(name).font(.caption.monospaced())
                     }
                 }
             }
+            .listRowBackground(Ink.surface)
 
-            Section("Not yet supported") {
+            Section(header: Text("Not yet supported").sectionLabelStyle()) {
                 Text("Each needs a bespoke reader rather than the generic sample path.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.faint)
                 ForEach(MetricCatalog.deferredTypes, id: \.self) { item in
                     Text(item).font(.caption)
                 }
             }
+            .listRowBackground(Ink.surface)
 
-            Section("Storage") {
+            Section(header: Text("Storage").sectionLabelStyle()) {
                 LabeledContent("Pending", value: "\(Outbox.shared.pendingBatches().count) batches")
                 LabeledContent("Archived", value: "\(Outbox.shared.archivedBatches().count) batches")
                 LabeledContent("Tracked types", value: "\(AnchorStore.shared.all.count)")
             }
+            .listRowBackground(Ink.surface)
         }
         .navigationTitle("Diagnostics")
     }

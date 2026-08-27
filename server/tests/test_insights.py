@@ -7,6 +7,7 @@ the screen, and an unreachable model server degrades to the measured numbers
 rather than to an error page.
 """
 
+import os
 import json
 from datetime import date, datetime, time, timedelta
 from unittest import mock
@@ -495,6 +496,22 @@ class InsightEndpointTests(InsightTestCase):
         self.assertTrue(body["local"])
         self.assertIn("127.0.0.1", body["base_url"])
         self.assertEqual(body["retention_days"], InsightTurn.retention_days())
+
+    def test_status_reports_whether_rating_exempts_a_turn(self):
+        """The phone prints this next to the retention figure as a promise, so
+        it has to come from the server rather than be assumed on by default."""
+        with mock.patch.object(llm_client, "available_models", return_value=["local-model"]):
+            body = self.client.get("/v1/insights/status", headers=self.auth()).json()
+        self.assertTrue(body["keep_rated"])
+
+        with mock.patch.dict(os.environ, {"INSIGHT_KEEP_RATED": "0"}):
+            with mock.patch.object(llm_client, "available_models", return_value=["local-model"]):
+                body = self.client.get("/v1/insights/status", headers=self.auth()).json()
+        self.assertFalse(
+            body["keep_rated"],
+            "turning the exemption off must be visible to the client, or the "
+            "drawer keeps promising something that is no longer true",
+        )
 
     def test_a_tailnet_model_host_is_not_reported_as_external(self):
         """The model runs on the user's own laptop, reached over WireGuard.
