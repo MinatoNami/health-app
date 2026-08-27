@@ -216,7 +216,13 @@ enum MetricCatalog {
 
         unresolved = missing.sorted()
         if !missing.isEmpty {
-            Log.shared.warn("catalog", "\(missing.count) identifier(s) not available on this OS")
+            // Debug, not warn. This is a fact about the OS build, fixed for the
+            // life of the install and not a fault anyone can act on — and it
+            // fired on every launch, which made two of the only two warnings in
+            // a 500-entry buffer this line, twice, and the warn level useless
+            // as a filter. Named rather than counted: "1 identifier(s)" told
+            // you a number and left you to go find `unresolved` in Settings.
+            Log.shared.debug("catalog", "not on this OS: \(unresolved.joined(separator: ", "))")
         }
         return types
     }

@@ -31,8 +31,20 @@ final class Log {
     private let capacity = 2_000
     private let fileURL: URL?
 
-    private init() {
-        fileURL = Paths.supportDirectory?.appendingPathComponent("sync.log")
+    /// The file is a parameter so the debounce can be tested against a
+    /// throwaway path. It has misreported a healthy sync as a hang three times,
+    /// and every one of those was a timing question a test can settle in
+    /// milliseconds and a phone cannot settle at all.
+    init(fileURL: URL?) {
+        self.fileURL = fileURL
+        startRestore()
+    }
+
+    private convenience init() {
+        self.init(fileURL: Paths.supportDirectory?.appendingPathComponent("sync.log"))
+    }
+
+    private func startRestore() {
         // Loaded off the main thread, not in this initialiser.
         //
         // `Log.shared` is first touched by the very first line of
@@ -95,10 +107,13 @@ final class Log {
         lock.lock()
         buffer.append(Entry(at: Date(), level: level, category: category, message: message))
         if buffer.count > capacity { buffer.removeFirst(buffer.count - capacity) }
-        let snapshot = buffer
         lock.unlock()
 
-        persist(snapshot)
+        // No snapshot handed over. Whoever writes reads the buffer for itself,
+        // which removes a full copy of up to 2,000 entries per logged line and,
+        // more importantly, means a deferred write persists what is true when
+        // it fires rather than what was true when it was scheduled.
+        persist()
     }
 
     var entries: [Entry] {
@@ -111,7 +126,10 @@ final class Log {
         lock.lock()
         buffer.removeAll()
         lock.unlock()
-        persist([])
+        // Forced, not debounced. Going through `persist` meant a clear issued
+        // within the debounce window never reached the file, so the entries
+        // came back on next launch and the button looked broken.
+        flush()
     }
 
     /// Flattened text for the share sheet.
@@ -121,38 +139,74 @@ final class Log {
 
     // MARK: - Persistence
 
-    /// Debounced so a 5,000-sample sync doesn't rewrite the log file 5,000 times.
-    private static let persistQueue = DispatchQueue(label: "log.persist", qos: .utility)
-    private var lastPersist = Date.distantPast
-
-    private func persist(_ snapshot: [Entry]) {
-        guard Date().timeIntervalSince(lastPersist) > 2 else { return }
-        write(snapshot)
-    }
-
-    /// Writes the buffer now, ignoring the debounce.
+    /// Writes are debounced so a 5,000-sample sync does not rewrite the log file
+    /// 5,000 times — on **both** edges, and the trailing one is not optional.
     ///
-    /// The debounce exists so a 5,000-sample sync does not rewrite the file
-    /// 5,000 times, and its cost is the tail: the last few seconds of a session
-    /// are routinely missing from the file, which are exactly the lines that say
-    /// how the session ended. Twice while debugging this app that made a working
-    /// system look broken — a sync with no "Finished" line and deliveries that
-    /// had in fact all been accepted. Called when the app leaves the foreground,
-    /// which is the one moment the tail is guaranteed to matter.
-    func flush() {
-        lock.lock()
-        let snapshot = buffer
-        lock.unlock()
-        write(snapshot)
+    /// Leading-edge alone is what this used to be, and its cost was the tail:
+    /// once logging went quiet the last entries were never written, which are
+    /// exactly the lines that say how the session ended. It produced a file
+    /// showing a sync with no "Finished" line and deliveries that had in fact
+    /// all been accepted — a working system that reads as a hang. That
+    /// misdiagnosis happened three times, the last of it against a real phone
+    /// where the log was the only instrument available.
+    ///
+    /// Each entry inside the window cancels and re-arms the deferred write, so
+    /// a busy sync still writes once every couple of seconds rather than per
+    /// line; when the app finally goes quiet it fires once more and the tail
+    /// lands.
+    private static let persistQueue = DispatchQueue(label: "log.persist", qos: .utility)
+    private static let debounce: TimeInterval = 2
+
+    /// Both touched only from `persistQueue`. That is what makes the debounce
+    /// state safe without taking `lock` — it was previously read and written
+    /// from whatever thread happened to log, which was a data race that only
+    /// ever cost a mistimed write.
+    private var lastPersist = Date.distantPast
+    private var trailingWrite: DispatchWorkItem?
+
+    private func persist() {
+        Log.persistQueue.async { [weak self] in
+            guard let self else { return }
+            self.trailingWrite?.cancel()
+            self.trailingWrite = nil
+
+            if Date().timeIntervalSince(self.lastPersist) > Log.debounce {
+                self.writeBuffer()
+                return
+            }
+            let work = DispatchWorkItem { [weak self] in self?.writeBuffer() }
+            self.trailingWrite = work
+            Log.persistQueue.asyncAfter(deadline: .now() + Log.debounce, execute: work)
+        }
     }
 
-    private func write(_ snapshot: [Entry]) {
+    /// Writes now, ignoring the debounce.
+    ///
+    /// Called when the app leaves the foreground. The trailing write usually
+    /// gets there first, but a suspended process does not run scheduled work —
+    /// so on the one path where the tail is guaranteed to matter, this is what
+    /// guarantees it survives.
+    func flush() {
+        Log.persistQueue.async { [weak self] in
+            guard let self else { return }
+            self.trailingWrite?.cancel()
+            self.trailingWrite = nil
+            self.writeBuffer()
+        }
+    }
+
+    /// `persistQueue` only.
+    private func writeBuffer() {
         guard let fileURL else { return }
         lastPersist = Date()
-        Log.persistQueue.async {
-            guard let data = try? JSONEncoder().encode(snapshot.suffix(500).map { $0 }) else { return }
-            try? data.write(to: fileURL, options: .atomic)
-        }
+        trailingWrite = nil
+
+        lock.lock()
+        let snapshot = buffer.suffix(500).map { $0 }
+        lock.unlock()
+
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        try? data.write(to: fileURL, options: .atomic)
     }
 
     private static func loadPersisted(from url: URL?) -> [Entry] {
