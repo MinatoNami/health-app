@@ -23,6 +23,7 @@ import { computed, onMounted, ref } from 'vue'
 import ChartCard from '../components/ChartCard.vue'
 import CoverageStrip from '../components/CoverageStrip.vue'
 import { api } from '../api.js'
+import { shortLabel, unitFor } from '../format.js'
 
 const props = defineProps({
   data: { type: Object, default: null },
@@ -50,17 +51,9 @@ const TITLES = {
   sleep_analysis: 'Sleep',
   body_mass: 'Weight',
 }
-const SHORT = {
-  resting_heart_rate: 'Resting HR',
-  heart_rate_variability_sdnn: 'HRV',
-  walking_heart_rate_average: 'Walking HR',
-  apple_exercise_time: 'Exercise',
-  active_energy_burned: 'Active energy',
-  distance_walking_running: 'Distance',
-  respiratory_rate: 'Respiratory rate',
-}
 const title = (slug) => TITLES[slug] || slug.replace(/_/g, ' ')
-const short = (m) => SHORT[m.metric_slug] || m.label
+const short = (m) => shortLabel(m.metric_slug, m.label)
+const unit = (m) => unitFor(m.metric_slug, m.unit)
 
 const summary = computed(() => props.data?.summary ?? {})
 
@@ -79,7 +72,7 @@ const lead = computed(() => {
   if (brief.value?.headline) return brief.value.headline
   if (!snapshot.value) return null
   if (!moved.value.length) return 'Nothing moved much against your 28-day baseline this week.'
-  const names = moved.value.map((m) => short(m).toLowerCase())
+  const names = moved.value.map((m) => short(m))
   return `Against your 28-day baseline, ${names.join(', ')} moved this week.`
 })
 const detail = computed(() => brief.value?.detail || '')
@@ -155,16 +148,16 @@ function fmtCompact(v) {
 
     <template v-if="moved.length">
       <div class="seclabel">What moved</div>
-      <div class="tiles">
+      <div class="tiles moved-tiles">
         <div v-for="m in moved" :key="m.metric_slug" class="tile">
           <div class="tile-head">
             <span class="tile-label">{{ short(m) }}</span>
             <span class="delta" :class="tone(m)">{{ delta(m) }}</span>
           </div>
           <div class="tile-value">
-            {{ fmt(m.current.value) }}<span class="tile-unit">{{ m.unit }}</span>
+            {{ fmt(m.current.value) }}<span v-if="unit(m)" class="tile-unit">{{ unit(m) }}</span>
           </div>
-          <div class="tile-sub">28-day baseline {{ fmt(m.baseline.value) }} {{ m.unit }}</div>
+          <div class="tile-sub">28-day baseline {{ fmt(m.baseline.value) }} {{ unit(m) }}</div>
           <CoverageStrip
             class="tile-cov"
             :valid-days="m.current.valid_days"
@@ -180,7 +173,7 @@ function fmtCompact(v) {
     <div v-if="steady.length" class="card steady">
       <span class="seclabel">Steady</span>
       <span v-for="m in steady" :key="m.metric_slug" class="steady-item">
-        {{ short(m) }} {{ fmt(m.current.value) }} {{ m.unit }}
+        {{ short(m) }} {{ fmt(m.current.value) }} {{ unit(m) }}
       </span>
       <span class="spacer" />
       <span class="muted">within day-to-day variation</span>
@@ -239,6 +232,11 @@ function fmtCompact(v) {
   font-size: 12px; color: var(--text-secondary); margin-top: 9px;
 }
 .cov-stale { font-size: 12px; color: var(--text-muted); line-height: 1.45; margin: 12px 0 0; }
+
+/* Capped and left-aligned. `.tiles` is auto-fit with 1fr, so on a week where
+   one metric moved — which the real record says is the common case — the single
+   tile stretched the full width of the page and read as a banner. */
+.moved-tiles { grid-template-columns: repeat(auto-fit, minmax(210px, 300px)); justify-content: start; }
 
 .tile-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
 .tile-head .tile-label { flex: 1; margin-bottom: 0; }

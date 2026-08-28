@@ -2,3 +2,4 @@
 # Throwaway fixture harness for looking at a view without a session.
 harness.html
 harness.js
+real-payload.json

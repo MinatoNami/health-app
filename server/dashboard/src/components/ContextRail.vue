@@ -13,6 +13,7 @@
  */
 import { computed } from 'vue'
 import CoverageStrip from './CoverageStrip.vue'
+import { unitFor } from '../format.js'
 
 const props = defineProps({
   snapshot: { type: Object, default: null },
@@ -61,6 +62,7 @@ const SHORT = {
   respiratory_rate: 'Respiratory',
 }
 const label = (m) => SHORT[m.metric_slug] || m.label
+const unit = (m) => unitFor(m.metric_slug, m.unit)
 
 </script>
 
@@ -77,7 +79,7 @@ const label = (m) => SHORT[m.metric_slug] || m.label
       <div v-for="m in metrics" :key="m.metric_slug" class="metric">
         <div class="name" :title="m.label">{{ label(m) }}</div>
         <div class="value">
-          {{ fmt(m.current.value) }}<span class="unit">{{ m.unit }}</span>
+          {{ fmt(m.current.value) }}<span v-if="unit(m)" class="unit">{{ unit(m) }}</span>
         </div>
         <div class="delta" :class="tone(m)">{{ delta(m) || '—' }}</div>
         <!-- Drawn on every row, which reverses the rule this used to follow —
