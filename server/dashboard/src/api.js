@@ -2,7 +2,17 @@
  *
  * `credentials: 'include'` on every call, and the CSRF token echoed on unsafe
  * methods — Django rejects an unsafe session-authenticated request without it.
+ *
+ * Calls go to <base>/v1/... rather than /v1/..., where <base> is wherever this
+ * build is mounted. That is what lets the session cookie be scoped to this app
+ * instead of to "/", where a path-routing gateway would send it to every other
+ * application on the origin. /v1 still answers at the root for the iOS app,
+ * which uses a bearer token and no cookie.
  */
+
+// Vite bakes this from `base` in vite.config.js. Trailing slash trimmed so the
+// paths below can keep their leading one and stay readable as routes.
+const API_BASE = import.meta.env.BASE_URL.replace(/\/$/, '')
 
 function cookie(name) {
   return document.cookie
@@ -19,7 +29,7 @@ async function request(path, options = {}) {
     if (token) headers['X-CSRFToken'] = token
   }
 
-  const response = await fetch(path, { credentials: 'include', ...options, headers })
+  const response = await fetch(API_BASE + path, { credentials: 'include', ...options, headers })
   if (response.status === 401 || response.status === 403) {
     const error = new Error('Not signed in')
     error.unauthorized = true

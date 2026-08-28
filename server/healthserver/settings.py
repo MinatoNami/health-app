@@ -189,6 +189,24 @@ CSRF_TRUSTED_ORIGINS = env_list(
 
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
+
+# Scoped to the prefix, not left at "/".
+#
+# This origin is shared with other applications behind a path-routing gateway,
+# and a cookie at "/" is sent to every one of them. It is HttpOnly, so none of
+# them can read it — but each receives it in the request headers, and a session
+# token is not something to hand a neighbour because a proxy put them on the
+# same hostname.
+#
+# Both cookie users live under this prefix: the dashboard, which calls
+# <prefix>/v1/... rather than /v1/... for exactly this reason, and the admin at
+# <prefix>/admin/. The iOS app is unaffected — it authenticates with a bearer
+# token against /v1 at the root and never sees a cookie.
+#
+# Set to "/" for a deployment where this app owns its origin.
+COOKIE_PATH = env("DJANGO_COOKIE_PATH", FORWARDED_PREFIXES[0] if FORWARDED_PREFIXES else "/")
+SESSION_COOKIE_PATH = COOKIE_PATH
+CSRF_COOKIE_PATH = COOKIE_PATH
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
