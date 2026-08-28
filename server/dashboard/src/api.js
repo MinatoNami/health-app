@@ -172,7 +172,10 @@ export const api = {
 
   // A URL rather than a fetch, for the same reason the CSV export is: handing
   // it to the browser as a normal download lets it name and save the file.
-  chatExportUrl: (id, format = 'md') => `/v1/chat/sessions/${id}/export.${format}`,
+  //
+  // API_BASE by hand, because this is one of the two calls that does not go
+  // through `request()` and so does not get it for free. See exportUrl.
+  chatExportUrl: (id, format = 'md') => `${API_BASE}/v1/chat/sessions/${id}/export.${format}`,
 
   // Flat across every conversation, oldest first, with the safety verdict, the
   // tools that ran and the model that answered attached to each turn. This is
@@ -182,5 +185,14 @@ export const api = {
   // Deliberately a URL rather than a fetch: handing it to the browser as a
   // normal download lets it stream to disk. Fetching it would buffer the whole
   // CSV in memory, which for a multi-year export is hundreds of megabytes.
-  exportUrl: (params) => `/v1/export/records.csv?${tzq(params)}`,
+  //
+  // API_BASE has to be applied by hand here. `request()` prepends it for every
+  // other call, and these two build a URL for the browser instead of fetching —
+  // so when the base moved to /health-app they were left pointing at the origin
+  // root. That path still answers (it is where the phone's bearer-token calls
+  // go), but the session cookie is scoped to /health-app and is therefore not
+  // sent to it: the request arrived unauthenticated, and the browser dutifully
+  // saved the 403 body under whatever name it could invent. A download that
+  // produces a text file full of JSON is this, every time.
+  exportUrl: (params) => `${API_BASE}/v1/export/records.csv?${tzq(params)}`,
 }

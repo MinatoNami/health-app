@@ -15,6 +15,7 @@
  * everything asked after the opening line, which is most of what gets asked.
  */
 import { computed, ref, watch } from 'vue'
+import { api } from '../api.js'
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
@@ -114,7 +115,12 @@ function exportChat(session, format) {
   // A plain navigation rather than a fetch: the response is an attachment, so
   // the browser saves it under the name the server chose instead of us
   // rebuilding a blob and a filename on this side.
-  window.location.href = `/v1/chat/sessions/${session.id}/export.${format}`
+  //
+  // Through api.chatExportUrl rather than assembled here. Hand-building it is
+  // how this missed the move to the /health-app base: the path still resolved,
+  // but the session cookie is scoped to that prefix and was not sent, so the
+  // navigation landed on a 403 instead of a download.
+  window.location.href = api.chatExportUrl(session.id, format)
 }
 
 function newProject() {
