@@ -1,0 +1,4 @@
+# The seeded canvas: a generated file that carries the whole editor inline
+# (~2 MB, 11k lines). The artboards and canvas.json beside it are the source —
+# re-seed from those rather than committing the output.
+health-dashboard-redesign.html
