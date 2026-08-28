@@ -19,6 +19,7 @@ import { api } from '../api.js'
 import ChatMessage from '../components/ChatMessage.vue'
 import ChatSidebar from '../components/ChatSidebar.vue'
 import ContextRail from '../components/ContextRail.vue'
+import Findings from '../components/Findings.vue'
 
 const snapshot = ref(null)
 const status = ref(null)
@@ -629,6 +630,12 @@ onBeforeUnmount(() => {
           <div v-if="opening" class="chat-row">
             <div class="chat-bubble assistant opening">{{ opening }}</div>
           </div>
+
+          <!-- What the record already says, before the first question. Only on
+               a new chat, for the same reason `opening` is: these are findings
+               about the last 90 days, and printing them above a conversation
+               from three weeks ago captions it with figures it never mentioned. -->
+          <Findings v-if="empty" @ask="ask" />
 
           <p v-if="empty && activeProject?.instructions" class="projectnote">
             This chat inherits the standing context you wrote for

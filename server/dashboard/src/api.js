@@ -96,6 +96,13 @@ export const api = {
   snapshot: (params = {}) => request(`/v1/analysis/snapshot?${tzq(params)}`),
   quality: (params = {}) => request(`/v1/analysis/quality?${tzq(params)}`),
   sleepDetail: (params = {}) => request(`/v1/analysis/sleep?${tzq(params)}`),
+  // Found in your own record, and never shown until now. All three are
+  // deterministic, pre-registered and corrected for how many questions were
+  // asked — the server has computed them on every request for months and the
+  // browser has never made one.
+  correlations: (params = {}) => request(`/v1/analysis/correlations?${tzq(params)}`),
+  patterns: (params = {}) => request(`/v1/analysis/patterns?${tzq(params)}`),
+  anomalies: (params = {}) => request(`/v1/analysis/anomalies?${tzq(params)}`),
   goals: () => request('/v1/analysis/goals'),
   saveGoal: (body) =>
     request('/v1/analysis/goals', { method: 'POST', body: JSON.stringify(body) }),
@@ -104,6 +111,10 @@ export const api = {
   // Model-backed. Slow by nature: a local model works through this for tens of
   // seconds, so callers must show that something is happening.
   insightStatus: () => request('/v1/insights/status'),
+  // The same deterministic brief the phone shows at 08:00. Written in advance
+  // and cheap, so it is not "model-backed" in the sense the rest of this block
+  // is — no model runs to serve it.
+  dailyBrief: (params = {}) => request(`/v1/insights/daily?${tzq(params)}`),
   // `session_id` puts the question in a conversation, which is what makes the
   // server replay that chat's earlier turns. Only their summaries — the figures
   // are re-read from the snapshot every time, so the model cannot cite its own

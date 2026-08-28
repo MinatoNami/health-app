@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #0d0d0d; }
+    * { box-sizing: border-box; }
+    a { color: #3987e5; text-decoration: none; }
+    a:hover { color: #6aa6ee; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
+    .lbl {
+      font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+      text-transform: uppercase; color: #898781;
+    }
+    .card { background: #1a1a19; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; min-height: 900px; background: #0d0d0d; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color: #ffffff;">
+  <div style="max-width: 1180px; margin: 0 auto; padding: 24px 20px 48px;">
+
+    <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px;">
+      <h2 style="font-size: 20px; font-weight: 650; letter-spacing: -0.015em; margin: 0;">Alternate direction &mdash; dark, score-forward</h2>
+      <span class="mono" style="font-size: 11px; border: 1px solid rgba(255,255,255,0.16); border-radius: 999px; padding: 3px 9px; color: #c3c2b7;">SKETCH</span>
+    </div>
+    <p style="font-size: 13px; color: #c3c2b7; margin: 0 0 26px; max-width: 84ch; line-height: 1.55;">
+      What the dashboard looks like if it follows Whoop and Oura all the way: dark ground, one
+      composite number at arm's-length size, everything else subordinate. This is the most popular
+      pattern in the category and the reason it is a sketch rather than the deliverable is at the
+      bottom of the board.
+    </p>
+
+    <div style="display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; align-items: start; margin-bottom: 26px;">
+
+      <div class="card" style="padding: 28px 26px; text-align: center;">
+        <div class="lbl" style="margin-bottom: 20px;">Readiness</div>
+        <div style="position: relative; width: 200px; height: 200px; margin: 0 auto 18px;">
+          <svg viewBox="0 0 200 200" style="width: 200px; height: 200px;">
+            <circle cx="100" cy="100" r="86" fill="none" stroke="#2c2c2a" stroke-width="14"></circle>
+            <circle cx="100" cy="100" r="86" fill="none" stroke="#199e70" stroke-width="14"
+                    stroke-linecap="round" stroke-dasharray="540 540" stroke-dashoffset="146"
+                    transform="rotate(-90 100 100)"></circle>
+          </svg>
+          <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+            <div style="font-size: 62px; font-weight: 650; letter-spacing: -0.04em; line-height: 1;">73</div>
+            <div class="mono" style="font-size: 11px; color: #898781; margin-top: 4px;">OUT OF 100</div>
+          </div>
+        </div>
+        <div style="font-size: 15px; color: #c3c2b7; line-height: 1.5;">Recovered enough for a hard day</div>
+      </div>
+
+      <div>
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px;">
+          <div class="card" style="padding: 16px 18px;">
+            <div class="lbl" style="margin-bottom: 9px;">Sleep</div>
+            <div style="font-size: 30px; font-weight: 650; letter-spacing: -0.025em;">86</div>
+            <div class="mono" style="font-size: 11px; color: #898781; margin-top: 4px;">7.0 hr</div>
+          </div>
+          <div class="card" style="padding: 16px 18px;">
+            <div class="lbl" style="margin-bottom: 9px;">Strain</div>
+            <div style="font-size: 30px; font-weight: 650; letter-spacing: -0.025em;">12.4</div>
+            <div class="mono" style="font-size: 11px; color: #898781; margin-top: 4px;">58 min hard</div>
+          </div>
+          <div class="card" style="padding: 16px 18px;">
+            <div class="lbl" style="margin-bottom: 9px;">HRV</div>
+            <div style="font-size: 30px; font-weight: 650; letter-spacing: -0.025em;">44</div>
+            <div class="mono" style="font-size: 11px; color: #898781; margin-top: 4px;">ms</div>
+          </div>
+        </div>
+
+        <div class="card" style="padding: 18px 20px;">
+          <div class="lbl" style="margin-bottom: 14px;">Last 14 days</div>
+          <svg viewBox="0 0 700 120" style="width: 100%; display: block;">
+            <line x1="0" y1="30" x2="700" y2="30" stroke="#2c2c2a" stroke-width="1"></line>
+            <line x1="0" y1="60" x2="700" y2="60" stroke="#2c2c2a" stroke-width="1"></line>
+            <line x1="0" y1="90" x2="700" y2="90" stroke="#2c2c2a" stroke-width="1"></line>
+            <g fill="#199e70">
+              <rect x="6" y="62" width="34" height="46" rx="4"></rect>
+              <rect x="56" y="48" width="34" height="60" rx="4"></rect>
+              <rect x="106" y="70" width="34" height="38" rx="4"></rect>
+              <rect x="156" y="40" width="34" height="68" rx="4"></rect>
+              <rect x="206" y="56" width="34" height="52" rx="4"></rect>
+            </g>
+            <g fill="#c98500">
+              <rect x="256" y="78" width="34" height="30" rx="4"></rect>
+              <rect x="306" y="84" width="34" height="24" rx="4"></rect>
+            </g>
+            <g fill="#199e70">
+              <rect x="356" y="52" width="34" height="56" rx="4"></rect>
+              <rect x="406" y="36" width="34" height="72" rx="4"></rect>
+              <rect x="456" y="44" width="34" height="64" rx="4"></rect>
+              <rect x="506" y="30" width="34" height="78" rx="4"></rect>
+              <rect x="556" y="42" width="34" height="66" rx="4"></rect>
+              <rect x="606" y="26" width="34" height="82" rx="4"></rect>
+              <rect x="656" y="34" width="34" height="74" rx="4"></rect>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <!-- The honest tradeoff. This is not a note about taste. -->
+    <div class="card" style="padding: 20px 24px; border-color: rgba(201,133,0,0.4);">
+      <div class="lbl" style="color: #fab219; margin-bottom: 10px;">Why this is the sketch and not the design</div>
+      <div style="font-size: 14px; color: #c3c2b7; line-height: 1.6; max-width: 96ch; text-wrap: pretty;">
+        The 73 is invented. There is no reading in this data called readiness &mdash; it would be a
+        weighted blend somebody chose, and this project's design rules already refuse one:
+        <span style="color: #ffffff;">&ldquo;No invented composite score. Whoop's 67% has no equivalent
+        here and should not get one &mdash; the architecture explicitly forbids the model doing
+        arithmetic, and a 0&ndash;100 number would need exactly that.&rdquo;</span>
+        The dark ground is the defensible half and could be adopted on its own; the number in the
+        middle of it is the half that would make the dashboard say something it cannot know.
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

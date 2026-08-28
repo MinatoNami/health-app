@@ -12,6 +12,7 @@
  * into eighteen coloured elements and read as a traffic light.
  */
 import { computed } from 'vue'
+import CoverageStrip from './CoverageStrip.vue'
 
 const props = defineProps({
   snapshot: { type: Object, default: null },
@@ -61,7 +62,6 @@ const SHORT = {
 }
 const label = (m) => SHORT[m.metric_slug] || m.label
 
-const coverage = (m) => m.current?.coverage ?? 0
 </script>
 
 <template>
@@ -80,11 +80,17 @@ const coverage = (m) => m.current?.coverage ?? 0
           {{ fmt(m.current.value) }}<span class="unit">{{ m.unit }}</span>
         </div>
         <div class="delta" :class="tone(m)">{{ delta(m) || '—' }}</div>
-        <!-- Coverage only earns pixels when it is not full: a 7-of-7 bar drawn
-             on every row is decoration that says nothing. -->
-        <div v-if="coverage(m) < 0.99" class="cov" :title="`${m.current.valid_days} of ${m.current.window_days} days recorded`">
-          {{ m.current.valid_days }}/{{ m.current.window_days }}d
-        </div>
+        <!-- Drawn on every row, which reverses the rule this used to follow —
+             "coverage only earns pixels when it is not full". That rule was
+             right about the noise and wrong about the ambiguity: a row with no
+             bar was indistinguishable from a row whose coverage nobody knows,
+             and those are opposite states. A 3px strip costs almost nothing,
+             and a full week reads as an unbroken line rather than an absence. -->
+        <CoverageStrip
+          class="cov-cell"
+          :valid-days="m.current.valid_days"
+          :window-days="m.current.window_days"
+        />
       </div>
 
       <p class="foot muted">Through {{ snapshot.as_of }}</p>
@@ -148,6 +154,9 @@ const coverage = (m) => m.current?.coverage ?? 0
 .value.small { font-size: 12.5px; font-weight: 500; }
 .unit { font-size: 11px; color: var(--text-muted); font-weight: 400; margin-left: 2px; }
 
+/* Its own row under name/value/delta, spanning the lot. `.cov` stays because
+   the Not-syncing panel below still uses it for "3d ago". */
+.cov-cell { grid-column: 1 / -1; margin-top: 3px; }
 .cov { grid-column: 1 / -1; font-size: 11px; color: var(--warning-text); }
 .stale .cov { grid-column: auto; text-align: right; }
 

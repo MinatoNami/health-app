@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #f9f9f7; }
+    * { box-sizing: border-box; }
+    a { color: #2a78d6; text-decoration: none; }
+    a:hover { color: #1f5ea8; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
+    .lbl {
+      font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+      text-transform: uppercase; color: #898781;
+    }
+    .card { background: #fcfcfb; border: 1px solid rgba(11,11,11,0.1); border-radius: 10px; }
+    td, th { padding: 9px 12px; border-bottom: 1px solid #e1e0d9; text-align: left; vertical-align: top; }
+    th { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px;
+         font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #898781; }
+  </style>
+</helmet>
+
+<div style="width: 1180px; min-height: 1080px; background: #f9f9f7; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color: #0b0b0b;">
+  <div style="padding: 34px 36px 44px;">
+
+    <h2 style="font-size: 24px; font-weight: 650; letter-spacing: -0.02em; margin: 0 0 6px;">What the category does, and what was taken from it</h2>
+    <p style="font-size: 13.5px; color: #52514e; margin: 0 0 26px; max-width: 92ch; line-height: 1.55;">
+      Whoop, Oura, and the quantified-self aggregators Exist.io and Gyroscope. Four principles are
+      worth copying, one is worth refusing, and the most useful finding was not about design at all.
+    </p>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 30px;">
+
+      <div class="card" style="padding: 18px 20px;">
+        <div class="lbl" style="margin-bottom: 8px;">Taken &mdash; one big thing</div>
+        <div style="font-size: 14px; line-height: 1.55; color: #52514e; text-wrap: pretty;">
+          Oura's redesign &ldquo;cuts through the clutter to help you focus on one big thing.&rdquo;
+          Whoop's top tier carries scores and <b style="color: #0b0b0b;">no graphs at all</b>. This
+          dashboard led with <b style="color: #0b0b0b;">Records in range &mdash; 47,213</b>, which is a
+          property of the database. The lead is a sentence about the person now, and the row count
+          moves to where plumbing questions are asked.
+        </div>
+      </div>
+
+      <div class="card" style="padding: 18px 20px;">
+        <div class="lbl" style="margin-bottom: 8px;">Taken &mdash; three tiers, three screens</div>
+        <div style="font-size: 14px; line-height: 1.55; color: #52514e; text-wrap: pretty;">
+          Whoop separates glanceable, trend, and deep-dive onto their own screens rather than
+          collapsing sections on one page &mdash; &ldquo;clean mental boundaries.&rdquo; Overview keeps
+          two charts and hands the rest to Explore, which already exists and was being bypassed.
+          Three tiers, three screens: <b style="color: #0b0b0b;">glance, ask, explore</b>. The
+          analysis is not a fourth &mdash; it opens Insights, where asking about it is already
+          the next click.
+        </div>
+      </div>
+
+      <div class="card" style="padding: 18px 20px;">
+        <div class="lbl" style="margin-bottom: 8px;">Taken &mdash; statements, not just charts</div>
+        <div style="font-size: 14px; line-height: 1.55; color: #52514e; text-wrap: pretty;">
+          The review that separates Exist.io from the prettier Gyroscope:
+          &ldquo;Exist allows you to <b style="color: #0b0b0b;">make something of it</b>.&rdquo; Its
+          signature output is a sentence &mdash; <i>you are moderately less likely to be productive
+          when you walk more</i>. This server already writes exactly that shape and nothing displayed
+          it.
+        </div>
+      </div>
+
+      <div class="card" style="padding: 18px 20px;">
+        <div class="lbl" style="margin-bottom: 8px;">Taken &mdash; type carries the hierarchy</div>
+        <div style="font-size: 14px; line-height: 1.55; color: #52514e; text-wrap: pretty;">
+          Whoop sets its score at roughly 72pt for arm's-length reading and keeps everything else
+          deliberately small. Here the lead sentence takes that weight instead of a number, and the
+          tiles drop to a supporting rank rather than competing with it.
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="padding: 20px 22px; margin-bottom: 30px; border-color: rgba(208,59,59,0.35);">
+      <div class="lbl" style="color: #d03b3b; margin-bottom: 9px;">Refused &mdash; the composite score</div>
+      <div style="font-size: 14px; line-height: 1.6; color: #52514e; max-width: 100ch; text-wrap: pretty;">
+        Whoop's Recovery and Oura's Readiness are the category's defining feature: a 0&ndash;100 number
+        blending HRV, resting heart rate, temperature, sleep and prior activity. It is also the one
+        thing this product has already decided it will not ship &mdash;
+        <b style="color: #0b0b0b;">no invented composite score</b>, because the weighting would be a
+        judgement nobody measured. Drawn as a sketch on the dark board so the choice is visible
+        rather than silently skipped.
+      </div>
+    </div>
+
+    <!-- The real finding. -->
+    <div class="lbl" style="margin-bottom: 10px;">The finding that mattered</div>
+    <p style="font-size: 13.5px; color: #52514e; margin: 0 0 14px; max-width: 96ch; line-height: 1.55;">
+      Most of what the popular apps do that this one does not is <b style="color: #0b0b0b;">already
+      computed by this server</b> and never requested by the browser. Six endpoints, all tested, all
+      returning a written sentence with their numbers &mdash; and the dashboard calls none of them.
+      The first three fill Insights before a question is asked &mdash; put where the reader's next move already is, rather than behind a tab of
+      their own.
+    </p>
+
+    <div class="card" style="overflow: hidden; margin-bottom: 24px;">
+      <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+        <tr>
+          <th style="width: 190px;">Endpoint</th>
+          <th style="width: 210px;">What it already returns</th>
+          <th>Where it now appears</th>
+        </tr>
+        <tr>
+          <td class="mono" style="font-size: 12px;">analysis/correlations</td>
+          <td style="color: #52514e;">Driver vs outcome, both group means, lag, a written description</td>
+          <td style="color: #52514e;">Insights &mdash; on open</td>
+        </tr>
+        <tr>
+          <td class="mono" style="font-size: 12px;">analysis/patterns</td>
+          <td style="color: #52514e;">Day-group means and a significance word against your own variation</td>
+          <td style="color: #52514e;">Insights &mdash; on open</td>
+        </tr>
+        <tr>
+          <td class="mono" style="font-size: 12px;">analysis/anomalies</td>
+          <td style="color: #52514e;">Metrics sitting away from baseline, with direction</td>
+          <td style="color: #52514e;">Insights &mdash; on open</td>
+        </tr>
+        <tr>
+          <td class="mono" style="font-size: 12px;">health/coverage</td>
+          <td style="color: #52514e;">Valid days out of window days, per metric</td>
+          <td style="color: #52514e;">Overview lead, tiles, Insights rail</td>
+        </tr>
+        <tr>
+          <td class="mono" style="font-size: 12px;">insights/daily</td>
+          <td style="color: #52514e;">The deterministic morning brief the phone already shows</td>
+          <td style="color: #52514e;">Overview lead sentence</td>
+        </tr>
+        <tr>
+          <td class="mono" style="font-size: 12px;">analysis/trend</td>
+          <td style="color: #52514e;">Fitted direction over a window</td>
+          <td style="color: #52514e;">&mdash; still unused, worth a look next</td>
+        </tr>
+      </table>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;">
+      <div class="card" style="padding: 18px 20px;">
+        <div class="lbl" style="margin-bottom: 8px;">What was kept</div>
+        <div style="font-size: 13.5px; line-height: 1.55; color: #52514e; text-wrap: pretty;">
+          The palette, unchanged. It was validated for lightness band, chroma floor, colour-vision
+          separation and contrast in both modes, and it still passes &mdash; four distinguishable chart
+          series, a real light mode, and status colours split into mark and text variants because
+          the amber that works as a bar is unreadable as type. The phone's fixed dark palette solves
+          none of those and would have cost all of them.
+        </div>
+      </div>
+      <div class="card" style="padding: 18px 20px;">
+        <div class="lbl" style="margin-bottom: 8px;">What makes them one product</div>
+        <div style="font-size: 13.5px; line-height: 1.55; color: #52514e; text-wrap: pretty;">
+          Structure, not colour: the monospaced uppercase section label, the seven-segment coverage
+          strip, hairline cards, one tinted delta per row, and the rule that a gap is drawn as a gap
+          rather than joined across. All of it lifted from the phone's boards, none of it requiring
+          the dashboard to give up light mode.
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

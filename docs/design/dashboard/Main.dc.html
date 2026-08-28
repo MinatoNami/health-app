@@ -1,0 +1,279 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #f9f9f7; }
+    * { box-sizing: border-box; }
+    a { color: #2a78d6; text-decoration: none; }
+    a:hover { color: #1f5ea8; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
+    .lbl {
+      font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+      text-transform: uppercase; color: #898781;
+    }
+    .card { background: #fcfcfb; border: 1px solid rgba(11,11,11,0.1); border-radius: 10px; }
+    .nav b { background: #fcfcfb; color: #0b0b0b; box-shadow: 0 0 0 1px rgba(11,11,11,0.1); }
+  </style>
+</helmet>
+
+<div style="width: 1440px; min-height: 900px; background: #f9f9f7; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color: #0b0b0b;">
+  <div style="max-width: 1180px; margin: 0 auto; padding: 24px 20px 48px;">
+
+    <!-- Top bar. Unchanged anatomy: title, tabs, user, sign out. -->
+    <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 20px;">
+      <h1 style="font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em;">Health</h1>
+      <div class="nav" style="display: flex; gap: 4px; font-size: 14px;">
+        <b style="padding: 7px 13px; border-radius: 8px; font-weight: 600;">Overview</b>
+        <span style="padding: 7px 13px; color: #52514e;">Insights</span>
+        <span style="padding: 7px 13px; color: #52514e;">Explore</span>
+        <span style="padding: 7px 13px; color: #52514e;">Export</span>
+        <span style="padding: 7px 13px; color: #52514e;">Settings</span>
+      </div>
+      <div style="flex: 1;"></div>
+      <span style="font-size: 12px; color: #898781;">lionel</span>
+      <span style="font-size: 12px; color: #52514e; text-decoration: underline;">Sign out</span>
+    </div>
+
+    <!-- One filter row above everything it scopes, exactly as today. -->
+    <div class="card" style="display: flex; align-items: center; gap: 8px; padding: 10px 12px; margin-bottom: 20px;">
+      <span style="font-size: 12px; color: #898781;">Range</span>
+      <span style="border: 1px solid rgba(11,11,11,0.1); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: #52514e;">7d</span>
+      <span style="background: #0b0b0b; color: #fcfcfb; border-radius: 999px; padding: 5px 12px; font-size: 13px; font-weight: 600;">30d</span>
+      <span style="border: 1px solid rgba(11,11,11,0.1); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: #52514e;">90d</span>
+      <span style="border: 1px solid rgba(11,11,11,0.1); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: #52514e;">1y</span>
+      <div style="flex: 1;"></div>
+      <span class="mono" style="font-size: 12px; color: #52514e; border: 1px solid rgba(11,11,11,0.1); border-radius: 7px; padding: 6px 9px; background: #fcfcfb;">2026-07-29</span>
+      <span style="font-size: 12px; color: #898781;">&rarr;</span>
+      <span class="mono" style="font-size: 12px; color: #52514e; border: 1px solid rgba(11,11,11,0.1); border-radius: 7px; padding: 6px 9px; background: #fcfcfb;">2026-08-27</span>
+    </div>
+
+    <!-- THE LEAD.
+         Replaces "Records in range — 47,213". That figure is a property of the
+         database, not of the person: it answers "did the pipeline run", which
+         is a question for the Data screen. Whoop and Oura both compress the
+         top of the screen to one thing that answers the reader's actual
+         question, and Exist's edge over prettier rivals is that it makes
+         statements rather than charts. This sentence is deterministic — it
+         comes from /v1/analysis/snapshot, not from the model — so it is on
+         screen before any LLM is awake, which is the normal case. -->
+    <div class="card" style="padding: 22px 24px; margin-bottom: 16px; display: flex; gap: 32px; align-items: flex-start;">
+      <div style="flex: 1;">
+        <div class="lbl" style="margin-bottom: 10px;">This week</div>
+        <div style="font-size: 30px; font-weight: 650; letter-spacing: -0.022em; line-height: 1.24; text-wrap: pretty; max-width: 30ch;">
+          Sleep rose to 7.0 hours a night, and bedtime is the only thing that moved with it.
+        </div>
+        <div style="font-size: 13px; color: #52514e; margin-top: 12px; line-height: 1.5; max-width: 62ch;">
+          Exercise also rose over the same days. This data cannot separate the two.
+        </div>
+      </div>
+
+      <!-- Coverage, borrowed from the phone. One segment per day in the
+           window, filled where that day has data. It is the figure that
+           separates "you slept 7.0 hours" from "you slept 7.0 hours on the two
+           nights the watch was on", and the server already returns it on every
+           comparison. -->
+      <div style="width: 230px; border-left: 1px solid #e1e0d9; padding-left: 24px;">
+        <div class="lbl" style="margin-bottom: 10px;">Coverage</div>
+        <div style="display: flex; gap: 3px; margin-bottom: 9px;">
+          <div style="flex: 1; height: 5px; border-radius: 3px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 5px; border-radius: 3px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 5px; border-radius: 3px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 5px; border-radius: 3px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 5px; border-radius: 3px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 5px; border-radius: 3px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 5px; border-radius: 3px; background: #1baf7a;"></div>
+        </div>
+        <div class="mono" style="font-size: 12px; color: #52514e;">7 of 7 days measured</div>
+        <div style="font-size: 12px; color: #898781; margin-top: 12px; line-height: 1.45;">
+          Blood oxygen last arrived 3 days ago and is left out of this week.
+        </div>
+      </div>
+    </div>
+
+    <!-- WHAT MOVED / STEADY.
+         Today's tiles are raw latest readings with no comparison — "steps 18"
+         with nothing to judge it against. Every tile now carries its delta
+         against the 28-day baseline and its own coverage, and the ones that
+         did not move are folded into a single quiet row instead of taking
+         four more cards. -->
+    <div class="lbl" style="margin-bottom: 10px;">What moved</div>
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 22px;">
+
+      <div class="card" style="padding: 16px 18px;">
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <div style="font-size: 13px; color: #52514e; flex: 1;">Sleep</div>
+          <div class="mono" style="font-size: 12px; font-weight: 600; color: #006300;">+10%</div>
+        </div>
+        <div style="font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; margin-top: 8px;">
+          7.0<span style="font-size: 13px; color: #52514e; font-weight: 500; margin-left: 3px;">hr</span>
+        </div>
+        <div class="mono" style="font-size: 11px; color: #898781; margin-top: 5px;">28-day baseline 6.4 hr</div>
+        <div style="display: flex; gap: 3px; margin-top: 12px;">
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+        </div>
+      </div>
+
+      <div class="card" style="padding: 16px 18px;">
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <div style="font-size: 13px; color: #52514e; flex: 1;">Steps</div>
+          <div class="mono" style="font-size: 12px; font-weight: 600; color: #006300;">+32%</div>
+        </div>
+        <div style="font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; margin-top: 8px;">
+          12.3<span style="font-size: 13px; color: #52514e; font-weight: 500; margin-left: 3px;">k</span>
+        </div>
+        <div class="mono" style="font-size: 11px; color: #898781; margin-top: 5px;">28-day baseline 9.4k</div>
+        <div style="display: flex; gap: 3px; margin-top: 12px;">
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+        </div>
+      </div>
+
+      <!-- Resting HR fell, which for this metric is the good direction. The
+           delta is the only tinted thing in the row: colour the coverage bar
+           and the confidence word too and six metrics become eighteen
+           coloured elements that read as a traffic light. -->
+      <div class="card" style="padding: 16px 18px;">
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <div style="font-size: 13px; color: #52514e; flex: 1;">Resting HR</div>
+          <div class="mono" style="font-size: 12px; font-weight: 600; color: #006300;">&minus;5%</div>
+        </div>
+        <div style="font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; margin-top: 8px;">
+          58<span style="font-size: 13px; color: #52514e; font-weight: 500; margin-left: 3px;">bpm</span>
+        </div>
+        <div class="mono" style="font-size: 11px; color: #898781; margin-top: 5px;">28-day baseline 61 bpm</div>
+        <div style="display: flex; gap: 3px; margin-top: 12px;">
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #e1e0d9;"></div>
+          <div style="flex: 1; height: 4px; border-radius: 2px; background: #e1e0d9;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="padding: 13px 18px; margin-bottom: 24px; display: flex; align-items: center; gap: 10px;">
+      <span class="lbl" style="letter-spacing: 0.09em;">Steady</span>
+      <span style="font-size: 13px; color: #52514e;">Weight 76.0 kg</span>
+      <span style="color: #e1e0d9;">&middot;</span>
+      <span style="font-size: 13px; color: #52514e;">HRV 44 ms</span>
+      <span style="color: #e1e0d9;">&middot;</span>
+      <span style="font-size: 13px; color: #52514e;">Exercise 58 min</span>
+      <span style="color: #e1e0d9;">&middot;</span>
+      <span style="font-size: 13px; color: #52514e;">Respiratory rate 14.2 br/min</span>
+      <div style="flex: 1;"></div>
+      <span style="font-size: 12px; color: #898781;">within day-to-day variation</span>
+    </div>
+
+    <!-- Tier two: the trend. Two charts, not six — the deep-dive lives on
+         Explore, which is the third tier. -->
+    <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px;">
+      <div class="lbl">Last 30 days</div>
+      <div style="flex: 1;"></div>
+      <span style="font-size: 12px; color: #52514e; text-decoration: underline;">Table view</span>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;">
+
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <h3 style="font-size: 14px; font-weight: 600; margin: 0;">Sleep</h3>
+          <div style="flex: 1;"></div>
+          <span class="mono" style="font-size: 12px; color: #52514e;">7.0 hr</span>
+        </div>
+        <p style="font-size: 12px; color: #898781; margin: 2px 0 14px;">Nightly, hours asleep</p>
+        <svg viewBox="0 0 520 150" style="width: 100%; display: block;" role="img" aria-label="Sleep, nightly hours, last 30 days">
+          <line x1="0" y1="24" x2="520" y2="24" stroke="#e1e0d9" stroke-width="1"></line>
+          <line x1="0" y1="66" x2="520" y2="66" stroke="#e1e0d9" stroke-width="1"></line>
+          <line x1="0" y1="108" x2="520" y2="108" stroke="#e1e0d9" stroke-width="1"></line>
+          <!-- The gap is drawn as a gap. Two nights the watch was not worn are
+               not joined across: joining them would draw sleep that never
+               happened. -->
+          <path d="M6,86 L24,74 L42,92 L60,70 L78,80 L96,64 L114,78 L132,60 L150,72 L168,58 L186,66 L204,54 L222,62 L240,50"
+                fill="none" stroke="#2a78d6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+          <path d="M312,46 L330,40 L348,52 L366,38 L384,44 L402,34 L420,42 L438,30 L456,38 L474,28 L492,34 L510,26"
+                fill="none" stroke="#2a78d6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+          <rect x="248" y="18" width="56" height="96" fill="#f2f1ec"></rect>
+          <text x="276" y="70" text-anchor="middle" font-size="9" fill="#898781"
+                font-family="'IBM Plex Mono', monospace">not worn</text>
+          <circle cx="510" cy="26" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"></circle>
+          <text x="500" y="16" text-anchor="end" font-size="10" fill="#52514e"
+                font-family="'IBM Plex Mono', monospace">7.0 hr</text>
+          <text x="0" y="140" font-size="10" fill="#898781" font-family="'IBM Plex Mono', monospace">29 Jul</text>
+          <text x="520" y="140" text-anchor="end" font-size="10" fill="#898781" font-family="'IBM Plex Mono', monospace">27 Aug</text>
+        </svg>
+      </div>
+
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; align-items: baseline; gap: 8px;">
+          <h3 style="font-size: 14px; font-weight: 600; margin: 0;">Steps</h3>
+          <div style="flex: 1;"></div>
+          <span class="mono" style="font-size: 12px; color: #52514e;">12.3k</span>
+        </div>
+        <p style="font-size: 12px; color: #898781; margin: 2px 0 14px;">Daily total</p>
+        <svg viewBox="0 0 520 150" style="width: 100%; display: block;" role="img" aria-label="Steps, daily total, last 30 days">
+          <line x1="0" y1="24" x2="520" y2="24" stroke="#e1e0d9" stroke-width="1"></line>
+          <line x1="0" y1="66" x2="520" y2="66" stroke="#e1e0d9" stroke-width="1"></line>
+          <line x1="0" y1="108" x2="520" y2="108" stroke="#e1e0d9" stroke-width="1"></line>
+          <g fill="#2a78d6">
+            <rect x="4" y="82" width="12" height="32" rx="4"></rect>
+            <rect x="22" y="70" width="12" height="44" rx="4"></rect>
+            <rect x="40" y="90" width="12" height="24" rx="4"></rect>
+            <rect x="58" y="64" width="12" height="50" rx="4"></rect>
+            <rect x="76" y="76" width="12" height="38" rx="4"></rect>
+            <rect x="94" y="58" width="12" height="56" rx="4"></rect>
+            <rect x="112" y="72" width="12" height="42" rx="4"></rect>
+            <rect x="130" y="54" width="12" height="60" rx="4"></rect>
+            <rect x="148" y="68" width="12" height="46" rx="4"></rect>
+            <rect x="166" y="50" width="12" height="64" rx="4"></rect>
+            <rect x="184" y="60" width="12" height="54" rx="4"></rect>
+            <rect x="202" y="44" width="12" height="70" rx="4"></rect>
+            <rect x="220" y="56" width="12" height="58" rx="4"></rect>
+            <rect x="238" y="40" width="12" height="74" rx="4"></rect>
+            <rect x="256" y="52" width="12" height="62" rx="4"></rect>
+            <rect x="274" y="38" width="12" height="76" rx="4"></rect>
+            <rect x="292" y="48" width="12" height="66" rx="4"></rect>
+            <rect x="310" y="34" width="12" height="80" rx="4"></rect>
+            <rect x="328" y="46" width="12" height="68" rx="4"></rect>
+            <rect x="346" y="30" width="12" height="84" rx="4"></rect>
+            <rect x="364" y="42" width="12" height="72" rx="4"></rect>
+            <rect x="382" y="36" width="12" height="78" rx="4"></rect>
+            <rect x="400" y="28" width="12" height="86" rx="4"></rect>
+            <rect x="418" y="40" width="12" height="74" rx="4"></rect>
+            <rect x="436" y="32" width="12" height="82" rx="4"></rect>
+            <rect x="454" y="26" width="12" height="88" rx="4"></rect>
+            <rect x="472" y="38" width="12" height="76" rx="4"></rect>
+            <rect x="490" y="22" width="12" height="92" rx="4"></rect>
+            <rect x="508" y="30" width="12" height="84" rx="4"></rect>
+          </g>
+          <text x="0" y="140" font-size="10" fill="#898781" font-family="'IBM Plex Mono', monospace">29 Jul</text>
+          <text x="520" y="140" text-anchor="end" font-size="10" fill="#898781" font-family="'IBM Plex Mono', monospace">27 Aug</text>
+        </svg>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

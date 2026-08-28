@@ -1,0 +1,26 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 1440, "h": 900, "title": "Overview" },
+    { "file": "InsightsOpen.dc.html", "x": 1560, "y": 0, "w": 1440, "h": 1120, "title": "Insights — as it opens" },
+    { "file": "Insights.dc.html", "x": 3120, "y": 0, "w": 1440, "h": 900, "title": "Insights — answering" },
+    { "file": "DirectionDark.dc.html", "x": 0, "y": 1280, "w": 1440, "h": 900, "title": "Alternate direction (sketch)" },
+    { "file": "Research.dc.html", "x": 1560, "y": 1280, "w": 1180, "h": 1120, "title": "The research, and what came of it" }
+  ],
+  "annotations": [
+    {
+      "id": "brief",
+      "x": 0,
+      "y": -210,
+      "w": 640,
+      "text": "Top row is the deliverable: Overview reworked, then Insights in both its states — what it shows before you ask, and what it shows after.\n\nBottom row is the argument: the road not taken, and where the principles came from."
+    },
+    {
+      "id": "the-fold",
+      "x": 1560,
+      "y": -210,
+      "w": 600,
+      "text": "The analysis is not a tab. It is what fills Insights before a conversation exists — correlations, day-of-week patterns and anomalies, all from endpoints the server already computes. \"Ask about this\" lands in the same column."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}

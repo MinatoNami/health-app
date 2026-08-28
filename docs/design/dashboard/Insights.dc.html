@@ -1,0 +1,248 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; background: #f9f9f7; }
+    * { box-sizing: border-box; }
+    a { color: #2a78d6; text-decoration: none; }
+    a:hover { color: #1f5ea8; }
+    .mono { font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace; }
+    .lbl {
+      font-family: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+      text-transform: uppercase; color: #898781;
+    }
+    .card { background: #fcfcfb; border: 1px solid rgba(11,11,11,0.1); border-radius: 10px; }
+  </style>
+</helmet>
+
+<div style="width: 1440px; min-height: 900px; background: #f9f9f7; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; color: #0b0b0b;">
+  <div style="max-width: 1180px; margin: 0 auto; padding: 24px 20px 32px;">
+
+    <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 20px;">
+      <h1 style="font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em;">Health</h1>
+      <div style="display: flex; gap: 4px; font-size: 14px;">
+        <span style="padding: 7px 13px; color: #52514e;">Overview</span>
+        <b style="padding: 7px 13px; border-radius: 8px; font-weight: 600; background: #fcfcfb; box-shadow: 0 0 0 1px rgba(11,11,11,0.1);">Insights</b>
+        <span style="padding: 7px 13px; color: #52514e;">Explore</span>
+        <span style="padding: 7px 13px; color: #52514e;">Export</span>
+        <span style="padding: 7px 13px; color: #52514e;">Settings</span>
+      </div>
+      <div style="flex: 1;"></div>
+      <span style="font-size: 12px; color: #898781;">lionel</span>
+      <span style="font-size: 12px; color: #52514e; text-decoration: underline;">Sign out</span>
+    </div>
+
+    <!-- The three-column anatomy is kept as it is: chats down the left, the
+         conversation in the middle, the measured week on the right. It is the
+         screen this dashboard already got right — what it was missing is
+         coverage on the rail, so the numbers the model answers from say how
+         many days they rest on. -->
+    <div style="display: grid; grid-template-columns: 216px minmax(0, 1fr) 264px; gap: 16px; align-items: start;">
+
+      <div class="card" style="padding: 14px; height: 700px; display: flex; flex-direction: column;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+          <span style="font-size: 14px; font-weight: 600;">Chats</span>
+          <div style="flex: 1;"></div>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linecap="round">
+            <path d="M12 5v14"></path><path d="M5 12h14"></path>
+          </svg>
+        </div>
+        <div style="display: flex; align-items: center; gap: 7px; border: 1px solid rgba(11,11,11,0.1); border-radius: 8px; padding: 6px 9px; margin-bottom: 14px;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#898781" stroke-width="2" stroke-linecap="round">
+            <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+          </svg>
+          <span style="font-size: 12px; color: #898781;">Search questions</span>
+        </div>
+
+        <div class="lbl" style="margin-bottom: 8px;">Today</div>
+        <div style="padding: 7px 8px; border-radius: 7px; background: #f2f1ec; margin-bottom: 3px;">
+          <div style="font-size: 13px; line-height: 1.35;">Why did sleep improve?</div>
+          <div class="mono" style="font-size: 11px; color: #898781; margin-top: 2px;">2h ago</div>
+        </div>
+        <div style="padding: 7px 8px; margin-bottom: 3px;">
+          <div style="font-size: 13px; color: #52514e; line-height: 1.35;">Am I overtraining?</div>
+          <div class="mono" style="font-size: 11px; color: #898781; margin-top: 2px;">5h ago</div>
+        </div>
+        <div class="lbl" style="margin: 14px 0 8px;">Previous 7 days</div>
+        <div style="padding: 7px 8px; margin-bottom: 3px;">
+          <div style="font-size: 13px; color: #52514e; line-height: 1.35;">Is my resting HR normal for me?</div>
+          <div class="mono" style="font-size: 11px; color: #898781; margin-top: 2px;">3d ago</div>
+        </div>
+        <div style="padding: 7px 8px;">
+          <div style="font-size: 13px; color: #52514e; line-height: 1.35;">Why is blood oxygen missing?</div>
+          <div class="mono" style="font-size: 11px; color: #898781; margin-top: 2px;">6d ago</div>
+        </div>
+
+        <div style="flex: 1;"></div>
+        <div style="font-size: 11px; color: #898781; line-height: 1.5; padding-top: 12px; border-top: 1px solid #e1e0d9;">
+          Chats are deleted after 30 days. Rated answers are kept.
+        </div>
+      </div>
+
+      <div class="card" style="padding: 20px 22px; height: 700px; display: flex; flex-direction: column;">
+        <div style="flex: 1; overflow: hidden;">
+
+          <div style="display: flex; justify-content: flex-end; margin-bottom: 18px;">
+            <div style="max-width: 74%; background: #ececea; border-radius: 14px 14px 4px 14px; padding: 10px 14px; font-size: 14px; line-height: 1.45;">
+              Why did my sleep improve this week?
+            </div>
+          </div>
+
+          <div style="font-size: 15px; line-height: 1.6; margin-bottom: 13px; text-wrap: pretty;">
+            Sleep rose from 6.4 to 7.0 hours a night. The clearest thing that changed alongside it is
+            bedtime &mdash; a median 41 minutes earlier than the preceding four weeks. Wake time barely
+            moved.
+          </div>
+          <div style="font-size: 15px; line-height: 1.6; margin-bottom: 18px; text-wrap: pretty;">
+            Exercise also rose sharply over the same days. This data cannot separate the two.
+          </div>
+
+          <!-- The evidence card. On the phone this cannot carry coverage
+               strips, because an Observation returns only a prose evidence
+               string. The web payload has the same limit — so the row shows
+               the figure it actually returns, and the strip sits on the rail
+               where /v1/health/coverage really does supply one. -->
+          <div style="border: 1px solid rgba(11,11,11,0.1); border-radius: 10px; overflow: hidden; margin-bottom: 16px;">
+            <div style="display: flex; align-items: center; padding: 9px 14px; background: #f2f1ec;">
+              <span class="lbl">Measured from</span>
+              <div style="flex: 1;"></div>
+              <span class="mono" style="font-size: 11px; color: #898781;">19&ndash;25 Aug</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid #e1e0d9;">
+              <span style="font-size: 13px; color: #52514e; flex: 1;">Exercise minutes 58/day vs 31/day baseline</span>
+              <span class="mono" style="font-size: 11px; color: #898781;">HIGH</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid #e1e0d9;">
+              <span style="font-size: 13px; color: #52514e; flex: 1;">Median bedtime 23:14 vs 23:55</span>
+              <span class="mono" style="font-size: 11px; color: #898781;">MODERATE</span>
+            </div>
+            <div style="padding: 9px 14px; border-top: 1px solid #e1e0d9; font-size: 11px; color: #898781; line-height: 1.45;">
+              Wellness guidance from your own data. Not medical advice.
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; gap: 16px;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#898781" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M7 11v9H4v-9zM7 11l4-8a2 2 0 0 1 3 2l-1 6h5a2 2 0 0 1 2 2.4l-1.4 6A2 2 0 0 1 16.6 20H7"></path>
+            </svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#898781" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 13V4h3v9zM17 13l-4 8a2 2 0 0 1-3-2l1-6H6a2 2 0 0 1-2-2.4l1.4-6A2 2 0 0 1 7.4 4H17"></path>
+            </svg>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#898781" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V5h10"></path>
+            </svg>
+            <div style="flex: 1;"></div>
+            <span class="mono" style="font-size: 11px; color: #898781;">16:53 &middot; 24s &middot; qwen3-32b</span>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 8px; margin-bottom: 10px; padding-top: 16px;">
+          <span style="border: 1px solid rgba(11,11,11,0.1); border-radius: 999px; padding: 7px 13px; font-size: 12.5px; color: #52514e;">Show bedtime by night</span>
+          <span style="border: 1px solid rgba(11,11,11,0.1); border-radius: 999px; padding: 7px 13px; font-size: 12.5px; color: #52514e;">Is that enough?</span>
+          <span style="border: 1px solid rgba(11,11,11,0.1); border-radius: 999px; padding: 7px 13px; font-size: 12.5px; color: #52514e;">Weekly review</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 10px; border: 1px solid rgba(11,11,11,0.1); border-radius: 10px; padding: 10px 12px; background: #fcfcfb;">
+          <span style="flex: 1; font-size: 14px; color: #898781;">Ask a follow-up</span>
+          <div style="width: 30px; height: 30px; border-radius: 8px; background: #0b0b0b; display: flex; align-items: center; justify-content: center;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fcfcfb" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 19V5"></path><path d="M5 12l7-7 7 7"></path>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- The context rail, with coverage added. -->
+      <div class="card" style="padding: 16px; height: 700px;">
+        <div class="lbl" style="margin-bottom: 12px;">Your measured week</div>
+
+        <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px;">
+          <span style="font-size: 13px; color: #52514e; flex: 1;">Sleep</span>
+          <span class="mono" style="font-size: 13px; font-weight: 600;">7.0</span>
+          <span style="font-size: 11px; color: #898781;">hr</span>
+          <span class="mono" style="font-size: 12px; font-weight: 600; color: #006300; width: 40px; text-align: right;">+10%</span>
+        </div>
+        <div style="display: flex; gap: 2px; margin-bottom: 14px;">
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+        </div>
+
+        <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px;">
+          <span style="font-size: 13px; color: #52514e; flex: 1;">Steps</span>
+          <span class="mono" style="font-size: 13px; font-weight: 600;">12.3</span>
+          <span style="font-size: 11px; color: #898781;">k</span>
+          <span class="mono" style="font-size: 12px; font-weight: 600; color: #006300; width: 40px; text-align: right;">+32%</span>
+        </div>
+        <div style="display: flex; gap: 2px; margin-bottom: 14px;">
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+        </div>
+
+        <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px;">
+          <span style="font-size: 13px; color: #52514e; flex: 1;">Resting HR</span>
+          <span class="mono" style="font-size: 13px; font-weight: 600;">58</span>
+          <span style="font-size: 11px; color: #898781;">bpm</span>
+          <span class="mono" style="font-size: 12px; font-weight: 600; color: #006300; width: 40px; text-align: right;">&minus;5%</span>
+        </div>
+        <div style="display: flex; gap: 2px; margin-bottom: 14px;">
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #e1e0d9;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #e1e0d9;"></div>
+        </div>
+
+        <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 5px;">
+          <span style="font-size: 13px; color: #52514e; flex: 1;">Weight</span>
+          <span class="mono" style="font-size: 13px; font-weight: 600;">76.0</span>
+          <span style="font-size: 11px; color: #898781;">kg</span>
+          <span class="mono" style="font-size: 12px; font-weight: 500; color: #898781; width: 40px; text-align: right;">&minus;2%</span>
+        </div>
+        <div style="display: flex; gap: 2px; margin-bottom: 18px;">
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #e1e0d9;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #e1e0d9;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #1baf7a;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #e1e0d9;"></div>
+          <div style="flex: 1; height: 3px; border-radius: 2px; background: #e1e0d9;"></div>
+        </div>
+
+        <div style="padding-top: 14px; border-top: 1px solid #e1e0d9;">
+          <div style="display: flex; gap: 9px; align-items: flex-start;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7d5200" stroke-width="1.9"
+                 stroke-linecap="round" style="flex-shrink: 0; margin-top: 1px;">
+              <path d="M12 3v10"></path><circle cx="12" cy="18" r="0.6" fill="#7d5200"></circle>
+            </svg>
+            <div style="font-size: 12px; color: #52514e; line-height: 1.45;">
+              Blood oxygen not seen in 3 days. It is left out rather than counted as zero.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
