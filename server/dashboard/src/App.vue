@@ -6,6 +6,7 @@ import ExploreView from './views/ExploreView.vue'
 import ExportView from './views/ExportView.vue'
 import InsightsView from './views/InsightsView.vue'
 import SettingsView from './views/SettingsView.vue'
+import FilterBar from './components/FilterBar.vue'
 
 const user = ref(null)
 const checking = ref(true)
@@ -19,12 +20,6 @@ const overview = ref(null)
 const refreshing = ref(false)
 const error = ref('')
 
-const PRESETS = [
-  { label: '7d', days: 7 },
-  { label: '30d', days: 30 },
-  { label: '90d', days: 90 },
-  { label: '1y', days: 365 },
-]
 const preset = ref(30)
 
 function isoDaysAgo(days) {
@@ -36,6 +31,12 @@ function isoDaysAgo(days) {
 const range = ref({ from: isoDaysAgo(30), to: new Date().toISOString().slice(0, 10) })
 
 function applyPreset(days) {
+  // `null` arrives when a date input is edited by hand: the preset is cleared
+  // but the range the user typed must survive it.
+  if (days === null) {
+    preset.value = null
+    return
+  }
   preset.value = days
   range.value = { from: isoDaysAgo(days), to: new Date().toISOString().slice(0, 10) }
 }
@@ -130,27 +131,30 @@ onMounted(async () => {
       <button class="linkbtn" @click="signOut">Sign out</button>
     </header>
 
-    <!-- One filter row, above everything it scopes. Every view re-renders
-         against the same slice rather than carrying its own date control.
-         Hidden on Insights: those windows are fixed at 7 days against the
-         preceding 28, and a date control that silently does nothing is worse
-         than no control at all. -->
-    <div v-if="!['insights', 'settings'].includes(tab)" class="filterbar">
-      <label>Range</label>
-      <button
-        v-for="p in PRESETS" :key="p.days"
-        class="chip" :class="{ active: preset === p.days }"
-        @click="applyPreset(p.days)"
-      >{{ p.label }}</button>
-      <span class="spacer" />
-      <input v-model="range.from" type="date" @change="preset = null" />
-      <span class="muted">→</span>
-      <input v-model="range.to" type="date" @change="preset = null" />
-    </div>
+    <!-- One filter row, above everything it scopes — but no longer always at
+         the top of the page. Explore and Export are range-scoped end to end, so
+         it leads there. Overview is not: its first section reads from the
+         snapshot, whose windows are fixed at 7 days against the preceding 28,
+         so the row is handed to that view to place below them. Insights has no
+         range at all, for the same reason.
+
+         The state stays here. Only the position moved. -->
+    <FilterBar
+      v-if="['explore', 'export'].includes(tab)"
+      :preset="preset" :range="range"
+      @preset="applyPreset" @range="range = $event"
+    />
 
     <p v-if="error" class="error">{{ error }}</p>
 
-    <OverviewView v-if="tab === 'overview'" :data="overview" :refreshing="refreshing" />
+    <OverviewView v-if="tab === 'overview'" :data="overview" :refreshing="refreshing">
+      <template #filters>
+        <FilterBar
+          :preset="preset" :range="range" scope="scopes the charts below"
+          @preset="applyPreset" @range="range = $event"
+        />
+      </template>
+    </OverviewView>
     <InsightsView v-else-if="tab === 'insights'" />
     <SettingsView v-else-if="tab === 'settings'" />
     <ExploreView v-else-if="tab === 'explore'" :range="range" />
