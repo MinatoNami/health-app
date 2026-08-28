@@ -55,23 +55,25 @@ struct DailyBriefSettingsView: View {
                 Text("An alert that says \"nothing changed\" every morning is one you turn "
                      + "off, and then you miss the day it matters.")
             }
+            .listRowBackground(Ink.surface)
 
             if scheduler.authorizationStatus == .denied {
                 Section {
                     Label("Notifications are turned off for this app", systemImage: "bell.slash")
                         .font(.callout)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Ink.absent)
                     Button("Open Settings") { scheduler.openSystemSettings() }
                 } footer: {
                     Text("iOS only asks once, so this can only be changed in Settings.")
                 }
+                .listRowBackground(Ink.surface)
             }
 
-            Section("Preview") {
+            Section(header: Text("Preview").sectionLabelStyle()) {
                 if let brief = scheduler.lastBrief {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Morning brief").font(.subheadline.weight(.semibold))
-                        Text("Through \(brief.asOf)").font(.caption).foregroundStyle(.secondary)
+                        Text("Through \(brief.asOf)").font(.caption).foregroundStyle(Ink.muted)
                         Text(brief.notificationBody).font(.callout)
                     }
                     .padding(.vertical, 4)
@@ -79,12 +81,12 @@ struct DailyBriefSettingsView: View {
                     if !brief.worthNotifying && scheduler.settings.onlyWhenNotable {
                         Text("Nothing notable today, so no alert would be sent.")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Ink.muted)
                     }
                 } else if !engine.isSignedIn {
-                    Text("Sign in to see your brief.").foregroundStyle(.secondary)
+                    Text("Sign in to see your brief.").foregroundStyle(Ink.muted)
                 } else {
-                    Text("Not fetched yet.").foregroundStyle(.secondary)
+                    Text("Not fetched yet.").foregroundStyle(Ink.muted)
                 }
 
                 Button("Refresh now") {
@@ -92,13 +94,14 @@ struct DailyBriefSettingsView: View {
                 }
                 .disabled(!engine.isSignedIn)
             }
+            .listRowBackground(Ink.surface)
 
             Section {
                 if let next = scheduler.lastScheduledFor {
                     LabeledContent("Next alert",
                                    value: next.formatted(date: .abbreviated, time: .shortened))
                 } else if scheduler.settings.enabled {
-                    Text("Nothing scheduled yet.").foregroundStyle(.secondary)
+                    Text("Nothing scheduled yet.").foregroundStyle(Ink.muted)
                 }
             } footer: {
                 Text("The text is written in advance — iOS will not run this app at 8am just "
@@ -107,7 +110,11 @@ struct DailyBriefSettingsView: View {
                      + "alert still arrives, saying which day it describes. Opening it always "
                      + "fetches the current numbers.")
             }
+            .listRowBackground(Ink.surface)
         }
+        .scrollContentBackground(.hidden)
+        .background(Ink.ground)
+        .tint(Ink.accent)
         .navigationTitle("Morning brief")
         .navigationBarTitleDisplayMode(.inline)
         .task {

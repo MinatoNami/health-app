@@ -77,7 +77,7 @@ struct SettingsView: View {
                     if engine.settings.sink.enabled && engine.settings.sink.endpoint == nil {
                         Label("Needs a valid https:// URL", systemImage: "exclamationmark.triangle")
                             .font(.caption)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Ink.absent)
                     }
                     Text("HTTPS only. Batches that fail to upload stay in the outbox and "
                          + "are retried; permanent failures are parked rather than looped.")
@@ -209,7 +209,7 @@ struct SettingsView: View {
                             Text(status.isReady
                                  ? (status.destination?.description ?? "locally")
                                  : "unavailable")
-                                .foregroundStyle(status.isReady ? Color.secondary : Color.orange)
+                                .foregroundStyle(status.isReady ? Ink.muted : Ink.absent)
                                 .multilineTextAlignment(.trailing)
                         }
                         if status.isReady, let model = status.model {

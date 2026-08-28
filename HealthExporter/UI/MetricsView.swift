@@ -15,8 +15,9 @@ struct MetricsView: View {
                          + "before requesting access — afterwards, changes have to "
                          + "go through Settings.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Ink.muted)
                 }
+                .listRowBackground(Ink.surface)
 
                 ForEach(MetricCatalog.groups) { group in
                     Section {
@@ -28,7 +29,7 @@ struct MetricsView: View {
                                 Text(group.title).font(.headline)
                                 Text(group.blurb)
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Ink.muted)
                             }
                         }
 
@@ -37,9 +38,10 @@ struct MetricsView: View {
                         } label: {
                             Text("\(group.quantities.count + group.categories.count) types")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Ink.muted)
                         }
                     }
+                    .listRowBackground(Ink.surface)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -71,7 +73,7 @@ struct GroupDetailView: View {
                     // The identifier still shown, quietly: this screen is also
                     // where you go to work out why a type is not arriving, and
                     // that conversation happens in slugs.
-                    Text(row.slug).font(.caption2.monospaced()).foregroundStyle(.tertiary)
+                    Text(row.slug).font(.caption2.monospaced()).foregroundStyle(Ink.faint)
                     HStack(spacing: 8) {
                         if let last = row.state?.lastSampleEnd {
                             Text("last \(last.formatted(date: .abbreviated, time: .shortened))")
@@ -83,7 +85,7 @@ struct GroupDetailView: View {
                         }
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.muted)
                     if let error = row.state?.lastError {
                         Text(error).font(.caption2).foregroundStyle(.red)
                     }

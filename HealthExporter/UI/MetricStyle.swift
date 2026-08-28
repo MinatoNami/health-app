@@ -86,7 +86,7 @@ struct MetricRow: View {
                 Spacer(minLength: 8)
                 Text(period)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.muted)
             }
             .foregroundStyle(MetricStyle.tint(for: metric.metricSlug))
 
@@ -96,12 +96,12 @@ struct MetricRow: View {
                     .foregroundStyle(.primary)
                 Text(MetricStyle.unit(metric.unit, slug: metric.metricSlug))
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.muted)
                 Spacer(minLength: 8)
                 if let change = deltaText {
                     Text(change)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Ink.muted)
                         .monospacedDigit()
                 }
             }

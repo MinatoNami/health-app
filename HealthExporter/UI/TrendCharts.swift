@@ -38,11 +38,12 @@ struct TrendChart: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
                 if series.mayDoubleCount {
                     Image(systemName: "questionmark.circle")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Ink.muted)
                         .help("Some days are estimated from raw samples")
                 }
                 Spacer()
@@ -50,18 +51,18 @@ struct TrendChart: View {
                     // One number, not a column of them: the current value is
                     // the only figure worth putting on a summary chart.
                     Text(format(latest.value))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
+                        .font(.figure(14))
+                        .foregroundStyle(Ink.primary)
                     + Text(series.unit.map { " \($0)" } ?? "")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
                 }
             }
 
             if points.isEmpty {
                 Text("No data in this range")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Ink.faint)
                     .frame(maxWidth: .infinity, minHeight: 74)
             } else {
                 chart
@@ -93,7 +94,7 @@ struct TrendChart: View {
                     x: .value("Day", point.day, unit: .day),
                     y: .value(title, point.value)
                 )
-                .foregroundStyle(Color.accentColor.gradient)
+                .foregroundStyle(Ink.measured.gradient)
                 .cornerRadius(2)
             case .line:
                 // yStart pinned to the domain floor, not left to default to
@@ -105,14 +106,14 @@ struct TrendChart: View {
                     yStart: .value("Baseline", domain.lowerBound),
                     yEnd: .value(title, point.value)
                 )
-                .foregroundStyle(Color.accentColor.opacity(0.12).gradient)
+                .foregroundStyle(Ink.measured.opacity(0.12).gradient)
                 .interpolationMethod(.monotone)
 
                 LineMark(
                     x: .value("Day", point.day),
                     y: .value(title, point.value)
                 )
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Ink.measured)
                 .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 .interpolationMethod(.monotone)
             }

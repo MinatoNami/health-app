@@ -63,4 +63,46 @@ final class AppearanceTests: XCTestCase {
         for _ in 0..<10 { app.swipeUp() }
         capture("settings-bottom")
     }
+
+    /// The screens pushed off Settings and Data.
+    ///
+    /// None of them had a design board, and until now none of them had the
+    /// palette either — so tapping a row on a restyled Settings landed you on
+    /// system grey. All are reachable with no server and no account.
+    func testPushedScreensWearThePalette() throws {
+        XCTAssertTrue(app.tabBars.buttons["Data"].waitForExistence(timeout: 20))
+
+        app.tabBars.buttons["Data"].tap()
+        capture("data-tab")
+
+        push(from: "Data", into: "Metric groups", as: "metrics")
+
+        for (row, name) in [("Morning brief", "daily-brief"),
+                            ("How insights work", "insights-about"),
+                            ("Batch Files & Log", "exports")] {
+            app.tabBars.buttons["Data"].tap()
+            let settings = app.staticTexts["Account, brief & diagnostics"].firstMatch
+            if settings.waitForExistence(timeout: 8) { settings.tap() }
+            push(from: "Settings", into: row, as: name)
+        }
+    }
+
+    /// Taps a row by label, waits for the push to settle, photographs it.
+    /// Scrolls to find the row — several of these are below the fold.
+    private func push(from screen: String, into row: String, as name: String) {
+        var target = app.buttons[row].firstMatch
+        if !target.exists { target = app.staticTexts[row].firstMatch }
+        for _ in 0..<8 where !target.isHittable {
+            app.swipeUp()
+            if !target.exists { target = app.staticTexts[row].firstMatch }
+        }
+        guard target.isHittable else {
+            XCTFail("could not reach \(row) from \(screen)")
+            return
+        }
+        target.tap()
+        _ = app.navigationBars.firstMatch.waitForExistence(timeout: 6)
+        Thread.sleep(forTimeInterval: 1.2)
+        capture(name)
+    }
 }

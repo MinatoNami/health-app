@@ -25,12 +25,13 @@ struct ExportsView: View {
                      + "cheaply, so a server can process a batch without buffering "
                      + "it whole.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.muted)
             }
+            .listRowBackground(Ink.surface)
 
-            Section("Pending (\(pending.count))") {
+            Section(header: Text("Pending (\(pending.count))").sectionLabelStyle()) {
                 if pending.isEmpty {
-                    Text("Nothing queued").foregroundStyle(.secondary)
+                    Text("Nothing queued").foregroundStyle(Ink.muted)
                 }
                 ForEach(pending) { batch in
                     BatchRow(batch: batch) { previewBatch = batch }
@@ -41,13 +42,15 @@ struct ExportsView: View {
                     }
                 }
             }
+            .listRowBackground(Ink.surface)
 
             if !archived.isEmpty {
-                Section("Delivered (\(archived.count))") {
+                Section(header: Text("Delivered (\(archived.count))").sectionLabelStyle()) {
                     ForEach(archived) { batch in
                         BatchRow(batch: batch) { previewBatch = batch }
                     }
                 }
+                .listRowBackground(Ink.surface)
             }
 
             Section {
@@ -57,7 +60,11 @@ struct ExportsView: View {
                 }
                 NavigationLink("View Log") { LogView() }
             }
+            .listRowBackground(Ink.surface)
         }
+        .scrollContentBackground(.hidden)
+        .background(Ink.ground)
+        .tint(Ink.accent)
         .navigationTitle("Batch Files")
         .onAppear(perform: reload)
         .refreshable { reload() }
@@ -83,7 +90,7 @@ private struct BatchRow: View {
                 Text(batch.displayName).font(.callout.monospaced())
                 Text("\(batch.recordCount) records · \(batch.sizeDescription)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Ink.muted)
             }
         }
         .buttonStyle(.plain)
@@ -142,9 +149,9 @@ struct LogView: View {
                     Text(entry.message).font(.caption)
                     Text("\(entry.category) · \(entry.at.formatted(date: .omitted, time: .standard))")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Ink.muted)
                 }
-                .listRowBackground(entry.level == .error ? Color.red.opacity(0.08) : nil)
+                .listRowBackground(entry.level == .error ? Ink.danger.opacity(0.08) : nil)
             }
         }
         .navigationTitle("Log")

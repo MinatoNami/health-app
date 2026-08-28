@@ -15,23 +15,28 @@ struct MetricBar: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text(slug.metricDisplayName)
-                    .font(.caption)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Ink.secondary)
                     .lineLimit(1)
                 if isStale {
                     Image(systemName: "moon.zzz")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Ink.absent)
                         .accessibilityHidden(true)
                 }
-                Spacer()
+                Spacer(minLength: 6)
                 Text(Self.compact(count))
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                    .font(.figure(11.5, weight: .medium))
+                    .foregroundStyle(Ink.faint)
             }
             GeometryReader { geo in
+                // `absent` and `measured`, not orange and the brand red. Both
+                // are exactly what the palette reserves these two for — amber
+                // is "stopped arriving", green is "this rests on real days" —
+                // and a bar full of accent made every metric on the screen
+                // shout at the same volume as the one that had gone quiet.
                 Capsule()
-                    .fill(isStale ? Color.orange.gradient : Color.accentColor.gradient)
+                    .fill(isStale ? Ink.absent.gradient : Ink.measured.gradient)
                     .frame(width: max(3, geo.size.width * fraction))
             }
             // Height must be pinned: a GeometryReader left unconstrained in a

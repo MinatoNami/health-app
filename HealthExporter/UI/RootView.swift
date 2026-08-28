@@ -167,28 +167,34 @@ private struct BootView: View {
 
     var body: some View {
         ZStack {
-            Color(.systemGroupedBackground)
+            // The same ground the app draws on, and the same one the launch
+            // image is now set to. These were three different colours — a pure
+            // black launch image, systemGroupedBackground here, and Ink.ground
+            // behind everything after — so the handover this view exists to
+            // hide was visible twice.
+            Ink.ground
                 .ignoresSafeArea()
 
             VStack(spacing: 18) {
                 Image(systemName: "heart.text.square.fill")
                     .font(.system(size: 54))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Ink.accent)
                     .accessibilityHidden(true)
 
                 Text("Health Exporter")
-                    .font(.title3.weight(.semibold))
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
 
                 VStack(spacing: 8) {
                     ProgressView(value: progress.fraction)
                         .progressViewStyle(.linear)
-                        .tint(Color.accentColor)
+                        .tint(Ink.accent)
                         .frame(maxWidth: 220)
                         .animation(.easeInOut(duration: 0.3), value: progress.fraction)
 
                     Text(progress.label)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Ink.muted)
                         // Reserves the line so a longer label does not shift the
                         // bar upward as the steps advance.
                         .frame(height: 18)

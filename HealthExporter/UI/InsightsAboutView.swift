@@ -25,8 +25,9 @@ struct InsightsAboutView: View {
                 explain("Consistency",
                         "The spread of your sleep midpoint: when you sleep, not how long.")
             } header: {
-                Text("How the numbers work")
+                Text("How the numbers work").sectionLabelStyle()
             }
+            .listRowBackground(Ink.surface)
 
             Section {
                 explain("Escalation",
@@ -40,10 +41,11 @@ struct InsightsAboutView: View {
                         "No diagnosis, no medication advice, and no claim that this data can "
                         + "rule out illness.")
             } header: {
-                Text("Safety")
+                Text("Safety").sectionLabelStyle()
             } footer: {
                 Text("Wellness guidance from your own data. Not medical advice.")
             }
+            .listRowBackground(Ink.surface)
 
             Section {
                 explain("Where",
@@ -56,9 +58,13 @@ struct InsightsAboutView: View {
                         "Questions and answers are deleted automatically. The health figures "
                         + "behind an answer are never stored with it.")
             } header: {
-                Text("Privacy")
+                Text("Privacy").sectionLabelStyle()
             }
+            .listRowBackground(Ink.surface)
         }
+        .scrollContentBackground(.hidden)
+        .background(Ink.ground)
+        .tint(Ink.accent)
         .navigationTitle("How insights work")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -66,7 +72,7 @@ struct InsightsAboutView: View {
     private func explain(_ title: String, _ body: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title).font(.subheadline.weight(.semibold))
-            Text(body).font(.caption).foregroundStyle(.secondary)
+            Text(body).font(.caption).foregroundStyle(Ink.muted)
         }
         .padding(.vertical, 2)
     }
