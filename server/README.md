@@ -478,7 +478,7 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-397 tests. The suite runs on SQLite so it needs no database server; the ingest
+457 tests. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
@@ -766,7 +766,8 @@ So the check runs on a timer and pushes, rather than waiting to be visited:
 ```
 
 Installed by `deploy.sh` as cron: freshness daily at 09:00, weekly review on
-Mondays at 08:30, both logging to `/var/log/health-freshness.log`.
+Mondays at 08:30, and question-and-answer retention (`prune_insights`) daily at
+03:10, all logging to `/var/log/health-freshness.log`.
 
 Two things keep it from becoming noise people mute:
 

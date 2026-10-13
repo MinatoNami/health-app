@@ -736,8 +736,12 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Monday morning. --skip-if-unreachable because the model lives on a laptop and
 # a shut laptop is the normal case, not a fault worth mailing about.
 30 8 * * 1 ubuntu cd $REMOTE_DIR && docker compose exec -T web python manage.py weekly_review --skip-if-unreachable >> /var/log/health-freshness.log 2>&1
+# Retention. Asking a question also prunes, but a retention policy that only
+# runs while someone is chatting is not one. Before the 03:20 backup, so expired
+# turns stop reaching new backups the same night.
+10 3 * * * ubuntu cd $REMOTE_DIR && docker compose exec -T web python manage.py prune_insights >> /var/log/health-freshness.log 2>&1
 CRON"
-  ok "freshness daily at 09:00, weekly review Mondays at 08:30"
+  ok "freshness daily at 09:00, weekly review Mondays at 08:30, retention daily at 03:10"
   info "→ /var/log/health-freshness.log"
 }
 
