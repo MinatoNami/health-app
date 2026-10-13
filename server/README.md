@@ -10,7 +10,7 @@ them in Postgres. Runs on `alena-server` behind nginx, reachable over Tailscale.
 ## Deploy
 
 ```bash
-./deploy.sh                 # build, push, migrate, reload nginx, verify
+./deploy.sh                 # push, test in the image, build, migrate, reload nginx, verify
 ./deploy.sh user lionel     # create a login the app can sign in with
 ./deploy.sh token my-phone  # mint a bearer token directly (shown once)
 ./deploy.sh pin             # certificate fingerprint (only needed if self-signed)
@@ -29,6 +29,30 @@ never regenerated — redeploying does not rotate the pin or invalidate tokens.
 The script refuses to reload nginx if the config doesn't validate, and removes
 its own site first. This host already serves another app on 443; a bad reload
 would take that down too.
+
+**Nothing goes live until the tests pass in the new image.** Straight after the
+code is synced, the deploy builds the image under a separate `:candidate` tag
+and runs the whole suite inside it with networking switched off. A failed build
+or a failed test stops the deploy there: the dashboard files, nginx, the running
+container and the database are all still the previous version. The suite runs
+on SQLite, so this gate checks the image's Python and locked dependencies, not
+Postgres — see [Development](#development) for running it against the real
+database.
+
+### Dependencies
+
+`requirements.txt` holds the ranges the code is written against;
+`requirements.lock` is what the image installs — every package pinned, with
+hashes, so pip refuses anything that is not byte-for-byte what was locked and
+two builds of the same commit run the same code. To take an update, or after
+editing `requirements.txt`, regenerate the lock and deploy; the deploy's test
+step is what proves the new versions work:
+
+```bash
+uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes -o requirements.lock
+```
+
+`--python-version` must match the `FROM` line in the Dockerfile.
 
 ### First-time setup
 
@@ -473,12 +497,14 @@ the app — an empty pin falls back to normal system validation.
 ## Development
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements.lock
 DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-457 tests. The suite runs on SQLite so it needs no database server; the ingest
+465 tests. A local venv may be a different Python from the image's 3.12, so a
+pass here is a quick check, not the gate — the deploy re-runs the suite inside
+the image before anything ships. The suite runs on SQLite so it needs no database server; the ingest
 path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of

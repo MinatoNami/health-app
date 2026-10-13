@@ -2,7 +2,8 @@
 #
 # Deploys the Health Exporter ingest server to the backend host over SSH.
 #
-#   ./deploy.sh                 build, push, migrate, reload nginx, verify
+#   ./deploy.sh                 build, test in the image, push, migrate,
+#                               reload nginx, verify
 #   ./deploy.sh user <name>     create/reset a login the app can sign in with
 #   ./deploy.sh admin <name>    create a Django admin account for /admin/
 #   ./deploy.sh token <label>   mint a bearer token directly (shown once)
@@ -284,8 +285,43 @@ configure_nginx() {
   ok "nginx reloaded"
 }
 
+# Built under its own tag so a failure never touches the image the running
+# container (or the next `up -d` after a reboot) would use.
+CANDIDATE_IMAGE="health-server-web:candidate"
+
+test_in_image() {
+  step "Testing the new image"
+  # Straight after push_code, which only syncs source into the build directory:
+  # nothing live has changed yet. Everything after it — the dashboard files,
+  # nginx, the containers, migrations — only happens if this passes.
+  #
+  # Inside the image rather than on this laptop: the image is Python 3.12 on the
+  # locked dependencies, a local venv is whatever it is, and the image is what
+  # will serve requests.
+  #
+  # --network none: the suite needs no network (SQLite settings, LLM calls
+  # mocked), and cutting it off proves that rather than trusting it — a test
+  # that quietly reached the model server or the live database would fail
+  # here instead of passing because the laptop happened to be awake.
+  if ! remote "cd $REMOTE_DIR && docker build -q -t $CANDIDATE_IMAGE ." >/dev/null; then
+    remote "cd $REMOTE_DIR && docker build -t $CANDIDATE_IMAGE ." 2>&1 | tail -30 | sed 's/^/    /'
+    die "image build failed; the running server was not touched"
+  fi
+  ok "image built"
+
+  local output
+  if ! output="$(remote "docker run --rm --network none $CANDIDATE_IMAGE \
+        python manage.py test tests --settings=healthserver.settings_test --noinput" 2>&1)"; then
+    printf "%s\n" "$output" | grep -E "^(FAIL|ERROR):|^Ran |^FAILED|Error" | head -40 | sed 's/^/    /'
+    die "tests failed in the new image; the running server was not touched"
+  fi
+  ok "$(printf "%s\n" "$output" | grep -E "^Ran " | head -1) — passed"
+}
+
 start_services() {
   step "Building and starting containers"
+  # Rebuilds from the layer cache the test step just filled, so this is the
+  # same image that passed, not a second resolution of anything.
   compose "up -d --build" 2>&1 | sed 's/^/    /'
   ok "containers up"
 }
@@ -365,6 +401,7 @@ EOF
 cmd_deploy() {
   preflight
   push_code
+  test_in_image
   build_dashboard
   ensure_env
   ensure_cert
