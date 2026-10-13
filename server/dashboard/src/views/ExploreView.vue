@@ -51,13 +51,16 @@ async function loadCatalog() {
 let loadTimer = null
 let loadSeq = 0
 function scheduleLoad() {
+  // The sequence moves now, not when the timer fires: a request already in
+  // flight is stale from the moment a new one is asked for, and resolving in
+  // the gap before the timer would otherwise still count as the newest.
+  const seq = ++loadSeq
   clearTimeout(loadTimer)
-  loadTimer = setTimeout(load, 0)
+  loadTimer = setTimeout(() => load(seq), 0)
 }
 
-async function load() {
+async function load(seq = ++loadSeq) {
   if (!selected.value) return
-  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   try {
