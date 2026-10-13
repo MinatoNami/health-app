@@ -354,8 +354,9 @@ final class SyncEngine: ObservableObject {
 
             if !page.records.isEmpty {
                 // Encode and write happen off the main actor too; the await is
-                // what keeps the ordering below honest.
-                await Outbox.shared.write(page.records)
+                // what keeps the ordering below honest. A failed write throws
+                // here, before the anchor below can move past the page.
+                try await Outbox.shared.write(page.records)
                 emitted += page.records.count
             }
 
@@ -385,11 +386,27 @@ final class SyncEngine: ObservableObject {
 
     // MARK: - Statistics
 
+    /// The window daily rollups are read over: from local midnight
+    /// `lookbackDays` ago up to `now`.
+    ///
+    /// The start has to be a midnight. Rollups are keyed by day and the server
+    /// keeps the last value it is sent for each, so a window starting at "now
+    /// minus 90 days" made the oldest bucket a partial day — only the samples
+    /// after the current time of day — and that partial total overwrote the
+    /// complete one the day before. With hourly syncs every day older than the
+    /// lookback ended up stored as roughly its final hour.
+    nonisolated static func statisticsWindow(
+        now: Date, lookbackDays: Int, calendar: Calendar = .current
+    ) -> (start: Date, end: Date) {
+        let today = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -lookbackDays, to: today) ?? today
+        return (start, now)
+    }
+
     private func syncStatistics() async -> Int {
-        let end = Date()
-        let start = Calendar.current.date(byAdding: .day,
-                                          value: -settings.statisticsLookbackDays,
-                                          to: end) ?? end
+        let (start, end) = SyncEngine.statisticsWindow(
+            now: Date(), lookbackDays: settings.statisticsLookbackDays
+        )
         var emitted: [HealthRecord] = []
 
         // Rollups have to follow the same enabled list the raw samples do.
@@ -421,7 +438,14 @@ final class SyncEngine: ObservableObject {
         }
 
         guard !emitted.isEmpty else { return 0 }
-        await Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
+        do {
+            try await Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
+        } catch {
+            // Nothing to roll back: rollups are recomputed from scratch on the
+            // next run, so a lost write here costs one cycle, not data.
+            Log.shared.error("stats", "Rollups not spooled: \(error.localizedDescription)")
+            return 0
+        }
         Log.shared.info("stats", "Emitted \(emitted.count) daily rollups")
         return emitted.count
     }
@@ -446,7 +470,14 @@ final class SyncEngine: ObservableObject {
         guard Date().timeIntervalSince(last) > 30 * 86_400 else { return 0 }
         let records = reader.characteristics()
         guard !records.isEmpty else { return 0 }
-        await Outbox.shared.write(records)
+        do {
+            try await Outbox.shared.write(records)
+        } catch {
+            // Leave `lastEmittedAt` alone so the next run tries again rather
+            // than waiting a month.
+            Log.shared.error("sync", "Characteristics not spooled: \(error.localizedDescription)")
+            return 0
+        }
         characteristicsStore.mutate { $0.lastEmittedAt = Date() }
         return records.count
     }
