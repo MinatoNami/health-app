@@ -99,7 +99,7 @@ function weekLine(p) {
           <span class="badge">{{ p.significance }}</span>
           <span class="fnote-inline">against your own day-to-day variation</span>
           <span class="spacer" />
-          <button class="linkbtn fask" @click="emit('ask', `Why are my ${p.label.toLowerCase()} lower on ${p.group}?`)">
+          <button class="linkbtn fask" @click="emit('ask', `Why are my ${p.label.toLowerCase()} ${p.direction} on ${p.group}?`)">
             Ask about this →
           </button>
         </div>

@@ -1,3 +1,7 @@
+# The ranges this server is written against. Not what gets installed: the image
+# installs requirements.lock, which pins every package with hashes. After
+# changing this file, regenerate the lock (the command is at its top) and
+# deploy — the deploy runs the test suite against the new lock before going live.
 Django>=5.1,<6.0
 djangorestframework>=3.15,<4.0
 psycopg[binary]>=3.2,<4.0

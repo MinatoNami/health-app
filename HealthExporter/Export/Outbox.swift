@@ -47,6 +47,15 @@ final class Outbox: @unchecked Sendable {
 
     private let lock = NSLock()
 
+    /// Where batches are spooled. Injectable so tests can point a write at a
+    /// directory that does not exist and watch it fail; the app only ever uses
+    /// `shared`.
+    let directory: URL?
+
+    init(directory: URL? = Paths.outboxDirectory) {
+        self.directory = directory
+    }
+
     /// Built per write rather than stored. `JSONEncoder` is not safe for
     /// concurrent use, and writing now happens off the main actor — one shared
     /// encoder would be a race for the sake of saving an allocation that costs
@@ -81,8 +90,26 @@ final class Outbox: @unchecked Sendable {
 
     // MARK: - Writing
 
+    /// Why a write put nothing on disk. Thrown rather than reported as an empty
+    /// result, because the caller's next move is to advance a sync anchor — and
+    /// an empty array was indistinguishable from "nothing to write", so a full
+    /// disk moved the anchor past data that never landed.
+    enum WriteError: LocalizedError {
+        case noOutboxDirectory
+        case encodingFailed(String)
+        case commitFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .noOutboxDirectory: "The outbox directory is unavailable"
+            case .encodingFailed(let detail): "Could not encode a batch header: \(detail)"
+            case .commitFailed(let detail): "Could not write a batch to disk: \(detail)"
+            }
+        }
+    }
+
     /// Writes records to a new batch file, splitting if they exceed the cap.
-    /// Returns the files created.
+    /// Returns the files created, and throws if any chunk failed to reach disk.
     ///
     /// `nonisolated` and `async` on purpose, and the combination is the point:
     /// called with `await` from the main actor, a nonisolated async function runs
@@ -97,8 +124,9 @@ final class Outbox: @unchecked Sendable {
     @discardableResult
     nonisolated func write(
         _ records: [HealthRecord], windowFrom: Date? = nil, windowTo: Date? = nil
-    ) async -> [URL] {
-        guard !records.isEmpty, let dir = Paths.outboxDirectory else { return [] }
+    ) async throws -> [URL] {
+        guard !records.isEmpty else { return [] }
+        guard let dir = directory else { throw WriteError.noOutboxDirectory }
 
         let encoder = makeEncoder()
         var written: [URL] = []
@@ -115,7 +143,10 @@ final class Outbox: @unchecked Sendable {
             )
 
             var payload = Data()
-            guard let headerLine = try? encoder.encode(header) else { continue }
+            let headerLine: Data
+            do { headerLine = try encoder.encode(header) } catch {
+                throw WriteError.encodingFailed(error.localizedDescription)
+            }
             payload.append(headerLine)
             payload.append(0x0A)
 
@@ -136,9 +167,8 @@ final class Outbox: @unchecked Sendable {
                 "batch-\(stamp)-\(batchId.prefix(8))-\(encoded).ndjson"
             )
 
-            if commit(payload, to: url, records: encoded) {
-                written.append(url)
-            }
+            try commit(payload, to: url, records: encoded)
+            written.append(url)
         }
         return written
     }
@@ -151,7 +181,7 @@ final class Outbox: @unchecked Sendable {
     /// tasks want it. Extracting the critical section means there is no `await`
     /// it could possibly straddle, which is a stronger guarantee than a comment
     /// promising the same thing.
-    private func commit(_ payload: Data, to url: URL, records: Int) -> Bool {
+    private func commit(_ payload: Data, to url: URL, records: Int) throws {
         lock.lock()
         defer { lock.unlock() }
         do {
@@ -162,10 +192,9 @@ final class Outbox: @unchecked Sendable {
             )
             Paths.excludeFromBackup(url)
             Log.shared.info("outbox", "Wrote \(records) records to \(url.lastPathComponent)")
-            return true
         } catch {
             Log.shared.error("outbox", "Failed writing batch: \(error.localizedDescription)")
-            return false
+            throw WriteError.commitFailed(error.localizedDescription)
         }
     }
 
@@ -183,7 +212,7 @@ final class Outbox: @unchecked Sendable {
     /// This also reads better in the batch list: a queue shown in the order it
     /// will be sent says more than one shown newest-first.
     func pendingBatches() -> [Batch] {
-        batches(in: Paths.outboxDirectory)
+        batches(in: directory)
     }
 
     /// Delivered batches, **newest first** — a history for a person to read,
@@ -240,6 +269,37 @@ final class Outbox: @unchecked Sendable {
         }
     }
 
+    /// Moves a batch the server refused out of the queue. See
+    /// `Paths.rejectedDirectory`.
+    func reject(_ batch: Batch) {
+        guard let dir = Paths.rejectedDirectory else { return }
+        let target = dir.appendingPathComponent(batch.url.lastPathComponent)
+        try? FileManager.default.removeItem(at: target)
+        do {
+            try FileManager.default.moveItem(at: batch.url, to: target)
+        } catch {
+            Log.shared.error("outbox", "Could not set aside \(batch.displayName): \(error.localizedDescription)")
+        }
+    }
+
+    nonisolated func rejectedCountOffMain() async -> Int {
+        fileCount(in: Paths.rejectedDirectory)
+    }
+
+    /// Puts every rejected batch back in the queue. Their names keep the
+    /// creation stamp, so they rejoin in the order they were read.
+    @discardableResult
+    func requeueRejected() -> Int {
+        guard let dest = directory else { return 0 }
+        var moved = 0
+        for batch in batches(in: Paths.rejectedDirectory) {
+            let target = dest.appendingPathComponent(batch.url.lastPathComponent)
+            if (try? FileManager.default.moveItem(at: batch.url, to: target)) != nil { moved += 1 }
+        }
+        Log.shared.info("outbox", "Requeued \(moved) rejected batch(es)")
+        return moved
+    }
+
     func delete(_ batch: Batch) {
         try? FileManager.default.removeItem(at: batch.url)
     }
@@ -292,7 +352,7 @@ final class Outbox: @unchecked Sendable {
         }
     }
 
-    var pendingCount: Int { fileCount(in: Paths.outboxDirectory) }
+    var pendingCount: Int { fileCount(in: directory) }
 
     /// The same count, off the caller's thread.
     ///
@@ -300,12 +360,12 @@ final class Outbox: @unchecked Sendable {
     /// few hundred batches deep — which is exactly the situation where the app
     /// is already struggling and least able to afford it on the main thread.
     nonisolated func pendingCountOffMain() async -> Int {
-        fileCount(in: Paths.outboxDirectory)
+        fileCount(in: directory)
     }
 
     /// Listing plus a `stat()` per file, off the caller's thread.
     nonisolated func pendingBatchesOffMain() async -> [Batch] {
-        batches(in: Paths.outboxDirectory)
+        batches(in: directory)
     }
 
     /// Enumerating and deleting, off the caller's thread. Nothing waits on the

@@ -10,6 +10,7 @@ rather than to an error page.
 import os
 import json
 from datetime import date, datetime, time, timedelta
+import time as pytime
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -21,7 +22,7 @@ from ingest import health_analysis, safety
 from ingest.llm import client as llm_client
 from ingest.llm import service as llm_service
 from ingest.llm import tools as llm_tools
-from ingest.models import ApiToken, Batch, Device, InsightTurn, Record
+from ingest.models import ApiToken, Batch, ChatSession, Device, InsightTurn, Record
 
 SGT = ZoneInfo("Asia/Singapore")
 
@@ -486,6 +487,88 @@ class InsightEndpointTests(InsightTestCase):
         self.assertIn("observations", body["answer"])
         self.assertIn("snapshot", body)
         self.assertEqual(body["safety"]["level"], "coaching")
+
+    def ask_once(self):
+        return self.client.post(
+            "/v1/insights/ask",
+            data=json.dumps({"question": "Am I sleeping enough?"}),
+            content_type="application/json",
+            headers=self.auth(),
+        )
+
+    def fill_every_slot(self):
+        for index in range(llm_client.max_concurrent()):
+            cache.add(f"ingest:llm-slot:{index}", 1, 60)
+
+    def test_a_full_house_answers_at_once_without_the_model(self):
+        """Each answer holds a sync worker for as long as the model takes. With
+        every slot in use a new question falls back to the measured snapshot
+        straight away, leaving workers for the phone's uploads."""
+        self.fill_every_slot()
+
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch("urllib.request.urlopen") as urlopen:
+            response = self.ask_once()
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["generated"])
+        self.assertIn("busy", body["error"])
+        self.assertIn("snapshot", body)
+        urlopen.assert_not_called()
+
+    def test_an_urgent_question_never_waits_for_a_slot(self):
+        """The safety reply is rules, not the model, so it must not compete
+        for a slot — a busy model is no reason to delay it."""
+        self.fill_every_slot()
+
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            response = self.client.post(
+                "/v1/insights/ask",
+                data=json.dumps({"question": "I've had chest pain since this morning"}),
+                content_type="application/json",
+                headers=self.auth(),
+            )
+
+        body = response.json()
+        self.assertEqual(body["source"], "safety_rules")
+        self.assertIsNotNone(body["answer"])
+        urlopen.assert_not_called()
+
+    def test_the_weekly_review_takes_a_slot_like_any_answer(self):
+        """The cron path called the service directly and skipped the guard."""
+        self.fill_every_slot()
+
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch("urllib.request.urlopen") as urlopen:
+            payload = llm_service.weekly_review()
+
+        self.assertFalse(payload["generated"])
+        self.assertIn("busy", payload["error"])
+        urlopen.assert_not_called()
+
+    def test_a_slot_is_held_for_the_answer_and_given_back(self):
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b"{}"
+            with llm_client.answer_slot():
+                llm_client._post("/chat/completions", {})
+                llm_client._post("/chat/completions", {})
+                held = [cache.get(f"ingest:llm-slot:{i}") for i in range(llm_client.max_concurrent())]
+                self.assertEqual(held.count(1), 1, "one answer, one slot, however many calls")
+
+        for index in range(llm_client.max_concurrent()):
+            self.assertIsNone(cache.get(f"ingest:llm-slot:{index}"))
+
+    def test_a_spent_budget_stops_before_calling_the_model(self):
+        """The per-call timeout allowed eight calls of 180s each, past the
+        900s at which gunicorn kills the worker. The answer's own deadline
+        caps every call inside it."""
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            with llm_client.answer_slot():
+                llm_client._scope.get().deadline = pytime.monotonic() - 1
+                with self.assertRaises(llm_client.LLMUnavailable):
+                    llm_client._post("/chat/completions", {})
+        urlopen.assert_not_called()
 
     def test_status_names_where_processing_happens(self):
         """§8 requires the user be told which provider receives their data."""

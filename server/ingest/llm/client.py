@@ -17,11 +17,14 @@ import logging
 import os
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from django.conf import settings
+from django.core.cache import cache
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +99,90 @@ def is_local() -> bool:
     return destination()["kind"] != "external"
 
 
+def answer_budget_seconds() -> float:
+    """Wall-clock allowance for everything one answer asks of the model.
+
+    `LLM_TIMEOUT_SECONDS` is per call, and an answer makes up to eight —
+    compaction, six tool rounds, the prose — so on its own it allowed ~24
+    minutes. Gunicorn kills a worker at 900s, which lost the answer and the
+    worker together. Comfortably inside that limit by default."""
+    try:
+        return float(os.environ.get("LLM_ANSWER_BUDGET_SECONDS", "600"))
+    except ValueError:
+        return 600.0
+
+
+def max_concurrent() -> int:
+    """Answers allowed in flight at once, across every worker.
+
+    Each holds a sync gunicorn worker for as long as the model takes. There are
+    four, and the phone's uploads and the health check need some of them."""
+    try:
+        return max(1, int(os.environ.get("LLM_MAX_CONCURRENT", "2")))
+    except ValueError:
+        return 2
+
+
+class ModelBusy(LLMUnavailable):
+    """Every answer slot is taken.
+
+    A kind of LLMUnavailable on purpose: every model call in the service
+    already falls back to the measured snapshot on that, so a busy model reads
+    as one more reason the model could not help right now — answered at once,
+    stored, progress cleared — rather than as a new failure every caller has to
+    learn to handle."""
+
+
+class _Scope:
+    def __init__(self, deadline: float):
+        self.deadline = deadline
+        self.slot_key: str | None = None
+
+
+_scope: ContextVar["_Scope | None"] = ContextVar("llm_answer_scope", default=None)
+
+
+@contextmanager
+def answer_slot():
+    """Everything one answer asks of the model: a deadline, and a slot.
+
+    The deadline starts now and caps every call made inside. The slot — one of
+    `max_concurrent()` — is claimed lazily, by the first call that actually
+    reaches the model, so an answer that never does (the urgent-safety reply,
+    a switched-off layer) never competes for one.
+
+    Opened by `service.answer`, which every path to the model goes through: the
+    dashboard, the phone and the weekly-review cron alike. Nested scopes join
+    the outer one rather than claiming a second slot.
+
+    Slots live in the shared cache because the request that needs one rarely
+    lands on the worker holding another. The expiry is a backstop for a worker
+    killed mid-answer, which never reaches the `finally`."""
+    if _scope.get() is not None:
+        yield
+        return
+    scope = _Scope(time.monotonic() + answer_budget_seconds())
+    token = _scope.set(scope)
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+        if scope.slot_key:
+            cache.delete(scope.slot_key)
+
+
+def _claim_slot(scope: _Scope) -> None:
+    if scope.slot_key:
+        return
+    ttl = int(answer_budget_seconds()) + 60
+    for index in range(max_concurrent()):
+        key = f"ingest:llm-slot:{index}"
+        if cache.add(key, 1, ttl):
+            scope.slot_key = key
+            return
+    raise ModelBusy("the model is busy with another question; try again in a moment")
+
+
 def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
     request = urllib.request.Request(
         f"{base_url()}{path}",
@@ -107,8 +194,17 @@ def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
     if key:
         request.add_header("Authorization", f"Bearer {key}")
 
+    timeout = timeout or timeout_seconds()
+    scope = _scope.get()
+    if scope is not None:
+        remaining = scope.deadline - time.monotonic()
+        if remaining < 1:
+            raise LLMUnavailable("ran out of time for this answer; try a narrower question")
+        timeout = min(timeout, remaining)
+        _claim_slot(scope)
+
     try:
-        with urllib.request.urlopen(request, timeout=timeout or timeout_seconds()) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]

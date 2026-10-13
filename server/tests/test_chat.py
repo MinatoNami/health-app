@@ -8,6 +8,7 @@ messages, and that retention still applies to a feature whose whole point is
 remembering things.
 """
 
+import io
 import json
 from datetime import timedelta
 from unittest import mock
@@ -1879,3 +1880,14 @@ class ChatRetentionTests(TestCase):
 
         session.refresh_from_db()
         self.assertEqual(session.summary, "Recent notes.")
+
+    def test_the_scheduled_command_prunes_without_anyone_asking(self):
+        """Retention used to run only when a question was asked, so a quiet
+        month kept every expired turn. The daily cron calls this instead."""
+        old = InsightTurn.objects.create(question="asked a month ago")
+        recent = InsightTurn.objects.create(question="asked today")
+        self.expire(old)
+
+        call_command("prune_insights", stdout=io.StringIO())
+
+        self.assertEqual(list(InsightTurn.objects.values_list("pk", flat=True)), [recent.pk])

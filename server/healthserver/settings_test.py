@@ -19,6 +19,12 @@ os.environ.setdefault("POSTGRES_PASSWORD", "test-only")
 # about detection patch the client directly.
 os.environ.setdefault("LLM_CONTEXT_TOKENS", "8192")
 
+# Forced, not defaulted: the LLM tests assume the layer is on, and a shell that
+# happens to export LLM_ENABLED=0 — a sensible thing to have while the model
+# laptop is away — turned three dozen of them into failures with nothing to do
+# with the change being tested.
+os.environ["LLM_ENABLED"] = "1"
+
 from .settings import *  # noqa: F403,E402
 
 DATABASES = {

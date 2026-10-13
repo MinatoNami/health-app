@@ -2,7 +2,8 @@
 #
 # Deploys the Health Exporter ingest server to the backend host over SSH.
 #
-#   ./deploy.sh                 build, push, migrate, reload nginx, verify
+#   ./deploy.sh                 build, test in the image, push, migrate,
+#                               reload nginx, verify
 #   ./deploy.sh user <name>     create/reset a login the app can sign in with
 #   ./deploy.sh admin <name>    create a Django admin account for /admin/
 #   ./deploy.sh token <label>   mint a bearer token directly (shown once)
@@ -20,6 +21,9 @@
 #   ./deploy.sh backup-key      show (or generate) the backup passphrase
 #   ./deploy.sh backup-verify   restore the newest backup into a scratch DB
 #   ./deploy.sh backup-pull     copy backups off the server to this machine
+#   ./deploy.sh offsite <repo>  nightly restic copy to another machine
+#                               (sftp:user@host:/path); also: offsite show,
+#                               offsite check, offsite key, offsite off
 #   ./deploy.sh status          container + endpoint health
 #   ./deploy.sh logs [n]        tail application logs
 #   ./deploy.sh migrate         run migrations only
@@ -284,8 +288,43 @@ configure_nginx() {
   ok "nginx reloaded"
 }
 
+# Built under its own tag so a failure never touches the image the running
+# container (or the next `up -d` after a reboot) would use.
+CANDIDATE_IMAGE="health-server-web:candidate"
+
+test_in_image() {
+  step "Testing the new image"
+  # Straight after push_code, which only syncs source into the build directory:
+  # nothing live has changed yet. Everything after it — the dashboard files,
+  # nginx, the containers, migrations — only happens if this passes.
+  #
+  # Inside the image rather than on this laptop: the image is Python 3.12 on the
+  # locked dependencies, a local venv is whatever it is, and the image is what
+  # will serve requests.
+  #
+  # --network none: the suite needs no network (SQLite settings, LLM calls
+  # mocked), and cutting it off proves that rather than trusting it — a test
+  # that quietly reached the model server or the live database would fail
+  # here instead of passing because the laptop happened to be awake.
+  if ! remote "cd $REMOTE_DIR && docker build -q -t $CANDIDATE_IMAGE ." >/dev/null; then
+    remote "cd $REMOTE_DIR && docker build -t $CANDIDATE_IMAGE ." 2>&1 | tail -30 | sed 's/^/    /'
+    die "image build failed; the running server was not touched"
+  fi
+  ok "image built"
+
+  local output
+  if ! output="$(remote "docker run --rm --network none $CANDIDATE_IMAGE \
+        python manage.py test tests --settings=healthserver.settings_test --noinput" 2>&1)"; then
+    printf "%s\n" "$output" | grep -E "^(FAIL|ERROR):|^Ran |^FAILED|Error" | head -40 | sed 's/^/    /'
+    die "tests failed in the new image; the running server was not touched"
+  fi
+  ok "$(printf "%s\n" "$output" | grep -E "^Ran " | head -1) — passed"
+}
+
 start_services() {
   step "Building and starting containers"
+  # Rebuilds from the layer cache the test step just filled, so this is the
+  # same image that passed, not a second resolution of anything.
   compose "up -d --build" 2>&1 | sed 's/^/    /'
   ok "containers up"
 }
@@ -365,6 +404,7 @@ EOF
 cmd_deploy() {
   preflight
   push_code
+  test_in_image
   build_dashboard
   ensure_env
   ensure_cert
@@ -402,6 +442,14 @@ install_backups() {
   step "Backups"
   remote "sudo install -m 755 -o root -g root /dev/stdin /usr/local/bin/health-backup" \
     < "$LOCAL_DIR/deploy/backup.sh"
+  remote "sudo install -m 755 -o root -g root /dev/stdin /usr/local/bin/health-restic" \
+    < "$LOCAL_DIR/deploy/restic.sh"
+  # A rebuilt server keeps its .env but not its packages; without this the
+  # first night after a reinstall would fail the off-host copy.
+  if remote "grep -q '^RESTIC_REPOSITORY=.\\+' $REMOTE_DIR/.env"; then
+    remote "command -v restic >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq restic)" >/dev/null \
+      || warn "restic is not installed; tonight's off-host copy will fail"
+  fi
   remote "sudo mkdir -p $BACKUP_DIR_REMOTE && sudo chown ubuntu:ubuntu $BACKUP_DIR_REMOTE"
 
   # 03:20 rather than 03:00: every other cron on the box fires on the hour, and
@@ -589,6 +637,118 @@ llm_default_url() {
   [ -n "$name" ] && printf "http://%s:1234/v1" "$name"
 }
 
+# --- Off-host backups ---------------------------------------------------------
+
+OFFSITE_KEY="/home/ubuntu/.ssh/health-backup"
+
+cmd_offsite() {
+  require_host
+
+  case "${1:-show}" in
+    show)
+      if ! remote "grep -q '^RESTIC_REPOSITORY=.\\+' $REMOTE_DIR/.env"; then
+        info "no off-host repository — backups exist only on this server"
+        info "set one up: ./deploy.sh offsite sftp:user@host:/path"
+        return 0
+      fi
+      remote "sed -n 's/^RESTIC_REPOSITORY=/repository: /p' $REMOTE_DIR/.env" | sed 's/^/    /'
+      step "Newest snapshots"
+      remote "health-restic snapshots --compact --latest 3" 2>&1 | sed 's/^/    /'
+      return 0
+      ;;
+    check)
+      step "Reading back 5% of the off-host repository"
+      remote "health-restic check --read-data-subset=5%" 2>&1 | sed 's/^/    /'
+      return 0
+      ;;
+    key)
+      local pass
+      pass=$(remote "sed -n 's/^RESTIC_PASSWORD=//p' $REMOTE_DIR/.env | head -1")
+      [ -n "$pass" ] || die "no repository password yet — run ./deploy.sh offsite <repository> first"
+      cat <<EOF
+
+    Off-host repository password:
+
+      ${bold}${pass}${reset}
+
+    ${yellow}Store this in a password manager now, next to the backup passphrase.${reset}
+    The repository is useless without it, and the only other copy is in .env on
+    the server whose loss is the reason the repository exists.
+
+EOF
+      return 0
+      ;;
+    off)
+      set_env_var "RESTIC_REPOSITORY" ""
+      ok "off-host copies disabled (the repository itself is left as it is)"
+      return 0
+      ;;
+  esac
+
+  local repo="$1"
+  case "$repo" in
+    sftp:*@*:/*) ;;
+    *) die "expected sftp:user@host:/absolute/path, got '$repo'
+    ./deploy.sh offsite sftp:backup@nas.tail03bec9.ts.net:/srv/restic/health" ;;
+  esac
+  local target="${repo#sftp:}"; target="${target%%:*}"
+
+  step "restic"
+  remote "command -v restic >/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq restic)" >/dev/null \
+    || die "could not install restic on the server"
+  ok "$(remote 'restic version' | cut -d' ' -f1-2)"
+  remote "sudo install -m 755 -o root -g root /dev/stdin /usr/local/bin/health-restic" \
+    < "$LOCAL_DIR/deploy/restic.sh"
+
+  step "SSH key for the backup machine"
+  # Generated on the server and never copied off it: the private half only
+  # needs to exist where the backup runs.
+  remote "test -f $OFFSITE_KEY || ssh-keygen -q -t ed25519 -N '' -C 'health-backup@$SSH_HOST' -f $OFFSITE_KEY"
+  if ! remote "ssh -i $OFFSITE_KEY -o BatchMode=yes -o ConnectTimeout=15 \
+                 -o StrictHostKeyChecking=accept-new $target true" >/dev/null 2>&1; then
+    local pub
+    pub=$(remote "cat $OFFSITE_KEY.pub")
+    cat <<EOF
+
+    The server cannot log in to ${bold}$target${reset} yet. On that machine, add this
+    line to the ~/.ssh/authorized_keys of the account in the repository URL:
+
+      restrict $pub
+
+    ${bold}restrict${reset} turns off pty, forwarding and agent access for this key;
+    SFTP, which is all restic needs, still works. A dedicated account that owns
+    only the backup directory is better still.
+
+    Then run this command again:  ./deploy.sh offsite $repo
+
+EOF
+    exit 1
+  fi
+  ok "the server can reach $target"
+
+  step "Repository"
+  remote "grep -q '^RESTIC_PASSWORD=.\\+' $REMOTE_DIR/.env" \
+    || set_env_var "RESTIC_PASSWORD" "$(openssl rand -base64 36 | tr -d '\n=+/')"
+  set_env_var "RESTIC_REPOSITORY" "$repo"
+  # `cat config` succeeds only on an initialised repository this password
+  # opens. Anything else is either "not there yet" (init) or "there, but not
+  # ours" (init then fails loudly rather than overwriting it).
+  if remote "health-restic cat config" >/dev/null 2>&1; then
+    ok "existing repository opens with the stored password"
+  else
+    remote "health-restic init" 2>&1 | sed 's/^/    /'
+    remote "health-restic cat config" >/dev/null 2>&1 \
+      || die "restic could not open or initialise $repo — if it already exists, it was made with a different password"
+    ok "repository initialised"
+  fi
+
+  step "First off-host backup"
+  remote "/usr/local/bin/health-backup" 2>&1 | sed 's/^/    /'
+  remote "health-restic snapshots --compact --latest 1" 2>&1 | sed 's/^/    /'
+
+  warn "save the repository password: ./deploy.sh offsite key"
+}
+
 set_env_var() {
   # Replaces the key if present, appends it otherwise. Idempotent, and leaves
   # every other secret in .env untouched.
@@ -736,8 +896,12 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Monday morning. --skip-if-unreachable because the model lives on a laptop and
 # a shut laptop is the normal case, not a fault worth mailing about.
 30 8 * * 1 ubuntu cd $REMOTE_DIR && docker compose exec -T web python manage.py weekly_review --skip-if-unreachable >> /var/log/health-freshness.log 2>&1
+# Retention. Asking a question also prunes, but a retention policy that only
+# runs while someone is chatting is not one. Before the 03:20 backup, so expired
+# turns stop reaching new backups the same night.
+10 3 * * * ubuntu cd $REMOTE_DIR && docker compose exec -T web python manage.py prune_insights >> /var/log/health-freshness.log 2>&1
 CRON"
-  ok "freshness daily at 09:00, weekly review Mondays at 08:30"
+  ok "freshness daily at 09:00, weekly review Mondays at 08:30, retention daily at 03:10"
   info "→ /var/log/health-freshness.log"
 }
 
@@ -748,6 +912,7 @@ cmd_purge() {
   step "Permanent deletion"
   warn "this deletes every health record, batch, goal and stored question."
   warn "backups in /var/backups/health are NOT touched — delete those separately"
+  warn "and so is the off-host restic repository, if one is set up (./deploy.sh offsite)"
   warn "if you mean it, or a restore will bring all of it back."
   confirm "permanently delete all health data?" || { info "aborted"; exit 0; }
   ssh -t "$SSH_HOST" "cd $REMOTE_DIR && docker compose exec -T web python manage.py purge_health_data --confirm"
@@ -790,6 +955,7 @@ case "${1:-deploy}" in
   backup-pull) shift; cmd_backup_pull "$@" ;;
   backup-key) shift; cmd_backup_key "$@" ;;
   backup-verify) cmd_backup_verify ;;
+  offsite) shift; cmd_offsite "$@" ;;
   rotate-cert) cmd_rotate_cert ;;
   token)   shift; cmd_token "$@" ;;
   pin)     cmd_pin ;;
@@ -801,5 +967,5 @@ case "${1:-deploy}" in
   migrate) cmd_migrate ;;
   shell)   cmd_shell ;;
   destroy) cmd_destroy ;;
-  *)       die "unknown command '$1' (deploy, user, admin, token, pin, llm, rotate-cert, backup, backup-verify, backup-pull, status, logs, migrate, shell, destroy)" ;;
+  *)       die "unknown command '$1' (deploy, user, admin, token, pin, llm, rotate-cert, backup, backup-verify, backup-pull, offsite, status, logs, migrate, shell, destroy)" ;;
 esac

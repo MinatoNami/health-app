@@ -87,8 +87,10 @@ that runs continuously in the background, the paid Developer Program is worth it
 
 ## What comes out
 
-NDJSON — one JSON object per line — in `Documents/Outbox/`. Reachable from the
-Files app under *On My iPhone → Health Exporter*, or via the share sheet on the
+NDJSON — one JSON object per line — in the app's private
+`Library/Application Support/HealthExporter/Outbox/`. Not visible in the Files
+app: two weeks of raw health data should not be browsable from any unlocked
+phone or paired Mac. To get a file out by hand, use the share sheet on the
 Exports tab.
 
 First line of every file is a header:
@@ -212,7 +214,11 @@ Any other endpoint needs to:
   while the batch is still being written — that tells the client to delete its
   only other copy.
 - **Use 5xx / 429 for "try later"** and 4xx for "never going to work." The client
-  retries the former with backoff and parks the latter rather than looping.
+  retries the former with backoff — honouring a numeric `Retry-After`, up to 60s
+  — and parks the latter rather than looping. Two batches in a row that exhaust
+  their retries pause the run: the rest stay queued, and each later run tries a
+  single batch once until one lands. An unreachable server costs one request a
+  run, not minutes per batch.
 
 Batches that fail stay in the outbox and appear on the Exports tab.
 

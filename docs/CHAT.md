@@ -150,7 +150,9 @@ curl -sH "Authorization: Bearer $TOKEN" 'https://<host>/v1/chat/messages?rating=
 
 Messages are deleted after `INSIGHT_RETENTION_DAYS` (30), and pruning takes the
 conversations it empties — a sidebar listing month-old chats that open blank
-reads as data loss rather than as the policy working.
+reads as data loss rather than as the policy working. Pruning runs whenever a
+question is asked and daily at 03:10 from cron (`manage.py prune_insights`), so
+the window holds even when nobody is chatting.
 
 Two things survive differently:
 

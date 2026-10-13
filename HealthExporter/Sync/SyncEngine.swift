@@ -54,6 +54,14 @@ final class SyncEngine: ObservableObject {
         /// whether anything arrived, and conflating the two is what let weeks
         /// of failed uploads sit behind a recent-looking timestamp.
         var lastDeliveryAt: Date?
+        /// When rollups were last re-emitted over the whole backfill history
+        /// rather than the rolling lookback. `nil` means it has not happened on
+        /// this install, which the next full sync treats as "do it now".
+        ///
+        /// Optional on purpose, and every field added here has to be: settings
+        /// are decoded whole, and a missing non-optional key fails the decode
+        /// and resets everything — server address included — to defaults.
+        var rollupsRebuiltAt: Date?
     }
 
     /// Result of the last manual Test Connection.
@@ -67,6 +75,8 @@ final class SyncEngine: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lastSummary: String?
     @Published private(set) var pendingBatches: Int = 0
+    /// Batches the server refused for their content, set aside out of the queue.
+    @Published private(set) var rejectedBatches: Int = 0
     @Published private(set) var connectionTest: ConnectionTest = .untested
     @Published var settings: Settings {
         didSet { settingsStore.mutate { $0 = settings } }
@@ -212,6 +222,18 @@ final class SyncEngine: ObservableObject {
             // HealthKit is encrypted while locked. Not an error — just not now.
             phase = .waitingForUnlock
             Log.shared.info("sync", "Deferred \(reason): device locked, HealthKit unreadable")
+            // Reading has to wait; uploading does not. Spooled batches are
+            // readable from first unlock on, and the overnight processing task —
+            // locked and charging, the longest window iOS ever gives — used to
+            // return here having sent nothing.
+            //
+            // In flight like any other sync while it does: the await suspends,
+            // and an overlapping call must queue behind it rather than pass the
+            // gate above and deliver the same files.
+            isSyncing = true
+            await deliverPending()
+            isSyncing = false
+            phase = .waitingForUnlock
             return
         }
 
@@ -252,7 +274,7 @@ final class SyncEngine: ObservableObject {
             }
         }
 
-        totalEmitted += await syncStatistics()
+        totalEmitted += await syncStatisticsOrRebuild()
         totalEmitted += await emitCharacteristicsIfNeeded()
 
         await deliverPending()
@@ -354,8 +376,9 @@ final class SyncEngine: ObservableObject {
 
             if !page.records.isEmpty {
                 // Encode and write happen off the main actor too; the await is
-                // what keeps the ordering below honest.
-                await Outbox.shared.write(page.records)
+                // what keeps the ordering below honest. A failed write throws
+                // here, before the anchor below can move past the page.
+                try await Outbox.shared.write(page.records)
                 emitted += page.records.count
             }
 
@@ -385,11 +408,72 @@ final class SyncEngine: ObservableObject {
 
     // MARK: - Statistics
 
-    private func syncStatistics() async -> Int {
-        let end = Date()
-        let start = Calendar.current.date(byAdding: .day,
-                                          value: -settings.statisticsLookbackDays,
-                                          to: end) ?? end
+    /// The window daily rollups are read over: from local midnight
+    /// `lookbackDays` ago up to `now`.
+    ///
+    /// The start has to be a midnight. Rollups are keyed by day and the server
+    /// keeps the last value it is sent for each, so a window starting at "now
+    /// minus 90 days" made the oldest bucket a partial day — only the samples
+    /// after the current time of day — and that partial total overwrote the
+    /// complete one the day before. With hourly syncs every day older than the
+    /// lookback ended up stored as roughly its final hour.
+    nonisolated static func statisticsWindow(
+        now: Date, lookbackDays: Int, calendar: Calendar = .current
+    ) -> (start: Date, end: Date) {
+        let today = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -lookbackDays, to: today) ?? today
+        return (start, now)
+    }
+
+    /// Days from the backfill cutoff to today: the lookback that re-emits
+    /// every daily rollup this install could ever have sent.
+    nonisolated static func fullHistoryDays(
+        backfillStart: Date, now: Date, calendar: Calendar = .current
+    ) -> Int {
+        let days = calendar.dateComponents(
+            [.day], from: calendar.startOfDay(for: backfillStart), to: calendar.startOfDay(for: now)
+        ).day ?? 0
+        return max(days, 0)
+    }
+
+    /// Asks the next full sync to re-emit rollups over the whole history.
+    func rebuildDailyTotals() {
+        settings.rollupsRebuiltAt = nil
+        Log.shared.info("stats", "Full rollup rebuild requested")
+        Task { await syncAll(reason: "rebuild daily totals") }
+    }
+
+    /// The rolling lookback, or — once per install, and again on request — the
+    /// whole backfill history.
+    ///
+    /// The once-per-install pass exists because of a bug: the window used to
+    /// start partway through a day, so each day aging out of the lookback was
+    /// overwritten on the server with a partial total. Those days are past the
+    /// rolling window by definition, so only a pass this wide reaches them. It
+    /// is a one-off rather than a bigger lookback because the lookback is paid
+    /// on every sync; two years of sixteen metrics is ~12k records, fine once
+    /// and wasteful hourly.
+    private func syncStatisticsOrRebuild() async -> Int {
+        guard settings.rollupsRebuiltAt == nil else {
+            return await syncStatistics().emitted
+        }
+        let days = SyncEngine.fullHistoryDays(backfillStart: settings.backfillStartDate, now: Date())
+        Log.shared.info("stats", "Rebuilding daily rollups over \(days) days")
+        let result = await syncStatistics(lookbackDays: max(days, settings.statisticsLookbackDays))
+        // Only a pass that read every metric and spooled the lot counts; a
+        // partial one (locked mid-way, full disk) is retried next sync.
+        if result.complete {
+            settings.rollupsRebuiltAt = Date()
+            Log.shared.info("stats", "Rollup rebuild complete")
+        }
+        return result.emitted
+    }
+
+    private func syncStatistics(lookbackDays: Int? = nil) async -> (emitted: Int, complete: Bool) {
+        let (start, end) = SyncEngine.statisticsWindow(
+            now: Date(), lookbackDays: lookbackDays ?? settings.statisticsLookbackDays
+        )
+        var complete = true
         var emitted: [HealthRecord] = []
 
         // Rollups have to follow the same enabled list the raw samples do.
@@ -416,14 +500,22 @@ final class SyncEngine: ObservableObject {
                     }
                 }
             } catch {
+                complete = false
                 Log.shared.debug("stats", "\(name): \(error.localizedDescription)")
             }
         }
 
-        guard !emitted.isEmpty else { return 0 }
-        await Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
+        guard !emitted.isEmpty else { return (0, complete) }
+        do {
+            try await Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
+        } catch {
+            // Nothing to roll back: rollups are recomputed from scratch on the
+            // next run, so a lost write here costs one cycle, not data.
+            Log.shared.error("stats", "Rollups not spooled: \(error.localizedDescription)")
+            return (0, false)
+        }
         Log.shared.info("stats", "Emitted \(emitted.count) daily rollups")
-        return emitted.count
+        return (emitted.count, complete)
     }
 
     // MARK: - Characteristics
@@ -446,7 +538,14 @@ final class SyncEngine: ObservableObject {
         guard Date().timeIntervalSince(last) > 30 * 86_400 else { return 0 }
         let records = reader.characteristics()
         guard !records.isEmpty else { return 0 }
-        await Outbox.shared.write(records)
+        do {
+            try await Outbox.shared.write(records)
+        } catch {
+            // Leave `lastEmittedAt` alone so the next run tries again rather
+            // than waiting a month.
+            Log.shared.error("sync", "Characteristics not spooled: \(error.localizedDescription)")
+            return 0
+        }
         characteristicsStore.mutate { $0.lastEmittedAt = Date() }
         return records.count
     }
@@ -546,6 +645,27 @@ final class SyncEngine: ObservableObject {
     // MARK: - Delivery
 
     /// Hands pending batches to the configured sink with bounded retries.
+    /// Responses that are about the batch itself — malformed, too large, a
+    /// schema this server does not speak. Deliberately not 404 or the other
+    /// permanent codes: a mistyped server path fails *every* batch that way,
+    /// and setting the whole queue aside would hide a setting that is simply
+    /// wrong.
+    private static let contentRejectionStatuses: Set<Int> = [400, 413, 415, 422]
+
+    private var isDelivering = false
+
+    /// See `UploadBreaker`. In memory: a relaunch starts with full patience.
+    private var uploadBreaker = UploadBreaker()
+
+    static let unreachableMessage = "Server unreachable — uploads paused, will retry"
+
+    /// Sends rejected batches round again, for after the server is fixed.
+    func retryRejectedBatches() {
+        Outbox.shared.requeueRejected()
+        refreshCounts()
+        Task { await deliverPending() }
+    }
+
     func deliverPending() async {
         let sink: ExportSink = settings.sink.isUsable
             ? HTTPSink(configuration: settings.sink)
@@ -564,6 +684,24 @@ final class SyncEngine: ObservableObject {
             return
         }
 
+        await deliver(pending, via: sink)
+    }
+
+    /// The delivery loop proper, apart from choosing the sink and listing the
+    /// queue — so tests can run it against a sink that fails on cue.
+    func deliver(_ pending: [Outbox.Batch], via sink: ExportSink) async {
+        // Serialised on its own, not only through `isSyncing`: the background
+        // refresh path and the retry button call this directly, and two passes
+        // over the same queue upload every batch twice and race to archive
+        // the same files. A caller arriving mid-pass is satisfied by the pass
+        // already under way.
+        guard !isDelivering else {
+            Log.shared.debug("deliver", "Delivery already in progress; not starting a second pass")
+            return
+        }
+        isDelivering = true
+        defer { isDelivering = false }
+
         // A revoked or expired token fails every batch identically. Without a
         // circuit breaker, a backlog of thousands of batches becomes thousands
         // of pointless 401s — minutes of radio, and the real problem buried at
@@ -571,12 +709,25 @@ final class SyncEngine: ObservableObject {
         var consecutiveAuthFailures = 0
         let authFailureLimit = 3
 
-        for (index, batch) in pending.enumerated() {
-            report(.delivering(remaining: pending.count - index))
-            var attempt = 0
-            var delay: UInt64 = 2_000_000_000 // 2s
+        if uploadBreaker.isOpen {
+            Log.shared.info("deliver", "Server was unreachable last run; probing with one batch")
+        }
 
-            while attempt < 4 {
+        for (index, batch) in pending.enumerated() {
+            // A background task that expires cancels this task. Finishing the
+            // batch in hand is fine; starting another is not.
+            if Task.isCancelled {
+                Log.shared.info("deliver", "Stopped: background time ran out; "
+                    + "\(pending.count - index) batch(es) left queued")
+                break
+            }
+            report(.delivering(remaining: pending.count - index))
+            let attempts = uploadBreaker.attemptsForNextBatch
+            var attempt = 0
+            var exhausted = false
+            var cancelled = false
+
+            while attempt < attempts {
                 attempt += 1
                 switch await sink.deliver(batch) {
                 case .success:
@@ -584,6 +735,13 @@ final class SyncEngine: ObservableObject {
                     Log.shared.info("deliver", "\(batch.displayName) accepted")
                     settings.lastDeliveryAt = Date()
                     consecutiveAuthFailures = 0
+                    if uploadBreaker.isOpen {
+                        Log.shared.info("deliver", "Server reachable again; resuming uploads")
+                        if case .failed(let message) = phase, message == Self.unreachableMessage {
+                            phase = .idle
+                        }
+                    }
+                    uploadBreaker.recordDelivered()
                     attempt = .max
                 case .failure(let error):
                     let sinkError = error as? SinkError
@@ -592,19 +750,63 @@ final class SyncEngine: ObservableObject {
                     } else if sinkError?.isRetryable != true {
                         consecutiveAuthFailures = 0
                     }
-                    if sinkError?.isRetryable == true, attempt < 4 {
-                        // Exponential backoff with jitter, capped.
-                        let jitter = UInt64.random(in: 0...500_000_000)
-                        try? await Task.sleep(nanoseconds: min(delay + jitter, 60_000_000_000))
-                        delay *= 2
+                    if sinkError?.isRetryable == true {
+                        guard attempt < attempts else {
+                            exhausted = true
+                            Log.shared.warn("deliver",
+                                "\(batch.displayName) not delivered after \(attempts) attempt(s): "
+                                + error.localizedDescription)
+                            break
+                        }
+                        var retryAfter: String?
+                        if case .retryable(_, let value, _) = sinkError { retryAfter = value }
+                        let wait = UploadBreaker.backoff(attempt: attempt, retryAfter: retryAfter)
+                        do {
+                            try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                        } catch {
+                            // Cancelled mid-backoff. This used to be `try?`,
+                            // which swallowed the cancellation and carried on
+                            // retrying after iOS had already taken the time back.
+                            cancelled = true
+                            attempt = .max
+                        }
+                    } else if case .permanent(let status, _) = sinkError,
+                              Self.contentRejectionStatuses.contains(status) {
+                        // The server read this batch and refused it. Left in
+                        // the outbox it was retried every run forever, and a
+                        // queue that never empties also switched off
+                        // reconciliation for good. Set it aside instead.
+                        Outbox.shared.reject(batch)
+                        Log.shared.error("deliver",
+                            "\(batch.displayName) rejected and set aside: \(error.localizedDescription)")
+                        uploadBreaker.recordAnswered()
+                        attempt = .max
                     } else {
                         // Permanent failure: park it. Looping forever on a 400
                         // just burns battery and hides the problem.
                         Log.shared.error("deliver",
                             "\(batch.displayName) parked: \(error.localizedDescription)")
+                        uploadBreaker.recordAnswered()
                         attempt = .max
                     }
                 }
+            }
+
+            if cancelled {
+                Log.shared.info("deliver", "Stopped: background time ran out; "
+                    + "\(pending.count - index) batch(es) left queued")
+                break
+            }
+
+            if exhausted, uploadBreaker.recordExhausted() {
+                // Stop rather than spend minutes per batch on the rest. Nothing
+                // is lost: they stay queued, and the next run probes with one.
+                phase = .failed(Self.unreachableMessage)
+                Log.shared.error("deliver",
+                    "Server unreachable; paused with \(pending.count - index) batch(es) queued. "
+                    + "The next sync tries one batch first.")
+                refreshCounts()
+                return
             }
 
             if consecutiveAuthFailures >= authFailureLimit {
@@ -1132,15 +1334,21 @@ final class SyncEngine: ObservableObject {
     /// the number back up. That is a queue reported as stuck with an empty
     /// outbox behind it: uploads working perfectly, and a UI saying otherwise.
     func refreshCounts() {
+        Task { await refreshCountsNow() }
+    }
+
+    /// The same read, awaited — for a caller about to decide something from the
+    /// count rather than merely display it.
+    func refreshCountsNow() async {
         pendingCountRequest += 1
         let request = pendingCountRequest
-        Task {
-            let count = await Outbox.shared.pendingCountOffMain()
-            // Somebody published a newer figure while this was reading. They
-            // know something this read does not.
-            guard request == pendingCountRequest else { return }
-            pendingBatches = count
-        }
+        let count = await Outbox.shared.pendingCountOffMain()
+        let rejected = await Outbox.shared.rejectedCountOffMain()
+        // Somebody published a newer figure while this was reading. They
+        // know something this read does not — about both counts.
+        guard request == pendingCountRequest else { return }
+        pendingBatches = count
+        rejectedBatches = rejected
     }
 
     /// Publishes a count directly, invalidating any read still in flight.

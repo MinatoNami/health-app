@@ -47,6 +47,12 @@ class SessionLoginView(APIView):
     throttle_scope = "login"
 
     def post(self, request):
+        # DRF exempts API views from Django's CSRF middleware and only checks
+        # the token for a request that is already authenticated — so the one
+        # POST made anonymously, this one, was never checked, whatever the
+        # csrf view above said. Without it another page can sign a visitor in
+        # to an account of its choosing.
+        SessionAuthentication().enforce_csrf(request)
         username = (request.data.get("username") or "").strip()
         password = request.data.get("password") or ""
         if not username or not password:

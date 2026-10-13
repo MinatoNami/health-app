@@ -124,6 +124,20 @@ class HeaderTests(IngestTestCase):
         response = self.post(ndjson(header_line()), **{"x-schema-version": "2"})
         self.assertEqual(response.status_code, 400)
 
+    def test_malformed_header_integers_are_permanent(self):
+        """A header that can never parse must be a 400, not a retryable 500 —
+        the phone retries 5xx forever. And it has to be a type check: int()
+        turned 1.5 and true into 1 and let them through."""
+        for field in ("record_count", "schema_version"):
+            for bad in ("abc", "3", 1.5, True, -1):
+                with self.subTest(field=field, value=bad):
+                    response = self.post(
+                        ndjson(header_line(batch_id=f"b-{field}-{bad}", **{field: bad})),
+                        key=f"bad-{field}-{bad}.ndjson",
+                    )
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn(field, response.json()["detail"])
+
     def test_second_header_is_rejected(self):
         body = ndjson(header_line(), quantity(), header_line(batch_id="batch-2"))
         response = self.post(body)

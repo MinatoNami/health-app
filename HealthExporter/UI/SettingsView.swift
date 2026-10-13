@@ -59,6 +59,15 @@ struct SettingsView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
+                    Button("Rebuild All Daily Totals") { engine.rebuildDailyTotals() }
+                    Text(engine.settings.rollupsRebuiltAt.map {
+                        "Re-sends one rollup per metric per day back to the backfill date, "
+                            + "once. Last done \($0.formatted(date: .abbreviated, time: .shortened))."
+                    } ?? "Re-sends one rollup per metric per day back to the backfill date, "
+                        + "once. Runs on the next sync.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
                 .listRowBackground(Ink.surface)
 
@@ -224,6 +233,18 @@ struct SettingsView: View {
                 Section(header: Text("Diagnostics").sectionLabelStyle()) {
                     NavigationLink("Batch Files & Log") { ExportsView() }
                     NavigationLink("Diagnostics") { DiagnosticsView() }
+                    if engine.rejectedBatches > 0 {
+                        Button("Retry \(engine.rejectedBatches) Rejected Batch"
+                               + (engine.rejectedBatches == 1 ? "" : "es")) {
+                            engine.retryRejectedBatches()
+                        }
+                        Text("The server refused these for their content — too large, "
+                             + "malformed, or a newer format than it understands. They "
+                             + "are kept on this phone. Retry once the server is updated.")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Ink.faint)
+                            .lineSpacing(2)
+                    }
                     Button("Reset Sync Cursors", role: .destructive) {
                         showResetConfirmation = true
                     }

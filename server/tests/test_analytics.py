@@ -10,11 +10,13 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import Client, TestCase
 
+from ingest import analytics
 from ingest.models import ApiToken, Batch, Device, Record
 
 
@@ -342,6 +344,55 @@ class ExportTests(AnalyticsTestCase):
         self.assertIn(self.client.get("/v1/export/records.csv").status_code, (401, 403))
 
 
+class RangeTimezoneTests(AnalyticsTestCase):
+    """A range is days in the zone the caller asked for, not the server's.
+
+    The bounds used to be Singapore midnights whatever `tz` said, while the
+    buckets inside them followed `tz` — so in Los Angeles "1 July" meant 09:00
+    on 30 June to 09:00 on 1 July, and both ends of every range read low.
+    """
+
+    LA = ZoneInfo("America/Los_Angeles")
+
+    def test_bounds_are_midnights_in_the_requested_zone(self):
+        start, end, _, _ = analytics.parse_range(
+            "2026-07-01", "2026-07-01", tz_name="America/Los_Angeles"
+        )
+        self.assertEqual(start, datetime(2026, 7, 1, tzinfo=self.LA))
+        self.assertEqual(end, datetime(2026, 7, 2, tzinfo=self.LA))
+
+    def test_cache_keys_take_the_resolved_zone(self):
+        self.assertEqual(analytics.canonical_tz("America/Los_Angeles"), "America/Los_Angeles")
+        self.assertIsNone(analytics.canonical_tz("Not/AZone"))
+        self.assertIsNone(analytics.canonical_tz("x" * 300))
+
+    def test_an_absurd_tz_falls_back_rather_than_failing(self):
+        response = self.client.get(
+            "/v1/analytics/overview?tz=" + "x" * 300, headers=self.auth()
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_no_zone_still_means_the_display_zone(self):
+        start, _, _, _ = analytics.parse_range("2026-07-01", "2026-07-01")
+        self.assertEqual(start, datetime(2026, 7, 1, tzinfo=analytics.zone(None)))
+
+    def rows_on_1_july_in_la(self):
+        return self.client.get(
+            "/v1/export/summary?from=2026-07-01&to=2026-07-01&tz=America/Los_Angeles",
+            headers=self.auth(),
+        ).json()["rows"]
+
+    def test_endpoint_includes_the_end_of_the_local_day(self):
+        # Late evening on 1 July in LA: already 2 July in Singapore.
+        self.make(id="late", value=1, start=datetime(2026, 7, 1, 23, 0, tzinfo=self.LA))
+        self.assertEqual(self.rows_on_1_july_in_la(), 1)
+
+    def test_endpoint_excludes_the_previous_local_day(self):
+        # Evening on 30 June in LA: already 1 July in Singapore.
+        self.make(id="early", value=1, start=datetime(2026, 6, 30, 20, 0, tzinfo=self.LA))
+        self.assertEqual(self.rows_on_1_july_in_la(), 0)
+
+
 class DashboardSessionTests(TestCase):
     def setUp(self):
         cache.clear()
@@ -361,6 +412,28 @@ class DashboardSessionTests(TestCase):
 
     def test_bad_password_rejected(self):
         self.assertEqual(self.login(password="nope").status_code, 401)
+
+    def test_login_without_the_csrf_token_is_refused(self):
+        """DRF only checks CSRF for a request already signed in, so the
+        anonymous login POST went unchecked — login CSRF."""
+        client = Client(enforce_csrf_checks=True)
+        response = client.post(
+            "/v1/auth/session",
+            data=json.dumps({"username": "dash", "password": "dash-p4ssw0rd-x"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_login_echoing_the_csrf_token_succeeds(self):
+        client = Client(enforce_csrf_checks=True)
+        token = client.get("/v1/auth/csrf").cookies["csrftoken"].value
+        response = client.post(
+            "/v1/auth/session",
+            data=json.dumps({"username": "dash", "password": "dash-p4ssw0rd-x"}),
+            content_type="application/json",
+            headers={"x-csrftoken": token},
+        )
+        self.assertEqual(response.status_code, 200)
 
     def test_me_reports_signed_out_before_login(self):
         self.assertFalse(self.client.get("/v1/auth/me").json()["authenticated"])

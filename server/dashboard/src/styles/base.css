@@ -15,7 +15,7 @@ button { font-family: inherit; cursor: pointer; }
 .spacer { flex: 1; }
 
 .muted { color: var(--text-muted); font-size: 12px; }
-.error { color: var(--status-critical); font-size: 12px; margin-top: 10px; }
+.error { color: var(--critical-text); font-size: 12px; margin-top: 10px; }
 .empty { padding: 28px 12px; text-align: center; color: var(--text-muted); font-size: 13px; }
 .hero { font-size: 48px; font-weight: 650; letter-spacing: -0.03em; line-height: 1; }
 

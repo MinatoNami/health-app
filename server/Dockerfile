@@ -6,14 +6,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# libpq is needed even with psycopg[binary] for the occasional pg_* client tool,
-# and curl is what the container healthcheck uses.
+# curl is what the container healthcheck uses. psycopg[binary] bundles its own
+# libpq, so nothing else is needed.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# The lock, not requirements.txt: the ranges there resolved afresh on every
+# build, so two deploys of the same commit could run different Django. Hashes
+# make pip refuse anything that is not byte-for-byte what was locked.
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY . .
 

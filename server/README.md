@@ -10,7 +10,7 @@ them in Postgres. Runs on `alena-server` behind nginx, reachable over Tailscale.
 ## Deploy
 
 ```bash
-./deploy.sh                 # build, push, migrate, reload nginx, verify
+./deploy.sh                 # push, test in the image, build, migrate, reload nginx, verify
 ./deploy.sh user lionel     # create a login the app can sign in with
 ./deploy.sh token my-phone  # mint a bearer token directly (shown once)
 ./deploy.sh pin             # certificate fingerprint (only needed if self-signed)
@@ -18,6 +18,7 @@ them in Postgres. Runs on `alena-server` behind nginx, reachable over Tailscale.
 ./deploy.sh backup          # run a database backup now
 ./deploy.sh backup-verify   # restore the newest backup into a scratch DB
 ./deploy.sh backup-pull     # copy backups off the server (~/health-backups)
+./deploy.sh offsite <repo>  # nightly restic copy to another machine
 ./deploy.sh status          # container + endpoint health
 ./deploy.sh logs            # tail application logs
 ```
@@ -29,6 +30,30 @@ never regenerated — redeploying does not rotate the pin or invalidate tokens.
 The script refuses to reload nginx if the config doesn't validate, and removes
 its own site first. This host already serves another app on 443; a bad reload
 would take that down too.
+
+**Nothing goes live until the tests pass in the new image.** Straight after the
+code is synced, the deploy builds the image under a separate `:candidate` tag
+and runs the whole suite inside it with networking switched off. A failed build
+or a failed test stops the deploy there: the dashboard files, nginx, the running
+container and the database are all still the previous version. The suite runs
+on SQLite, so this gate checks the image's Python and locked dependencies, not
+Postgres — see [Development](#development) for running it against the real
+database.
+
+### Dependencies
+
+`requirements.txt` holds the ranges the code is written against;
+`requirements.lock` is what the image installs — every package pinned, with
+hashes, so pip refuses anything that is not byte-for-byte what was locked and
+two builds of the same commit run the same code. To take an update, or after
+editing `requirements.txt`, regenerate the lock and deploy; the deploy's test
+step is what proves the new versions work:
+
+```bash
+uv pip compile requirements.txt --universal --python-version 3.12 --generate-hashes -o requirements.lock
+```
+
+`--python-version` must match the `FROM` line in the Dockerfile.
 
 ### First-time setup
 
@@ -61,9 +86,16 @@ token that can be revoked on its own. Signing out revokes server-side, so a copy
 of the token left anywhere else stops working too.
 
 Login is **throttled to 10/min per IP** (`LOGIN_RATE_LIMIT` in `.env`). It is
-the only endpoint that accepts a password, and therefore the only one worth
+the only API endpoint that accepts a password, and therefore the only one worth
 guessing at. Ingest is deliberately *not* throttled: the phone legitimately
 drains a backlog of batches back to back.
+
+The Django admin's login form takes the same passwords but is Django's own view,
+outside that throttle, so the proxy limits it instead: `POST
+/health-app/admin/login/` gets six quick attempts per client, then one every
+twelve seconds, and a 429 past that. alena-gateway does this in production;
+[deploy/nginx-health.conf](deploy/nginx-health.conf) does the same where the
+gateway is absent.
 
 The throttle counter lives in a **database-backed cache**, not Django's default
 `LocMemCache` — that one is per-process, so with two gunicorn workers a 10/min
@@ -368,9 +400,55 @@ is the same as having none.
 newest dump into a throwaway database, counts rows, and drops it. Verified at
 1,285,705 records.
 
-`backup-pull` is the part that matters for hardware failure — a backup on the
-same disk as the database only survives mistakes, not a dead drive. Worth
-running periodically, or wiring into a cron on your laptop.
+A backup on the same disk as the database only survives mistakes, not a dead
+drive. `backup-pull` copies the dumps to your laptop by hand; the off-host
+repository below does it every night without anyone remembering to.
+
+### Off-host copies (restic)
+
+```bash
+./deploy.sh offsite sftp:user@host:/path   # set up, or change the destination
+./deploy.sh offsite key                    # print the repository password — save it OFF the server
+./deploy.sh offsite                        # repository and newest snapshots
+./deploy.sh offsite check                  # read back 5% of the repository
+./deploy.sh offsite off                    # stop sending (leaves the repository alone)
+```
+
+The destination is any always-on machine on the tailnet that accepts SFTP. Setup
+installs restic, generates a dedicated SSH key on the server and — the first time
+— prints its public half with a `restrict` prefix to paste into that machine's
+`authorized_keys`; run the same command again afterwards. It then initialises the
+repository (or opens an existing one with the stored password) and runs a first
+backup.
+
+From then on the nightly job, after the local dump has been written and
+verified, streams that same dump — decrypted, uncompressed — into
+`restic backup --stdin`:
+
+- **restic encrypts it** with the repository password before it leaves the
+  server, so the backup machine only ever holds ciphertext.
+- **Plain SQL deduplicates.** Consecutive dumps of a database that mostly grows
+  are mostly the same bytes, so a night costs roughly what changed rather than
+  the dump's full size. A `.gpg` file would cost its full size every night.
+- **Retention** is 14 daily, 8 weekly and 24 monthly snapshots, pruned on
+  Sundays, when a rotating tenth of the stored data is also read back with
+  `restic check` — the whole repository is re-read every ten weeks.
+- **A failure never touches the local backup**, which has already succeeded. It
+  is logged to `/var/log/health-backup.log` as `OFFSITE FAILED`, pushed to the
+  alert webhook if one is configured (`./deploy.sh alerts`), and the job exits 2.
+
+Two secrets now matter, and both live only in `.env` on the server they protect:
+`BACKUP_PASSPHRASE` (`./deploy.sh backup-key`) and `RESTIC_PASSWORD`
+(`./deploy.sh offsite key`). **Save both somewhere else.** Without the restic
+password the repository is unreadable, which is the same as not having it.
+
+To restore from the repository, on the server or any machine with restic and
+the password:
+
+```bash
+health-restic snapshots
+health-restic dump latest health.sql | docker compose exec -T db psql -U health -d health
+```
 
 ---
 
@@ -473,13 +551,15 @@ the app — an empty pin falls back to normal system validation.
 ## Development
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements.lock
 DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-397 tests. The suite runs on SQLite so it needs no database server; the ingest
-path uses `ON CONFLICT DO UPDATE`, which both engines support.
+A local venv may be a different Python from the image's 3.12, so a pass here is
+a quick check, not the gate — the deploy re-runs the suite inside the image
+before anything ships. The suite runs on SQLite so it needs no database server;
+the ingest path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
 them assert a *refusal* rather than a calculation — any statistics library can
@@ -766,7 +846,8 @@ So the check runs on a timer and pushes, rather than waiting to be visited:
 ```
 
 Installed by `deploy.sh` as cron: freshness daily at 09:00, weekly review on
-Mondays at 08:30, both logging to `/var/log/health-freshness.log`.
+Mondays at 08:30, and question-and-answer retention (`prune_insights`) daily at
+03:10, all logging to `/var/log/health-freshness.log`.
 
 Two things keep it from becoming noise people mute:
 

@@ -40,7 +40,9 @@ iPhone  ──TLS (Let's Encrypt)──▶        Django + Postgres        (your
 ```
 
 - **On the phone:** a local SQLite queue and NDJSON batch files in the app's
-  container, excluded from iCloud backup. The server credential lives in the
+  private Application Support folder, excluded from iCloud backup and not
+  visible in the Files app or in Finder on a paired Mac. A batch leaves the
+  phone only by upload or by you sharing it from the Exports tab. The server credential lives in the
   Keychain, not in `UserDefaults`.
 - **In transit to the server:** HTTPS only, validated against system roots — the
   tailnet issues a real Let's Encrypt certificate for this host. The app refuses
@@ -95,7 +97,7 @@ been deleted.
 | Data | Retention |
 |---|---|
 | Health records | Indefinitely, until you delete them |
-| Uploaded batch files (phone) | Pruned after delivery; archive trimmed automatically |
+| Uploaded batch files (phone) | Moved to an archive after delivery, kept up to 14 days or 150 MB, whichever comes first |
 | Questions and generated answers | `INSIGHT_RETENTION_DAYS`, 30 by default, then deleted |
 | Chats and their titles | As above — a chat is deleted once retention has emptied it |
 | Conversation summaries (compaction) | Cleared once the questions they were written from have expired |
@@ -103,7 +105,8 @@ been deleted.
 | Answers you rated | Kept with the rating, for the same reason |
 | Project names and standing context | Until you delete the project. It is text you wrote, not health data |
 | The snapshot an answer was built from | **Never stored** — recomputed on demand |
-| Database backups | 30 days, encrypted with AES-256 |
+| Database backups | 30 days on the server, encrypted with AES-256 |
+| Off-host backups (if `./deploy.sh offsite` is set up) | 14 daily, 8 weekly and 24 monthly snapshots on the machine you name, encrypted by restic before they leave the server |
 | Application logs | Record counts, metric names and error reasons. No measurements. |
 
 Answers do not store the health figures they were built from. Those are
@@ -121,8 +124,12 @@ widen what a deletion has to reach.
 It prints what it will destroy and what it will **not** — which is the part
 people miss:
 
-1. **Backups.** `/var/backups/health/` and anything pulled to your laptop by
-   `./deploy.sh backup-pull`. A restore brings all of it back.
+1. **Backups.** `/var/backups/health/`, anything pulled to your laptop by
+   `./deploy.sh backup-pull`, and the off-host restic repository if one is set
+   up — up to two years of monthly snapshots. A restore brings all of it back.
+   To empty it, delete the repository's directory on the backup machine — or,
+   from the server, `health-restic forget --prune` with every ID that
+   `health-restic snapshots` lists.
 2. **The phone.** Apple Health still has the data, and the app will re-upload it
    on the next sync unless you reset the sync cursors in
    *Settings → Diagnostics*.

@@ -29,7 +29,7 @@ from rest_framework.decorators import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from . import correlations, health_analysis, patterns
+from . import analytics, correlations, health_analysis, patterns
 from .analytics_views import AUTH, AnalyticsThrottle, _FixedScopeThrottle
 from .auth import owner_of as _owner
 from .llm import client as llm_client
@@ -49,7 +49,7 @@ class InsightThrottle(_FixedScopeThrottle):
 
 
 def _tz(request) -> str | None:
-    return request.query_params.get("tz") or None
+    return analytics.canonical_tz(request.query_params.get("tz"))
 
 
 def _as_of(request) -> date | None:
@@ -443,19 +443,19 @@ def ask(request):
 
     try:
         payload = llm_service.answer(
-            question,
-            context=str(request.data.get("context") or "")[:1000],
-            tz_name=_tz(request) or request.data.get("tz"),
-            owner=_owner(request),
-            persist=request.data.get("remember") is not False,
-            # A session carries its own history without being asked; `follow_up`
-            # stays for callers that have no session, which is how the phone asks.
-            follow_up=bool(request.data.get("follow_up")),
-            session=session,
-            # Optional, and picked by the caller so it can start polling before
-            # this request returns. Ignored unless it looks like a UUID.
-            progress_key=str(request.data.get("progress_key") or "") or None,
-        )
+                question,
+                context=str(request.data.get("context") or "")[:1000],
+                tz_name=_tz(request) or request.data.get("tz"),
+                owner=_owner(request),
+                persist=request.data.get("remember") is not False,
+                # A session carries its own history without being asked; `follow_up`
+                # stays for callers that have no session, which is how the phone asks.
+                follow_up=bool(request.data.get("follow_up")),
+                session=session,
+                # Optional, and picked by the caller so it can start polling before
+                # this request returns. Ignored unless it looks like a UUID.
+                progress_key=str(request.data.get("progress_key") or "") or None,
+            )
     except Exception:
         _discard_if_empty(session, created)
         raise
@@ -511,10 +511,10 @@ def weekly_review(request):
 
     try:
         payload = llm_service.weekly_review(
-            tz_name=_tz(request) or request.data.get("tz"),
-            owner=_owner(request),
-            session=session,
-        )
+                tz_name=_tz(request) or request.data.get("tz"),
+                owner=_owner(request),
+                session=session,
+            )
     except Exception:
         _discard_if_empty(session, created)
         raise
