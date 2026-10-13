@@ -556,10 +556,10 @@ DJANGO_SECRET_KEY=dev POSTGRES_PASSWORD=dev \
   .venv/bin/python manage.py test tests --settings=healthserver.settings_test
 ```
 
-465 tests. A local venv may be a different Python from the image's 3.12, so a
-pass here is a quick check, not the gate — the deploy re-runs the suite inside
-the image before anything ships. The suite runs on SQLite so it needs no database server; the ingest
-path uses `ON CONFLICT DO UPDATE`, which both engines support.
+A local venv may be a different Python from the image's 3.12, so a pass here is
+a quick check, not the gate — the deploy re-runs the suite inside the image
+before anything ships. The suite runs on SQLite so it needs no database server;
+the ingest path uses `ON CONFLICT DO UPDATE`, which both engines support.
 
 The analysis tests are worth reading before changing that layer, because most of
 them assert a *refusal* rather than a calculation — any statistics library can
