@@ -197,3 +197,101 @@ final class BatchDirectoryMigrationTests: XCTestCase {
         }
     }
 }
+
+/// Against an unreachable server every batch used to get four attempts and up
+/// to four 60-second timeouts — minutes per batch, for the whole queue.
+final class UploadBreakerTests: XCTestCase {
+
+    func testOneBadBatchIsNotAnOutage() {
+        var breaker = UploadBreaker()
+        XCTAssertFalse(breaker.recordExhausted())
+        XCTAssertFalse(breaker.isOpen)
+        XCTAssertEqual(breaker.attemptsForNextBatch, UploadBreaker.attemptsPerBatch)
+    }
+
+    func testTwoInARowStopTheRunAndTheNextRunProbesOnce() {
+        var breaker = UploadBreaker()
+        _ = breaker.recordExhausted()
+        XCTAssertTrue(breaker.recordExhausted(), "the run should stop here")
+        XCTAssertTrue(breaker.isOpen)
+        XCTAssertEqual(breaker.attemptsForNextBatch, 1)
+
+        // The probe fails too: stop after that one request.
+        XCTAssertTrue(breaker.recordExhausted())
+    }
+
+    func testADeliveredProbeRestoresFullPatience() {
+        var breaker = UploadBreaker()
+        _ = breaker.recordExhausted()
+        _ = breaker.recordExhausted()
+
+        breaker.recordDelivered()
+
+        XCTAssertFalse(breaker.isOpen)
+        XCTAssertEqual(breaker.attemptsForNextBatch, UploadBreaker.attemptsPerBatch)
+        XCTAssertFalse(breaker.recordExhausted(), "the count starts again from zero")
+    }
+
+    func testAnAnswerFromTheServerBreaksTheStreak() {
+        // A rejected or parked batch means the server is there.
+        var breaker = UploadBreaker()
+        _ = breaker.recordExhausted()
+        breaker.recordAnswered()
+        XCTAssertFalse(breaker.recordExhausted())
+    }
+
+    func testBackoffHonoursRetryAfterWithinReason() {
+        XCTAssertEqual(UploadBreaker.backoff(attempt: 1, retryAfter: "30"), 30)
+        XCTAssertEqual(UploadBreaker.backoff(attempt: 1, retryAfter: "3600"), 60)
+        XCTAssertEqual(UploadBreaker.backoff(attempt: 1, retryAfter: nil, jitter: 0), 2)
+        XCTAssertEqual(UploadBreaker.backoff(attempt: 3, retryAfter: nil, jitter: 0), 8)
+        // An HTTP-date Retry-After is not a number of seconds; fall back.
+        XCTAssertEqual(UploadBreaker.backoff(attempt: 2, retryAfter: "Wed, 21 Oct 2026 07:28:00 GMT", jitter: 0), 4)
+    }
+}
+
+/// The loop itself, against a sink that fails on cue. `Retry-After: 0` keeps
+/// the backoff from sleeping, so this measures attempts rather than time.
+@MainActor
+final class DeliveryBreakerTests: XCTestCase {
+
+    private final class FakeSink: ExportSink {
+        let name = "fake"
+        let isConfigured = true
+        var reachable = false
+        var calls = 0
+        func deliver(_ batch: Outbox.Batch) async -> Result<Void, Error> {
+            calls += 1
+            return reachable
+                ? .success(())
+                : .failure(SinkError.retryable(status: 503, retryAfter: "0", underlying: nil))
+        }
+    }
+
+    private func batches(_ count: Int) -> [Outbox.Batch] {
+        (0..<count).map { i in
+            Outbox.Batch(url: URL(fileURLWithPath: "/nonexistent/batch-\(i)-1.ndjson"),
+                         createdAt: Date(), byteCount: 0, recordCount: 1)
+        }
+    }
+
+    func testAnUnreachableServerCostsTwoBatchesThenOneRequestPerRun() async {
+        let engine = SyncEngine(authorization: HealthAuthorization())
+        let sink = FakeSink()
+
+        await engine.deliver(batches(50), via: sink)
+        XCTAssertEqual(sink.calls, 2 * UploadBreaker.attemptsPerBatch,
+                       "two full batches of attempts, then stop — not 50 of them")
+        XCTAssertEqual(engine.phase, .failed(SyncEngine.unreachableMessage))
+
+        sink.calls = 0
+        await engine.deliver(batches(50), via: sink)
+        XCTAssertEqual(sink.calls, 1, "while open, a run is a single probe")
+
+        sink.calls = 0
+        sink.reachable = true
+        await engine.deliver(batches(5), via: sink)
+        XCTAssertEqual(sink.calls, 5, "a successful probe closes it and the run carries on")
+        XCTAssertNotEqual(engine.phase, .failed(SyncEngine.unreachableMessage))
+    }
+}

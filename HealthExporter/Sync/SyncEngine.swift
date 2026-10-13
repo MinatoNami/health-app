@@ -646,6 +646,11 @@ final class SyncEngine: ObservableObject {
     /// wrong.
     private static let contentRejectionStatuses: Set<Int> = [400, 413, 415, 422]
 
+    /// See `UploadBreaker`. In memory: a relaunch starts with full patience.
+    private var uploadBreaker = UploadBreaker()
+
+    static let unreachableMessage = "Server unreachable — uploads paused, will retry"
+
     /// Sends rejected batches round again, for after the server is fixed.
     func retryRejectedBatches() {
         Outbox.shared.requeueRejected()
@@ -671,6 +676,12 @@ final class SyncEngine: ObservableObject {
             return
         }
 
+        await deliver(pending, via: sink)
+    }
+
+    /// The delivery loop proper, apart from choosing the sink and listing the
+    /// queue — so tests can run it against a sink that fails on cue.
+    func deliver(_ pending: [Outbox.Batch], via sink: ExportSink) async {
         // A revoked or expired token fails every batch identically. Without a
         // circuit breaker, a backlog of thousands of batches becomes thousands
         // of pointless 401s — minutes of radio, and the real problem buried at
@@ -678,12 +689,25 @@ final class SyncEngine: ObservableObject {
         var consecutiveAuthFailures = 0
         let authFailureLimit = 3
 
-        for (index, batch) in pending.enumerated() {
-            report(.delivering(remaining: pending.count - index))
-            var attempt = 0
-            var delay: UInt64 = 2_000_000_000 // 2s
+        if uploadBreaker.isOpen {
+            Log.shared.info("deliver", "Server was unreachable last run; probing with one batch")
+        }
 
-            while attempt < 4 {
+        for (index, batch) in pending.enumerated() {
+            // A background task that expires cancels this task. Finishing the
+            // batch in hand is fine; starting another is not.
+            if Task.isCancelled {
+                Log.shared.info("deliver", "Stopped: background time ran out; "
+                    + "\(pending.count - index) batch(es) left queued")
+                break
+            }
+            report(.delivering(remaining: pending.count - index))
+            let attempts = uploadBreaker.attemptsForNextBatch
+            var attempt = 0
+            var exhausted = false
+            var cancelled = false
+
+            while attempt < attempts {
                 attempt += 1
                 switch await sink.deliver(batch) {
                 case .success:
@@ -691,6 +715,13 @@ final class SyncEngine: ObservableObject {
                     Log.shared.info("deliver", "\(batch.displayName) accepted")
                     settings.lastDeliveryAt = Date()
                     consecutiveAuthFailures = 0
+                    if uploadBreaker.isOpen {
+                        Log.shared.info("deliver", "Server reachable again; resuming uploads")
+                        if case .failed(let message) = phase, message == Self.unreachableMessage {
+                            phase = .idle
+                        }
+                    }
+                    uploadBreaker.recordDelivered()
                     attempt = .max
                 case .failure(let error):
                     let sinkError = error as? SinkError
@@ -699,11 +730,26 @@ final class SyncEngine: ObservableObject {
                     } else if sinkError?.isRetryable != true {
                         consecutiveAuthFailures = 0
                     }
-                    if sinkError?.isRetryable == true, attempt < 4 {
-                        // Exponential backoff with jitter, capped.
-                        let jitter = UInt64.random(in: 0...500_000_000)
-                        try? await Task.sleep(nanoseconds: min(delay + jitter, 60_000_000_000))
-                        delay *= 2
+                    if sinkError?.isRetryable == true {
+                        guard attempt < attempts else {
+                            exhausted = true
+                            Log.shared.warn("deliver",
+                                "\(batch.displayName) not delivered after \(attempts) attempt(s): "
+                                + error.localizedDescription)
+                            break
+                        }
+                        var retryAfter: String?
+                        if case .retryable(_, let value, _) = sinkError { retryAfter = value }
+                        let wait = UploadBreaker.backoff(attempt: attempt, retryAfter: retryAfter)
+                        do {
+                            try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                        } catch {
+                            // Cancelled mid-backoff. This used to be `try?`,
+                            // which swallowed the cancellation and carried on
+                            // retrying after iOS had already taken the time back.
+                            cancelled = true
+                            attempt = .max
+                        }
                     } else if case .permanent(let status, _) = sinkError,
                               Self.contentRejectionStatuses.contains(status) {
                         // The server read this batch and refused it. Left in
@@ -713,15 +759,34 @@ final class SyncEngine: ObservableObject {
                         Outbox.shared.reject(batch)
                         Log.shared.error("deliver",
                             "\(batch.displayName) rejected and set aside: \(error.localizedDescription)")
+                        uploadBreaker.recordAnswered()
                         attempt = .max
                     } else {
                         // Permanent failure: park it. Looping forever on a 400
                         // just burns battery and hides the problem.
                         Log.shared.error("deliver",
                             "\(batch.displayName) parked: \(error.localizedDescription)")
+                        uploadBreaker.recordAnswered()
                         attempt = .max
                     }
                 }
+            }
+
+            if cancelled {
+                Log.shared.info("deliver", "Stopped: background time ran out; "
+                    + "\(pending.count - index) batch(es) left queued")
+                break
+            }
+
+            if exhausted, uploadBreaker.recordExhausted() {
+                // Stop rather than spend minutes per batch on the rest. Nothing
+                // is lost: they stay queued, and the next run probes with one.
+                phase = .failed(Self.unreachableMessage)
+                Log.shared.error("deliver",
+                    "Server unreachable; paused with \(pending.count - index) batch(es) queued. "
+                    + "The next sync tries one batch first.")
+                refreshCounts()
+                return
             }
 
             if consecutiveAuthFailures >= authFailureLimit {

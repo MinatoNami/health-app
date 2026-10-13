@@ -13,7 +13,7 @@ protocol ExportSink {
     func deliver(_ batch: Outbox.Batch) async -> Result<Void, Error>
 }
 
-/// Default sink: leave the file on disk for the share sheet / Files app.
+/// Default sink: leave the file on disk for the share sheet.
 /// Always succeeds — the file *is* the delivery.
 struct FileSink: ExportSink {
     let name = "Local files"

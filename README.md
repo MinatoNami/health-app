@@ -214,7 +214,11 @@ Any other endpoint needs to:
   while the batch is still being written — that tells the client to delete its
   only other copy.
 - **Use 5xx / 429 for "try later"** and 4xx for "never going to work." The client
-  retries the former with backoff and parks the latter rather than looping.
+  retries the former with backoff — honouring a numeric `Retry-After`, up to 60s
+  — and parks the latter rather than looping. Two batches in a row that exhaust
+  their retries pause the run: the rest stay queued, and each later run tries a
+  single batch once until one lands. An unreachable server costs one request a
+  run, not minutes per batch.
 
 Batches that fail stay in the outbox and appear on the Exports tab.
 
