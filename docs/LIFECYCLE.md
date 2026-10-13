@@ -168,5 +168,5 @@ Two things to know before trusting a number:
     --source "Library/Application Support/HealthExporter/sync.log" --destination ./sync.log
   ```
 
-  The same command reaches `anchors.json` and `Documents/Outbox`, which is how you
+  The same command reaches `anchors.json` and `Outbox/` beside it, which is how you
   tell a stuck queue from a stuck counter.

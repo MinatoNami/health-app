@@ -40,7 +40,9 @@ iPhone  ──TLS (Let's Encrypt)──▶        Django + Postgres        (your
 ```
 
 - **On the phone:** a local SQLite queue and NDJSON batch files in the app's
-  container, excluded from iCloud backup. The server credential lives in the
+  private Application Support folder, excluded from iCloud backup and not
+  visible in the Files app or in Finder on a paired Mac. A batch leaves the
+  phone only by upload or by you sharing it from the Exports tab. The server credential lives in the
   Keychain, not in `UserDefaults`.
 - **In transit to the server:** HTTPS only, validated against system roots — the
   tailnet issues a real Let's Encrypt certificate for this host. The app refuses
@@ -95,7 +97,7 @@ been deleted.
 | Data | Retention |
 |---|---|
 | Health records | Indefinitely, until you delete them |
-| Uploaded batch files (phone) | Pruned after delivery; archive trimmed automatically |
+| Uploaded batch files (phone) | Moved to an archive after delivery, kept up to 14 days or 150 MB, whichever comes first |
 | Questions and generated answers | `INSIGHT_RETENTION_DAYS`, 30 by default, then deleted |
 | Chats and their titles | As above — a chat is deleted once retention has emptied it |
 | Conversation summaries (compaction) | Cleared once the questions they were written from have expired |

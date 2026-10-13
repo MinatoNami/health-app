@@ -146,3 +146,54 @@ final class RejectedBatchTests: XCTestCase {
         XCTAssertEqual(outbox.pendingBatches().map(\.id), [batch.id])
     }
 }
+
+/// Batch files moved out of Documents, where file sharing put them in the
+/// Files app. An install upgrading from that build has its queue there, and the
+/// queue is the only copy of data whose anchors have already moved on.
+final class BatchDirectoryMigrationTests: XCTestCase {
+
+    private func tempDir(_ name: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    func testQueuedBatchesMoveAndTheOldFolderGoes() throws {
+        let legacy = try tempDir("Documents-Outbox")
+        let dest = try tempDir("Support-Outbox")
+        for name in ["batch-a-1.ndjson", "batch-b-2.ndjson"] {
+            try Data("{}\n".utf8).write(to: legacy.appendingPathComponent(name))
+        }
+
+        XCTAssertEqual(Paths.moveContents(of: legacy, into: dest), 2)
+
+        let landed = try FileManager.default.contentsOfDirectory(atPath: dest.path).sorted()
+        XCTAssertEqual(landed, ["batch-a-1.ndjson", "batch-b-2.ndjson"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path),
+                       "an emptied Documents folder would still show up in Files")
+    }
+
+    func testAHalfFinishedMoveIsCompletedNotDuplicated() throws {
+        let legacy = try tempDir("Documents-Outbox")
+        let dest = try tempDir("Support-Outbox")
+        try Data("old\n".utf8).write(to: legacy.appendingPathComponent("batch-a-1.ndjson"))
+        try Data("moved\n".utf8).write(to: dest.appendingPathComponent("batch-a-1.ndjson"))
+
+        XCTAssertEqual(Paths.moveContents(of: legacy, into: dest), 0)
+
+        XCTAssertEqual(try String(contentsOf: dest.appendingPathComponent("batch-a-1.ndjson"), encoding: .utf8),
+                       "moved\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+    }
+
+    func testBatchDirectoriesAreNotInDocuments() throws {
+        let documents = try XCTUnwrap(FileManager.default.urls(for: .documentDirectory,
+                                                                 in: .userDomainMask).first)
+        for dir in [Paths.outboxDirectory, Paths.archiveDirectory, Paths.rejectedDirectory] {
+            let path = try XCTUnwrap(dir).standardizedFileURL.path
+            XCTAssertFalse(path.hasPrefix(documents.standardizedFileURL.path), path)
+        }
+    }
+}

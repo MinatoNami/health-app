@@ -240,7 +240,7 @@ struct SettingsView: View {
                         }
                         Text("The server refused these for their content — too large, "
                              + "malformed, or a newer format than it understands. They "
-                             + "are kept in Files → Rejected. Retry once the server is updated.")
+                             + "are kept on this phone. Retry once the server is updated.")
                             .font(.system(size: 11.5))
                             .foregroundStyle(Ink.faint)
                             .lineSpacing(2)

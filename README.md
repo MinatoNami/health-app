@@ -87,8 +87,10 @@ that runs continuously in the background, the paid Developer Program is worth it
 
 ## What comes out
 
-NDJSON — one JSON object per line — in `Documents/Outbox/`. Reachable from the
-Files app under *On My iPhone → Health Exporter*, or via the share sheet on the
+NDJSON — one JSON object per line — in the app's private
+`Library/Application Support/HealthExporter/Outbox/`. Not visible in the Files
+app: two weeks of raw health data should not be browsable from any unlocked
+phone or paired Mac. To get a file out by hand, use the share sheet on the
 Exports tab.
 
 First line of every file is a header:
