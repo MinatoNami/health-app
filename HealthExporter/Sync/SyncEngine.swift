@@ -75,6 +75,8 @@ final class SyncEngine: ObservableObject {
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var lastSummary: String?
     @Published private(set) var pendingBatches: Int = 0
+    /// Batches the server refused for their content, set aside out of the queue.
+    @Published private(set) var rejectedBatches: Int = 0
     @Published private(set) var connectionTest: ConnectionTest = .untested
     @Published var settings: Settings {
         didSet { settingsStore.mutate { $0 = settings } }
@@ -220,6 +222,12 @@ final class SyncEngine: ObservableObject {
             // HealthKit is encrypted while locked. Not an error — just not now.
             phase = .waitingForUnlock
             Log.shared.info("sync", "Deferred \(reason): device locked, HealthKit unreadable")
+            // Reading has to wait; uploading does not. Spooled batches are
+            // readable from first unlock on, and the overnight processing task —
+            // locked and charging, the longest window iOS ever gives — used to
+            // return here having sent nothing.
+            await deliverPending()
+            phase = .waitingForUnlock
             return
         }
 
@@ -631,6 +639,20 @@ final class SyncEngine: ObservableObject {
     // MARK: - Delivery
 
     /// Hands pending batches to the configured sink with bounded retries.
+    /// Responses that are about the batch itself — malformed, too large, a
+    /// schema this server does not speak. Deliberately not 404 or the other
+    /// permanent codes: a mistyped server path fails *every* batch that way,
+    /// and setting the whole queue aside would hide a setting that is simply
+    /// wrong.
+    private static let contentRejectionStatuses: Set<Int> = [400, 413, 415, 422]
+
+    /// Sends rejected batches round again, for after the server is fixed.
+    func retryRejectedBatches() {
+        Outbox.shared.requeueRejected()
+        refreshCounts()
+        Task { await deliverPending() }
+    }
+
     func deliverPending() async {
         let sink: ExportSink = settings.sink.isUsable
             ? HTTPSink(configuration: settings.sink)
@@ -682,6 +704,16 @@ final class SyncEngine: ObservableObject {
                         let jitter = UInt64.random(in: 0...500_000_000)
                         try? await Task.sleep(nanoseconds: min(delay + jitter, 60_000_000_000))
                         delay *= 2
+                    } else if case .permanent(let status, _) = sinkError,
+                              Self.contentRejectionStatuses.contains(status) {
+                        // The server read this batch and refused it. Left in
+                        // the outbox it was retried every run forever, and a
+                        // queue that never empties also switched off
+                        // reconciliation for good. Set it aside instead.
+                        Outbox.shared.reject(batch)
+                        Log.shared.error("deliver",
+                            "\(batch.displayName) rejected and set aside: \(error.localizedDescription)")
+                        attempt = .max
                     } else {
                         // Permanent failure: park it. Looping forever on a 400
                         // just burns battery and hides the problem.
@@ -1217,15 +1249,21 @@ final class SyncEngine: ObservableObject {
     /// the number back up. That is a queue reported as stuck with an empty
     /// outbox behind it: uploads working perfectly, and a UI saying otherwise.
     func refreshCounts() {
+        Task { await refreshCountsNow() }
+    }
+
+    /// The same read, awaited — for a caller about to decide something from the
+    /// count rather than merely display it.
+    func refreshCountsNow() async {
         pendingCountRequest += 1
         let request = pendingCountRequest
-        Task {
-            let count = await Outbox.shared.pendingCountOffMain()
-            // Somebody published a newer figure while this was reading. They
-            // know something this read does not.
-            guard request == pendingCountRequest else { return }
-            pendingBatches = count
-        }
+        let count = await Outbox.shared.pendingCountOffMain()
+        let rejected = await Outbox.shared.rejectedCountOffMain()
+        rejectedBatches = rejected
+        // Somebody published a newer figure while this was reading. They
+        // know something this read does not.
+        guard request == pendingCountRequest else { return }
+        pendingBatches = count
     }
 
     /// Publishes a count directly, invalidating any read still in flight.

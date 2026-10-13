@@ -148,17 +148,31 @@ final class BackgroundSync {
 
     // MARK: - Observers
 
-    /// Registers observers for every enabled type and asks HealthKit to wake us.
-    /// Cheap and safe to call on every launch — re-registering is idempotent, and
-    /// it is the only way to recover if delivery was previously switched off.
-    func startObserving() async {
-        guard authorization.isAvailable else { return }
+    /// Registers the observer queries alone — no delivery round trips — when
+    /// the app was launched without a window.
+    ///
+    /// HealthKit relaunches a terminated app in the background to deliver an
+    /// update, and the update goes to whichever `HKObserverQuery` exists by the
+    /// time launch finishes. `startObserving` only ran from the SwiftUI `.task`,
+    /// which a windowless background launch need not run, so on exactly those
+    /// launches no query was there to receive the wake or call its completion
+    /// handler — and three of those is how HealthKit decides to stop delivering.
+    /// Apple's guidance is to set the queries up in `didFinishLaunching`; this is
+    /// the part of `startObserving` cheap enough to run there.
+    func registerObserversAtLaunch() {
+        guard authorization.isAvailable, authorization.hasRequested else { return }
+        registerObservers(for: authorization.enabledSampleTypes)
+    }
+
+    /// Idempotent: the same set of types already observed is left alone, so the
+    /// launch-time registration and the later `startObserving` do not tear down
+    /// and re-create ~130 queries — each of which fires once on creation.
+    private func registerObservers(for types: Set<HKSampleType>) {
+        let wanted = Set(types.map(\.identifier))
+        if wanted == Set(activeObservers.map { $0.objectType?.identifier ?? "" }) { return }
 
         for query in activeObservers { authorization.healthStore.stop(query) }
         activeObservers.removeAll()
-
-        let types = authorization.enabledSampleTypes
-        guard !types.isEmpty else { return }
 
         for type in types {
             let identifier = type.identifier
@@ -187,8 +201,18 @@ final class BackgroundSync {
             authorization.healthStore.execute(query)
             activeObservers.append(query)
         }
+    }
 
-        // Registering the queries above is local and cheap. *This* is the
+    /// Registers observers for every enabled type and asks HealthKit to wake us.
+    /// Cheap and safe to call on every launch — re-registering is idempotent, and
+    /// it is the only way to recover if delivery was previously switched off.
+    func startObserving() async {
+        guard authorization.isAvailable else { return }
+        let types = authorization.enabledSampleTypes
+        registerObservers(for: types)
+        guard !types.isEmpty else { return }
+
+        // Registering the queries is local and cheap. *This* is the
         // expensive half, and it used to be a third of this loop: one awaited
         // XPC round trip to `healthd` per type, ~130 of them, one after
         // another — and because this class is `@MainActor`, every one of those

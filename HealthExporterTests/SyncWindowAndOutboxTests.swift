@@ -123,3 +123,26 @@ final class RollupRebuildWindowTests: XCTestCase {
         XCTAssertEqual(days, 0)
     }
 }
+
+/// A batch the server refused used to stay in the queue forever: retried every
+/// run, and keeping the queue from ever emptying, which is what reconciliation
+/// waits for. It is set aside now, and has to be able to come back.
+final class RejectedBatchTests: XCTestCase {
+
+    func testARejectedBatchLeavesTheQueueAndCanReturn() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("outbox-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let outbox = Outbox(directory: dir)
+
+        _ = try await outbox.write([HealthRecord.deletion(uuid: UUID())])
+        let batch = try XCTUnwrap(outbox.pendingBatches().first)
+
+        outbox.reject(batch)
+        XCTAssertEqual(outbox.pendingCount, 0, "a rejected batch must stop blocking the queue")
+
+        outbox.requeueRejected()
+        XCTAssertEqual(outbox.pendingBatches().map(\.id), [batch.id])
+    }
+}

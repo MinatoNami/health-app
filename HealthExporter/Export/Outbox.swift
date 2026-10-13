@@ -269,6 +269,37 @@ final class Outbox: @unchecked Sendable {
         }
     }
 
+    /// Moves a batch the server refused out of the queue. See
+    /// `Paths.rejectedDirectory`.
+    func reject(_ batch: Batch) {
+        guard let dir = Paths.rejectedDirectory else { return }
+        let target = dir.appendingPathComponent(batch.url.lastPathComponent)
+        try? FileManager.default.removeItem(at: target)
+        do {
+            try FileManager.default.moveItem(at: batch.url, to: target)
+        } catch {
+            Log.shared.error("outbox", "Could not set aside \(batch.displayName): \(error.localizedDescription)")
+        }
+    }
+
+    nonisolated func rejectedCountOffMain() async -> Int {
+        fileCount(in: Paths.rejectedDirectory)
+    }
+
+    /// Puts every rejected batch back in the queue. Their names keep the
+    /// creation stamp, so they rejoin in the order they were read.
+    @discardableResult
+    func requeueRejected() -> Int {
+        guard let dest = directory else { return 0 }
+        var moved = 0
+        for batch in batches(in: Paths.rejectedDirectory) {
+            let target = dest.appendingPathComponent(batch.url.lastPathComponent)
+            if (try? FileManager.default.moveItem(at: batch.url, to: target)) != nil { moved += 1 }
+        }
+        Log.shared.info("outbox", "Requeued \(moved) rejected batch(es)")
+        return moved
+    }
+
     func delete(_ batch: Batch) {
         try? FileManager.default.removeItem(at: batch.url)
     }

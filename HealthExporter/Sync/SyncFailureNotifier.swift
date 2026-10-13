@@ -122,10 +122,16 @@ final class SyncFailureNotifier: ObservableObject {
 
     /// Decides whether the current state deserves an alert, and posts one.
     ///
-    /// Cheap and safe to call often — it reads already-published state and does
-    /// no I/O beyond the notification centre. Called wherever the brief is
-    /// refreshed, which is every point at which the app learns anything new.
+    /// Cheap and safe to call often — a directory listing for the queue size,
+    /// then already-published state. Called wherever the brief is refreshed,
+    /// which is every point at which the app learns anything new.
     func evaluate() async {
+        // Read the queue size here rather than trusting the published one. That
+        // is refreshed by a fire-and-forget task and starts at 0, so on a cold
+        // background launch — the one time nobody is looking and this alert
+        // matters — it usually still read 0, which counted as "recovered" and
+        // withdrew a warning that was still true.
+        await engine.refreshCountsNow()
         guard let fault = currentFault() else {
             // Recovered. Withdraw a warning that is no longer true rather than
             // leaving it on the lock screen contradicting a working sync.

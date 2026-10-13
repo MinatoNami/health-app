@@ -37,6 +37,19 @@ enum Paths {
         return dir
     }()
 
+    /// Batches the server refused for their content. Out of the outbox so one
+    /// bad file stops blocking everything behind it, kept rather than deleted
+    /// so they can be retried once the server is fixed or upgraded.
+    static let rejectedDirectory: URL? = {
+        guard let base = FileManager.default.urls(for: .documentDirectory,
+                                                  in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("Rejected", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
+        excludeFromBackup(dir)
+        return dir
+    }()
+
     /// App Store Review Guideline 5.1.3 prohibits storing health information in
     /// iCloud, and iCloud Backup counts. Exclude every directory that can hold
     /// health data or anything derived from it.

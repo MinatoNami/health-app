@@ -239,6 +239,9 @@ final class AppServices: ObservableObject {
         LaunchTrace.mark("bootstrap-start")
         defer { LaunchTrace.mark("bootstrap-done") }
         backgroundSync.registerTaskHandlers()
+        // Before launch finishes, so a background relaunch by HealthKit has a
+        // query waiting to receive the update it was woken for.
+        backgroundSync.registerObserversAtLaunch()
         UNUserNotificationCenter.current().delegate = NotificationRouter.shared
         dailyBrief.registerCategory()
     }
