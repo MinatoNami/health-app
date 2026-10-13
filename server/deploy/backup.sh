@@ -102,3 +102,68 @@ echo "$(date -Is) backup ok: $TARGET ($SIZE)$([ "$ENCRYPTED" = 1 ] && echo ' [en
 find "$BACKUP_DIR" -name 'health-*.sql.gz' -type f -mtime "+$KEEP_DAYS" -print -delete
 find "$BACKUP_DIR" -name 'health-*.sql.gz.gpg' -type f -mtime "+$KEEP_DAYS" -print -delete
 find "$BACKUP_DIR" -name '*.partial' -type f -mtime +1 -delete
+
+# --- Off-host copy -------------------------------------------------------------
+#
+# Everything above still leaves the only copies on this machine, next to the
+# volume they back up: a dead disk or a lost host takes both. When a restic
+# repository is configured, the dump just written — and just verified — goes to
+# it as well.
+#
+# The *uncompressed* SQL goes in, not the .gpg file. restic encrypts on its own
+# and deduplicates by content, and consecutive dumps of a database that mostly
+# grows are mostly the same bytes — so a night costs roughly what changed. A gpg
+# file is different bytes every night and would cost its full size each time.
+#
+# A failure here never touches the local backup above, which has already
+# succeeded. It is reported loudly instead: to the log, to the alert webhook if
+# one is configured, and through the exit status.
+
+RESTIC_REPOSITORY="$(sed -n 's/^RESTIC_REPOSITORY=//p' "$COMPOSE_DIR/.env" 2>/dev/null | head -1 || true)"
+[ -n "$RESTIC_REPOSITORY" ] || exit 0
+
+alert() {
+    local url format
+    url="$(sed -n 's/^ALERT_WEBHOOK_URL=//p' "$COMPOSE_DIR/.env" 2>/dev/null | head -1 || true)"
+    format="$(sed -n 's/^ALERT_WEBHOOK_FORMAT=//p' "$COMPOSE_DIR/.env" 2>/dev/null | head -1 || true)"
+    [ -n "$url" ] || return 0
+    if [ "$format" = "json" ]; then
+        curl -fsS --max-time 15 -H 'Content-Type: application/json' \
+             -d "{\"text\": \"$1\"}" "$url" >/dev/null || true
+    else
+        curl -fsS --max-time 15 -d "$1" "$url" >/dev/null || true
+    fi
+}
+
+offsite_failed() {
+    echo "$(date -Is) OFFSITE FAILED: $1" >&2
+    alert "Health backup: the off-host copy failed ($1). The local backup is fine; the off-host one is now a night behind."
+    exit 2
+}
+
+read_dump() {
+    if [ "$ENCRYPTED" = 1 ]; then
+        gpg --batch --quiet --decrypt --pinentry-mode loopback \
+            --passphrase-fd 3 "$TARGET" 3<<<"$PASSPHRASE" | gunzip -c
+    else
+        gunzip -c "$TARGET"
+    fi
+}
+
+read_dump | health-restic backup --quiet --stdin --stdin-filename health.sql \
+                --tag nightly --host health-server \
+    || offsite_failed "restic backup exited non-zero"
+echo "$(date -Is) offsite ok: $RESTIC_REPOSITORY"
+
+# Weekly, on Sundays: thin the snapshots, then read back a slice of the data.
+# `check` without --read-data only proves the index is consistent; reading a
+# rotating tenth of the pack files catches bit rot on the far side in about
+# ten weeks without downloading the whole repository every time.
+if [ "$(date +%u)" = 7 ]; then
+    health-restic forget --quiet --host health-server --tag nightly \
+        --keep-daily 14 --keep-weekly 8 --keep-monthly 24 --prune \
+        || offsite_failed "restic forget/prune exited non-zero"
+    health-restic check --quiet --read-data-subset="$(( 10#$(date +%V) % 10 + 1 ))/10" \
+        || offsite_failed "restic check found a problem in the repository"
+    echo "$(date -Is) offsite pruned and checked"
+fi

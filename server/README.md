@@ -18,6 +18,7 @@ them in Postgres. Runs on `alena-server` behind nginx, reachable over Tailscale.
 ./deploy.sh backup          # run a database backup now
 ./deploy.sh backup-verify   # restore the newest backup into a scratch DB
 ./deploy.sh backup-pull     # copy backups off the server (~/health-backups)
+./deploy.sh offsite <repo>  # nightly restic copy to another machine
 ./deploy.sh status          # container + endpoint health
 ./deploy.sh logs            # tail application logs
 ```
@@ -392,9 +393,55 @@ is the same as having none.
 newest dump into a throwaway database, counts rows, and drops it. Verified at
 1,285,705 records.
 
-`backup-pull` is the part that matters for hardware failure — a backup on the
-same disk as the database only survives mistakes, not a dead drive. Worth
-running periodically, or wiring into a cron on your laptop.
+A backup on the same disk as the database only survives mistakes, not a dead
+drive. `backup-pull` copies the dumps to your laptop by hand; the off-host
+repository below does it every night without anyone remembering to.
+
+### Off-host copies (restic)
+
+```bash
+./deploy.sh offsite sftp:user@host:/path   # set up, or change the destination
+./deploy.sh offsite key                    # print the repository password — save it OFF the server
+./deploy.sh offsite                        # repository and newest snapshots
+./deploy.sh offsite check                  # read back 5% of the repository
+./deploy.sh offsite off                    # stop sending (leaves the repository alone)
+```
+
+The destination is any always-on machine on the tailnet that accepts SFTP. Setup
+installs restic, generates a dedicated SSH key on the server and — the first time
+— prints its public half with a `restrict` prefix to paste into that machine's
+`authorized_keys`; run the same command again afterwards. It then initialises the
+repository (or opens an existing one with the stored password) and runs a first
+backup.
+
+From then on the nightly job, after the local dump has been written and
+verified, streams that same dump — decrypted, uncompressed — into
+`restic backup --stdin`:
+
+- **restic encrypts it** with the repository password before it leaves the
+  server, so the backup machine only ever holds ciphertext.
+- **Plain SQL deduplicates.** Consecutive dumps of a database that mostly grows
+  are mostly the same bytes, so a night costs roughly what changed rather than
+  the dump's full size. A `.gpg` file would cost its full size every night.
+- **Retention** is 14 daily, 8 weekly and 24 monthly snapshots, pruned on
+  Sundays, when a rotating tenth of the stored data is also read back with
+  `restic check` — the whole repository is re-read every ten weeks.
+- **A failure never touches the local backup**, which has already succeeded. It
+  is logged to `/var/log/health-backup.log` as `OFFSITE FAILED`, pushed to the
+  alert webhook if one is configured (`./deploy.sh alerts`), and the job exits 2.
+
+Two secrets now matter, and both live only in `.env` on the server they protect:
+`BACKUP_PASSPHRASE` (`./deploy.sh backup-key`) and `RESTIC_PASSWORD`
+(`./deploy.sh offsite key`). **Save both somewhere else.** Without the restic
+password the repository is unreadable, which is the same as not having it.
+
+To restore from the repository, on the server or any machine with restic and
+the password:
+
+```bash
+health-restic snapshots
+health-restic dump latest health.sql | docker compose exec -T db psql -U health -d health
+```
 
 ---
 
