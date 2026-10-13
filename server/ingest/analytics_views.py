@@ -78,6 +78,7 @@ def _range_or_error(request, default_days=30):
             request.query_params.get("from"),
             request.query_params.get("to"),
             default_days=default_days,
+            tz_name=request.query_params.get("tz"),
         ), None
     except analytics.InvalidRange as exc:
         return None, Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

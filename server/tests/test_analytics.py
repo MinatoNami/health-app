@@ -10,11 +10,13 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.test import TestCase
 
+from ingest import analytics
 from ingest.models import ApiToken, Batch, Device, Record
 
 
@@ -340,6 +342,44 @@ class ExportTests(AnalyticsTestCase):
 
     def test_export_requires_auth(self):
         self.assertIn(self.client.get("/v1/export/records.csv").status_code, (401, 403))
+
+
+class RangeTimezoneTests(AnalyticsTestCase):
+    """A range is days in the zone the caller asked for, not the server's.
+
+    The bounds used to be Singapore midnights whatever `tz` said, while the
+    buckets inside them followed `tz` — so in Los Angeles "1 July" meant 09:00
+    on 30 June to 09:00 on 1 July, and both ends of every range read low.
+    """
+
+    LA = ZoneInfo("America/Los_Angeles")
+
+    def test_bounds_are_midnights_in_the_requested_zone(self):
+        start, end, _, _ = analytics.parse_range(
+            "2026-07-01", "2026-07-01", tz_name="America/Los_Angeles"
+        )
+        self.assertEqual(start, datetime(2026, 7, 1, tzinfo=self.LA))
+        self.assertEqual(end, datetime(2026, 7, 2, tzinfo=self.LA))
+
+    def test_no_zone_still_means_the_display_zone(self):
+        start, _, _, _ = analytics.parse_range("2026-07-01", "2026-07-01")
+        self.assertEqual(start, datetime(2026, 7, 1, tzinfo=analytics.zone(None)))
+
+    def rows_on_1_july_in_la(self):
+        return self.client.get(
+            "/v1/export/summary?from=2026-07-01&to=2026-07-01&tz=America/Los_Angeles",
+            headers=self.auth(),
+        ).json()["rows"]
+
+    def test_endpoint_includes_the_end_of_the_local_day(self):
+        # Late evening on 1 July in LA: already 2 July in Singapore.
+        self.make(id="late", value=1, start=datetime(2026, 7, 1, 23, 0, tzinfo=self.LA))
+        self.assertEqual(self.rows_on_1_july_in_la(), 1)
+
+    def test_endpoint_excludes_the_previous_local_day(self):
+        # Evening on 30 June in LA: already 1 July in Singapore.
+        self.make(id="early", value=1, start=datetime(2026, 6, 30, 20, 0, tzinfo=self.LA))
+        self.assertEqual(self.rows_on_1_july_in_la(), 0)
 
 
 class DashboardSessionTests(TestCase):

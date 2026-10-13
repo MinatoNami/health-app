@@ -359,10 +359,20 @@ def latest_values(metrics: list[str]) -> dict[str, dict]:
     return out
 
 
-def parse_range(from_raw: str | None, to_raw: str | None, default_days: int = 30):
+def parse_range(
+    from_raw: str | None,
+    to_raw: str | None,
+    default_days: int = 30,
+    tz_name: str | None = None,
+):
     """Inclusive `to`: the end bound is pushed to the start of the next day so a
-    range ending "today" includes today's samples."""
-    tz = zone(None)
+    range ending "today" includes today's samples.
+
+    The bounds are midnights in `tz_name` — the same zone the caller buckets
+    days in. They used to be midnights in DISPLAY_TIMEZONE whatever the request
+    asked for, so outside Singapore a range's first and last days were each cut
+    to a fraction of a day and read low."""
+    tz = zone(tz_name)
     today = datetime.now(tz).date()
 
     def parse(value, fallback):
