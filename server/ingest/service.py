@@ -185,14 +185,18 @@ def read_header(parsed) -> dict:
     # Checked here rather than at the int() calls in ingest(): a ValueError
     # there escaped as a generic exception and came back as a retryable 500, so
     # a header that can never parse was retried forever.
+    #
+    # A type check, not int(): int() converts, so 1.5 and true became 1 and a
+    # malformed header was accepted after all. bool is excluded explicitly
+    # because it is a subclass of int.
     for field in ("record_count", "schema_version"):
         value = parsed.obj.get(field)
-        if value in (None, ""):
+        if value is None:
             continue
-        try:
-            int(value)
-        except (TypeError, ValueError):
-            raise BatchRejected(f"batch_header {field} is not an integer: {value!r}") from None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise BatchRejected(
+                f"batch_header {field} must be a non-negative integer, got {value!r}"
+            )
     return parsed.obj
 
 

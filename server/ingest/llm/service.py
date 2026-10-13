@@ -760,7 +760,19 @@ def compact(
     }
 
 
-def answer(
+def answer(*args, **kwargs) -> dict:
+    """Answer one question about this person's health data.
+
+    The model's deadline and concurrency slot are taken here, at the one
+    boundary every caller shares — the dashboard and phone views, and the
+    weekly-review command that cron runs — rather than by each caller, which is
+    how the command came to run without either. See `client.answer_slot`.
+    """
+    with client.answer_slot():
+        return _answer(*args, **kwargs)
+
+
+def _answer(
     question: str,
     *,
     context: str = "",

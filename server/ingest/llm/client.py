@@ -123,32 +123,64 @@ def max_concurrent() -> int:
         return 2
 
 
-class ModelBusy(RuntimeError):
-    """Every answer slot is taken. The caller should say so and retry later."""
+class ModelBusy(LLMUnavailable):
+    """Every answer slot is taken.
+
+    A kind of LLMUnavailable on purpose: every model call in the service
+    already falls back to the measured snapshot on that, so a busy model reads
+    as one more reason the model could not help right now — answered at once,
+    stored, progress cleared — rather than as a new failure every caller has to
+    learn to handle."""
 
 
-_deadline: ContextVar[float | None] = ContextVar("llm_deadline", default=None)
+class _Scope:
+    def __init__(self, deadline: float):
+        self.deadline = deadline
+        self.slot_key: str | None = None
+
+
+_scope: ContextVar["_Scope | None"] = ContextVar("llm_answer_scope", default=None)
 
 
 @contextmanager
 def answer_slot():
-    """Claims one of `max_concurrent()` slots and sets the answer's deadline.
+    """Everything one answer asks of the model: a deadline, and a slot.
+
+    The deadline starts now and caps every call made inside. The slot — one of
+    `max_concurrent()` — is claimed lazily, by the first call that actually
+    reaches the model, so an answer that never does (the urgent-safety reply,
+    a switched-off layer) never competes for one.
+
+    Opened by `service.answer`, which every path to the model goes through: the
+    dashboard, the phone and the weekly-review cron alike. Nested scopes join
+    the outer one rather than claiming a second slot.
 
     Slots live in the shared cache because the request that needs one rarely
     lands on the worker holding another. The expiry is a backstop for a worker
     killed mid-answer, which never reaches the `finally`."""
-    budget = answer_budget_seconds()
+    if _scope.get() is not None:
+        yield
+        return
+    scope = _Scope(time.monotonic() + answer_budget_seconds())
+    token = _scope.set(scope)
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+        if scope.slot_key:
+            cache.delete(scope.slot_key)
+
+
+def _claim_slot(scope: _Scope) -> None:
+    if scope.slot_key:
+        return
+    ttl = int(answer_budget_seconds()) + 60
     for index in range(max_concurrent()):
         key = f"ingest:llm-slot:{index}"
-        if cache.add(key, 1, int(budget) + 60):
-            token = _deadline.set(time.monotonic() + budget)
-            try:
-                yield
-            finally:
-                _deadline.reset(token)
-                cache.delete(key)
+        if cache.add(key, 1, ttl):
+            scope.slot_key = key
             return
-    raise ModelBusy("the model is already answering other questions")
+    raise ModelBusy("the model is busy with another question; try again in a moment")
 
 
 def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
@@ -163,12 +195,13 @@ def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
         request.add_header("Authorization", f"Bearer {key}")
 
     timeout = timeout or timeout_seconds()
-    deadline = _deadline.get()
-    if deadline is not None:
-        remaining = deadline - time.monotonic()
+    scope = _scope.get()
+    if scope is not None:
+        remaining = scope.deadline - time.monotonic()
         if remaining < 1:
             raise LLMUnavailable("ran out of time for this answer; try a narrower question")
         timeout = min(timeout, remaining)
+        _claim_slot(scope)
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
