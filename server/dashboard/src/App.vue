@@ -22,13 +22,21 @@ const error = ref('')
 
 const preset = ref(30)
 
+// The local calendar date, not `toISOString()`'s UTC one: in Singapore that
+// is yesterday until 08:00, so every morning the default range ended a day
+// early and today's data was missing from Overview, Explore and Export.
+function localIsoDate(d) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 function isoDaysAgo(days) {
   const d = new Date()
   d.setDate(d.getDate() - (days - 1))
-  return d.toISOString().slice(0, 10)
+  return localIsoDate(d)
 }
 
-const range = ref({ from: isoDaysAgo(30), to: new Date().toISOString().slice(0, 10) })
+const range = ref({ from: isoDaysAgo(30), to: localIsoDate(new Date()) })
 
 function applyPreset(days) {
   // `null` arrives when a date input is edited by hand: the preset is cleared
@@ -38,7 +46,7 @@ function applyPreset(days) {
     return
   }
   preset.value = days
-  range.value = { from: isoDaysAgo(days), to: new Date().toISOString().slice(0, 10) }
+  range.value = { from: isoDaysAgo(days), to: localIsoDate(new Date()) }
 }
 
 async function loadOverview() {
