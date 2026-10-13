@@ -54,6 +54,14 @@ final class SyncEngine: ObservableObject {
         /// whether anything arrived, and conflating the two is what let weeks
         /// of failed uploads sit behind a recent-looking timestamp.
         var lastDeliveryAt: Date?
+        /// When rollups were last re-emitted over the whole backfill history
+        /// rather than the rolling lookback. `nil` means it has not happened on
+        /// this install, which the next full sync treats as "do it now".
+        ///
+        /// Optional on purpose, and every field added here has to be: settings
+        /// are decoded whole, and a missing non-optional key fails the decode
+        /// and resets everything — server address included — to defaults.
+        var rollupsRebuiltAt: Date?
     }
 
     /// Result of the last manual Test Connection.
@@ -252,7 +260,7 @@ final class SyncEngine: ObservableObject {
             }
         }
 
-        totalEmitted += await syncStatistics()
+        totalEmitted += await syncStatisticsOrRebuild()
         totalEmitted += await emitCharacteristicsIfNeeded()
 
         await deliverPending()
@@ -403,10 +411,55 @@ final class SyncEngine: ObservableObject {
         return (start, now)
     }
 
-    private func syncStatistics() async -> Int {
+    /// Days from the backfill cutoff to today: the lookback that re-emits
+    /// every daily rollup this install could ever have sent.
+    nonisolated static func fullHistoryDays(
+        backfillStart: Date, now: Date, calendar: Calendar = .current
+    ) -> Int {
+        let days = calendar.dateComponents(
+            [.day], from: calendar.startOfDay(for: backfillStart), to: calendar.startOfDay(for: now)
+        ).day ?? 0
+        return max(days, 0)
+    }
+
+    /// Asks the next full sync to re-emit rollups over the whole history.
+    func rebuildDailyTotals() {
+        settings.rollupsRebuiltAt = nil
+        Log.shared.info("stats", "Full rollup rebuild requested")
+        Task { await syncAll(reason: "rebuild daily totals") }
+    }
+
+    /// The rolling lookback, or — once per install, and again on request — the
+    /// whole backfill history.
+    ///
+    /// The once-per-install pass exists because of a bug: the window used to
+    /// start partway through a day, so each day aging out of the lookback was
+    /// overwritten on the server with a partial total. Those days are past the
+    /// rolling window by definition, so only a pass this wide reaches them. It
+    /// is a one-off rather than a bigger lookback because the lookback is paid
+    /// on every sync; two years of sixteen metrics is ~12k records, fine once
+    /// and wasteful hourly.
+    private func syncStatisticsOrRebuild() async -> Int {
+        guard settings.rollupsRebuiltAt == nil else {
+            return await syncStatistics().emitted
+        }
+        let days = SyncEngine.fullHistoryDays(backfillStart: settings.backfillStartDate, now: Date())
+        Log.shared.info("stats", "Rebuilding daily rollups over \(days) days")
+        let result = await syncStatistics(lookbackDays: max(days, settings.statisticsLookbackDays))
+        // Only a pass that read every metric and spooled the lot counts; a
+        // partial one (locked mid-way, full disk) is retried next sync.
+        if result.complete {
+            settings.rollupsRebuiltAt = Date()
+            Log.shared.info("stats", "Rollup rebuild complete")
+        }
+        return result.emitted
+    }
+
+    private func syncStatistics(lookbackDays: Int? = nil) async -> (emitted: Int, complete: Bool) {
         let (start, end) = SyncEngine.statisticsWindow(
-            now: Date(), lookbackDays: settings.statisticsLookbackDays
+            now: Date(), lookbackDays: lookbackDays ?? settings.statisticsLookbackDays
         )
+        var complete = true
         var emitted: [HealthRecord] = []
 
         // Rollups have to follow the same enabled list the raw samples do.
@@ -433,21 +486,22 @@ final class SyncEngine: ObservableObject {
                     }
                 }
             } catch {
+                complete = false
                 Log.shared.debug("stats", "\(name): \(error.localizedDescription)")
             }
         }
 
-        guard !emitted.isEmpty else { return 0 }
+        guard !emitted.isEmpty else { return (0, complete) }
         do {
             try await Outbox.shared.write(emitted, windowFrom: start, windowTo: end)
         } catch {
             // Nothing to roll back: rollups are recomputed from scratch on the
             // next run, so a lost write here costs one cycle, not data.
             Log.shared.error("stats", "Rollups not spooled: \(error.localizedDescription)")
-            return 0
+            return (0, false)
         }
         Log.shared.info("stats", "Emitted \(emitted.count) daily rollups")
-        return emitted.count
+        return (emitted.count, complete)
     }
 
     // MARK: - Characteristics

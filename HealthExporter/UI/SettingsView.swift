@@ -59,6 +59,15 @@ struct SettingsView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
+                    Button("Rebuild All Daily Totals") { engine.rebuildDailyTotals() }
+                    Text(engine.settings.rollupsRebuiltAt.map {
+                        "Re-sends one rollup per metric per day back to the backfill date, "
+                            + "once. Last done \($0.formatted(date: .abbreviated, time: .shortened))."
+                    } ?? "Re-sends one rollup per metric per day back to the backfill date, "
+                        + "once. Runs on the next sync.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Ink.faint)
+                        .lineSpacing(2)
                 }
                 .listRowBackground(Ink.surface)
 

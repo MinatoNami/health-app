@@ -91,3 +91,35 @@ final class SyncWindowAndOutboxTests: XCTestCase {
         XCTAssertEqual(Outbox.Batch.recordCount(from: written[0]), 1)
     }
 }
+
+/// Days that aged out of the lookback before the window fix were stored as
+/// partial days, and the rolling lookback never reaches them again — so the
+/// one-off rebuild has to cover the whole backfill history.
+final class RollupRebuildWindowTests: XCTestCase {
+
+    private var calendar: Calendar {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Singapore")!
+        return cal
+    }
+
+    private func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int = 0) -> Date {
+        calendar.date(from: DateComponents(year: y, month: m, day: d, hour: h))!
+    }
+
+    func testFullHistoryReachesTheBackfillDay() {
+        let backfill = date(2024, 10, 13, 15)
+        let now = date(2026, 10, 13, 9)
+        let days = SyncEngine.fullHistoryDays(backfillStart: backfill, now: now, calendar: calendar)
+        let window = SyncEngine.statisticsWindow(now: now, lookbackDays: days, calendar: calendar)
+
+        XCTAssertEqual(window.start, calendar.startOfDay(for: backfill),
+                       "the rebuild must start on the backfill day itself, from midnight")
+    }
+
+    func testABackfillDateInTheFutureIsNoWindowAtAll() {
+        let days = SyncEngine.fullHistoryDays(backfillStart: date(2027, 1, 1),
+                                              now: date(2026, 10, 13), calendar: calendar)
+        XCTAssertEqual(days, 0)
+    }
+}
