@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import Client, TestCase
 
 from ingest import analytics
 from ingest.models import ApiToken, Batch, Device, Record
@@ -361,6 +361,17 @@ class RangeTimezoneTests(AnalyticsTestCase):
         self.assertEqual(start, datetime(2026, 7, 1, tzinfo=self.LA))
         self.assertEqual(end, datetime(2026, 7, 2, tzinfo=self.LA))
 
+    def test_cache_keys_take_the_resolved_zone(self):
+        self.assertEqual(analytics.canonical_tz("America/Los_Angeles"), "America/Los_Angeles")
+        self.assertIsNone(analytics.canonical_tz("Not/AZone"))
+        self.assertIsNone(analytics.canonical_tz("x" * 300))
+
+    def test_an_absurd_tz_falls_back_rather_than_failing(self):
+        response = self.client.get(
+            "/v1/analytics/overview?tz=" + "x" * 300, headers=self.auth()
+        )
+        self.assertEqual(response.status_code, 200)
+
     def test_no_zone_still_means_the_display_zone(self):
         start, _, _, _ = analytics.parse_range("2026-07-01", "2026-07-01")
         self.assertEqual(start, datetime(2026, 7, 1, tzinfo=analytics.zone(None)))
@@ -401,6 +412,28 @@ class DashboardSessionTests(TestCase):
 
     def test_bad_password_rejected(self):
         self.assertEqual(self.login(password="nope").status_code, 401)
+
+    def test_login_without_the_csrf_token_is_refused(self):
+        """DRF only checks CSRF for a request already signed in, so the
+        anonymous login POST went unchecked — login CSRF."""
+        client = Client(enforce_csrf_checks=True)
+        response = client.post(
+            "/v1/auth/session",
+            data=json.dumps({"username": "dash", "password": "dash-p4ssw0rd-x"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_login_echoing_the_csrf_token_succeeds(self):
+        client = Client(enforce_csrf_checks=True)
+        token = client.get("/v1/auth/csrf").cookies["csrftoken"].value
+        response = client.post(
+            "/v1/auth/session",
+            data=json.dumps({"username": "dash", "password": "dash-p4ssw0rd-x"}),
+            content_type="application/json",
+            headers={"x-csrftoken": token},
+        )
+        self.assertEqual(response.status_code, 200)
 
     def test_me_reports_signed_out_before_login(self):
         self.assertFalse(self.client.get("/v1/auth/me").json()["authenticated"])

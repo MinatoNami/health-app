@@ -124,6 +124,13 @@ class HeaderTests(IngestTestCase):
         response = self.post(ndjson(header_line()), **{"x-schema-version": "2"})
         self.assertEqual(response.status_code, 400)
 
+    def test_non_integer_record_count_is_permanent(self):
+        """A header that can never parse must be a 400, not a retryable 500 —
+        the phone retries 5xx forever."""
+        response = self.post(ndjson(header_line(record_count="abc")))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("record_count", response.json()["detail"])
+
     def test_second_header_is_rejected(self):
         body = ndjson(header_line(), quantity(), header_line(batch_id="batch-2"))
         response = self.post(body)

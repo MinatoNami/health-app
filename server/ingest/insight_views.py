@@ -29,7 +29,7 @@ from rest_framework.decorators import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from . import correlations, health_analysis, patterns
+from . import analytics, correlations, health_analysis, patterns
 from .analytics_views import AUTH, AnalyticsThrottle, _FixedScopeThrottle
 from .auth import owner_of as _owner
 from .llm import client as llm_client
@@ -49,7 +49,7 @@ class InsightThrottle(_FixedScopeThrottle):
 
 
 def _tz(request) -> str | None:
-    return request.query_params.get("tz") or None
+    return analytics.canonical_tz(request.query_params.get("tz"))
 
 
 def _as_of(request) -> date | None:

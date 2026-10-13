@@ -182,6 +182,17 @@ def read_header(parsed) -> dict:
         raise BatchRejected("batch_header is missing batch_id")
     if not parsed.obj.get("device_id"):
         raise BatchRejected("batch_header is missing device_id")
+    # Checked here rather than at the int() calls in ingest(): a ValueError
+    # there escaped as a generic exception and came back as a retryable 500, so
+    # a header that can never parse was retried forever.
+    for field in ("record_count", "schema_version"):
+        value = parsed.obj.get(field)
+        if value in (None, ""):
+            continue
+        try:
+            int(value)
+        except (TypeError, ValueError):
+            raise BatchRejected(f"batch_header {field} is not an integer: {value!r}") from None
     return parsed.obj
 
 

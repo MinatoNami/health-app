@@ -78,7 +78,7 @@ def _range_or_error(request, default_days=30):
             request.query_params.get("from"),
             request.query_params.get("to"),
             default_days=default_days,
-            tz_name=request.query_params.get("tz"),
+            tz_name=analytics.canonical_tz(request.query_params.get("tz")),
         ), None
     except analytics.InvalidRange as exc:
         return None, Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -111,7 +111,7 @@ def series(request):
         agg = catalog.get(metric, {}).get("default_agg", "avg")
 
     payload = analytics.daily_series(
-        metric, start, end, agg, tz_name=request.query_params.get("tz")
+        metric, start, end, agg, tz_name=analytics.canonical_tz(request.query_params.get("tz"))
     )
     payload["from"] = start_date.isoformat()
     payload["to"] = end_date.isoformat()
@@ -130,7 +130,7 @@ def overview(request):
     if error:
         return error
     start, end, start_date, end_date = parsed
-    tz_name = request.query_params.get("tz")
+    tz_name = analytics.canonical_tz(request.query_params.get("tz"))
 
     # Cached per range: a two-year overview runs seven aggregates over the whole
     # table and measured ~1.6s, and flipping between range presets re-requests

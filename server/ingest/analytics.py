@@ -129,6 +129,21 @@ def zone(name: str | None) -> ZoneInfo:
         return ZoneInfo(DEFAULT_TZ)
 
 
+def canonical_tz(name: str | None) -> str | None:
+    """The zone a request's `tz` will actually be read as, or None for the
+    default.
+
+    For cache keys, which used to take `tz` verbatim: every misspelling made its
+    own entry for what `zone()` answers identically, and a string longer than
+    the 255-character key column was a 500 rather than a fallback."""
+    if not name or len(name) > 64:
+        return None
+    try:
+        return ZoneInfo(name).key
+    except Exception:
+        return None
+
+
 def live_records():
     """Excludes tombstones. A deleted sample must never appear in a total."""
     return Record.objects.filter(deleted_at__isnull=True).exclude(kind=Record.Kind.DELETE)
