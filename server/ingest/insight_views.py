@@ -422,6 +422,18 @@ def _discard_if_empty(session, created: bool) -> bool:
     return False
 
 
+def _busy() -> Response:
+    """Every answer slot is in use. 503 with Retry-After rather than queueing:
+    a queued request would hold a worker doing nothing, which is the thing the
+    cap exists to prevent."""
+    response = Response(
+        {"detail": "The model is busy with another question. Try again in a moment."},
+        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+    )
+    response["Retry-After"] = "30"
+    return response
+
+
 @api_view(["POST"])
 @authentication_classes(AUTH)
 @permission_classes([IsAuthenticated])
@@ -442,20 +454,24 @@ def ask(request):
         return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
 
     try:
-        payload = llm_service.answer(
-            question,
-            context=str(request.data.get("context") or "")[:1000],
-            tz_name=_tz(request) or request.data.get("tz"),
-            owner=_owner(request),
-            persist=request.data.get("remember") is not False,
-            # A session carries its own history without being asked; `follow_up`
-            # stays for callers that have no session, which is how the phone asks.
-            follow_up=bool(request.data.get("follow_up")),
-            session=session,
-            # Optional, and picked by the caller so it can start polling before
-            # this request returns. Ignored unless it looks like a UUID.
-            progress_key=str(request.data.get("progress_key") or "") or None,
-        )
+        with llm_client.answer_slot():
+            payload = llm_service.answer(
+                question,
+                context=str(request.data.get("context") or "")[:1000],
+                tz_name=_tz(request) or request.data.get("tz"),
+                owner=_owner(request),
+                persist=request.data.get("remember") is not False,
+                # A session carries its own history without being asked; `follow_up`
+                # stays for callers that have no session, which is how the phone asks.
+                follow_up=bool(request.data.get("follow_up")),
+                session=session,
+                # Optional, and picked by the caller so it can start polling before
+                # this request returns. Ignored unless it looks like a UUID.
+                progress_key=str(request.data.get("progress_key") or "") or None,
+            )
+    except llm_client.ModelBusy:
+        _discard_if_empty(session, created)
+        return _busy()
     except Exception:
         _discard_if_empty(session, created)
         raise
@@ -510,11 +526,15 @@ def weekly_review(request):
         return Response({"detail": "no such session"}, status=status.HTTP_404_NOT_FOUND)
 
     try:
-        payload = llm_service.weekly_review(
-            tz_name=_tz(request) or request.data.get("tz"),
-            owner=_owner(request),
-            session=session,
-        )
+        with llm_client.answer_slot():
+            payload = llm_service.weekly_review(
+                tz_name=_tz(request) or request.data.get("tz"),
+                owner=_owner(request),
+                session=session,
+            )
+    except llm_client.ModelBusy:
+        _discard_if_empty(session, created)
+        return _busy()
     except Exception:
         _discard_if_empty(session, created)
         raise

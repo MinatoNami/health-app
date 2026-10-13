@@ -17,11 +17,14 @@ import logging
 import os
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 import urllib.error
 import urllib.parse
 import urllib.request
 
 from django.conf import settings
+from django.core.cache import cache
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +99,58 @@ def is_local() -> bool:
     return destination()["kind"] != "external"
 
 
+def answer_budget_seconds() -> float:
+    """Wall-clock allowance for everything one answer asks of the model.
+
+    `LLM_TIMEOUT_SECONDS` is per call, and an answer makes up to eight —
+    compaction, six tool rounds, the prose — so on its own it allowed ~24
+    minutes. Gunicorn kills a worker at 900s, which lost the answer and the
+    worker together. Comfortably inside that limit by default."""
+    try:
+        return float(os.environ.get("LLM_ANSWER_BUDGET_SECONDS", "600"))
+    except ValueError:
+        return 600.0
+
+
+def max_concurrent() -> int:
+    """Answers allowed in flight at once, across every worker.
+
+    Each holds a sync gunicorn worker for as long as the model takes. There are
+    four, and the phone's uploads and the health check need some of them."""
+    try:
+        return max(1, int(os.environ.get("LLM_MAX_CONCURRENT", "2")))
+    except ValueError:
+        return 2
+
+
+class ModelBusy(RuntimeError):
+    """Every answer slot is taken. The caller should say so and retry later."""
+
+
+_deadline: ContextVar[float | None] = ContextVar("llm_deadline", default=None)
+
+
+@contextmanager
+def answer_slot():
+    """Claims one of `max_concurrent()` slots and sets the answer's deadline.
+
+    Slots live in the shared cache because the request that needs one rarely
+    lands on the worker holding another. The expiry is a backstop for a worker
+    killed mid-answer, which never reaches the `finally`."""
+    budget = answer_budget_seconds()
+    for index in range(max_concurrent()):
+        key = f"ingest:llm-slot:{index}"
+        if cache.add(key, 1, int(budget) + 60):
+            token = _deadline.set(time.monotonic() + budget)
+            try:
+                yield
+            finally:
+                _deadline.reset(token)
+                cache.delete(key)
+            return
+    raise ModelBusy("the model is already answering other questions")
+
+
 def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
     request = urllib.request.Request(
         f"{base_url()}{path}",
@@ -107,8 +162,16 @@ def _post(path: str, payload: dict, timeout: float | None = None) -> dict:
     if key:
         request.add_header("Authorization", f"Bearer {key}")
 
+    timeout = timeout or timeout_seconds()
+    deadline = _deadline.get()
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            raise LLMUnavailable("ran out of time for this answer; try a narrower question")
+        timeout = min(timeout, remaining)
+
     try:
-        with urllib.request.urlopen(request, timeout=timeout or timeout_seconds()) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]

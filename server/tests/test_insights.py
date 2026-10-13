@@ -10,6 +10,7 @@ rather than to an error page.
 import os
 import json
 from datetime import date, datetime, time, timedelta
+import time as pytime
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -21,7 +22,7 @@ from ingest import health_analysis, safety
 from ingest.llm import client as llm_client
 from ingest.llm import service as llm_service
 from ingest.llm import tools as llm_tools
-from ingest.models import ApiToken, Batch, Device, InsightTurn, Record
+from ingest.models import ApiToken, Batch, ChatSession, Device, InsightTurn, Record
 
 SGT = ZoneInfo("Asia/Singapore")
 
@@ -486,6 +487,50 @@ class InsightEndpointTests(InsightTestCase):
         self.assertIn("observations", body["answer"])
         self.assertIn("snapshot", body)
         self.assertEqual(body["safety"]["level"], "coaching")
+
+    def ask_once(self):
+        return self.client.post(
+            "/v1/insights/ask",
+            data=json.dumps({"question": "Am I sleeping enough?"}),
+            content_type="application/json",
+            headers=self.auth(),
+        )
+
+    def test_a_full_house_is_a_503_not_a_held_worker(self):
+        """Each answer holds a sync worker for as long as the model takes. With
+        every slot in use a new question is refused at once, leaving workers for
+        the phone's uploads."""
+        for index in range(llm_client.max_concurrent()):
+            cache.add(f"ingest:llm-slot:{index}", 1, 60)
+
+        with mock.patch.object(llm_client, "chat") as chat:
+            response = self.ask_once()
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response["Retry-After"], "30")
+        chat.assert_not_called()
+        self.assertEqual(ChatSession.objects.count(), 0)
+
+    def test_a_finished_answer_gives_its_slot_back(self):
+        with mock.patch.object(llm_client, "resolve_model", return_value="test-model"), \
+             mock.patch.object(llm_client, "chat", side_effect=fake_chat()):
+            self.assertEqual(self.ask_once().status_code, 200)
+
+        for index in range(llm_client.max_concurrent()):
+            self.assertIsNone(cache.get(f"ingest:llm-slot:{index}"))
+
+    def test_a_spent_budget_stops_before_calling_the_model(self):
+        """The per-call timeout allowed eight calls of 180s each, past the
+        900s at which gunicorn kills the worker. The answer's own deadline
+        caps every call after the first."""
+        token = llm_client._deadline.set(pytime.monotonic() - 1)
+        try:
+            with mock.patch("urllib.request.urlopen") as urlopen:
+                with self.assertRaises(llm_client.LLMUnavailable):
+                    llm_client._post("/chat/completions", {})
+            urlopen.assert_not_called()
+        finally:
+            llm_client._deadline.reset(token)
 
     def test_status_names_where_processing_happens(self):
         """§8 requires the user be told which provider receives their data."""
