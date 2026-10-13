@@ -86,9 +86,16 @@ token that can be revoked on its own. Signing out revokes server-side, so a copy
 of the token left anywhere else stops working too.
 
 Login is **throttled to 10/min per IP** (`LOGIN_RATE_LIMIT` in `.env`). It is
-the only endpoint that accepts a password, and therefore the only one worth
+the only API endpoint that accepts a password, and therefore the only one worth
 guessing at. Ingest is deliberately *not* throttled: the phone legitimately
 drains a backlog of batches back to back.
+
+The Django admin's login form takes the same passwords but is Django's own view,
+outside that throttle, so the proxy limits it instead: `POST
+/health-app/admin/login/` gets six quick attempts per client, then one every
+twelve seconds, and a 429 past that. alena-gateway does this in production;
+[deploy/nginx-health.conf](deploy/nginx-health.conf) does the same where the
+gateway is absent.
 
 The throttle counter lives in a **database-backed cache**, not Django's default
 `LocMemCache` — that one is per-process, so with two gunicorn workers a 10/min
