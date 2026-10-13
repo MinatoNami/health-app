@@ -295,3 +295,36 @@ final class DeliveryBreakerTests: XCTestCase {
         XCTAssertNotEqual(engine.phase, .failed(SyncEngine.unreachableMessage))
     }
 }
+
+/// Two delivery passes over the same queue upload every batch twice and race to
+/// archive the same files. The locked-device path, the background refresh and
+/// the retry button all reach delivery without going through `isSyncing`.
+@MainActor
+final class DeliveryOverlapTests: XCTestCase {
+
+    private final class SlowSink: ExportSink {
+        let name = "slow"
+        let isConfigured = true
+        var calls = 0
+        func deliver(_ batch: Outbox.Batch) async -> Result<Void, Error> {
+            calls += 1
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            return .success(())
+        }
+    }
+
+    func testAnOverlappingPassDoesNotUploadTheQueueAgain() async {
+        let engine = SyncEngine(authorization: HealthAuthorization())
+        let sink = SlowSink()
+        let queue = (0..<5).map { i in
+            Outbox.Batch(url: URL(fileURLWithPath: "/nonexistent/overlap-\(i)-1.ndjson"),
+                         createdAt: Date(), byteCount: 0, recordCount: 1)
+        }
+
+        async let first: Void = engine.deliver(queue, via: sink)
+        async let second: Void = engine.deliver(queue, via: sink)
+        _ = await (first, second)
+
+        XCTAssertEqual(sink.calls, 5, "each batch once, not once per caller")
+    }
+}

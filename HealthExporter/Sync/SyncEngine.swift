@@ -226,7 +226,13 @@ final class SyncEngine: ObservableObject {
             // readable from first unlock on, and the overnight processing task —
             // locked and charging, the longest window iOS ever gives — used to
             // return here having sent nothing.
+            //
+            // In flight like any other sync while it does: the await suspends,
+            // and an overlapping call must queue behind it rather than pass the
+            // gate above and deliver the same files.
+            isSyncing = true
             await deliverPending()
+            isSyncing = false
             phase = .waitingForUnlock
             return
         }
@@ -646,6 +652,8 @@ final class SyncEngine: ObservableObject {
     /// wrong.
     private static let contentRejectionStatuses: Set<Int> = [400, 413, 415, 422]
 
+    private var isDelivering = false
+
     /// See `UploadBreaker`. In memory: a relaunch starts with full patience.
     private var uploadBreaker = UploadBreaker()
 
@@ -682,6 +690,18 @@ final class SyncEngine: ObservableObject {
     /// The delivery loop proper, apart from choosing the sink and listing the
     /// queue — so tests can run it against a sink that fails on cue.
     func deliver(_ pending: [Outbox.Batch], via sink: ExportSink) async {
+        // Serialised on its own, not only through `isSyncing`: the background
+        // refresh path and the retry button call this directly, and two passes
+        // over the same queue upload every batch twice and race to archive
+        // the same files. A caller arriving mid-pass is satisfied by the pass
+        // already under way.
+        guard !isDelivering else {
+            Log.shared.debug("deliver", "Delivery already in progress; not starting a second pass")
+            return
+        }
+        isDelivering = true
+        defer { isDelivering = false }
+
         // A revoked or expired token fails every batch identically. Without a
         // circuit breaker, a backlog of thousands of batches becomes thousands
         // of pointless 401s — minutes of radio, and the real problem buried at
@@ -1324,11 +1344,11 @@ final class SyncEngine: ObservableObject {
         let request = pendingCountRequest
         let count = await Outbox.shared.pendingCountOffMain()
         let rejected = await Outbox.shared.rejectedCountOffMain()
-        rejectedBatches = rejected
         // Somebody published a newer figure while this was reading. They
-        // know something this read does not.
+        // know something this read does not — about both counts.
         guard request == pendingCountRequest else { return }
         pendingBatches = count
+        rejectedBatches = rejected
     }
 
     /// Publishes a count directly, invalidating any read still in flight.
