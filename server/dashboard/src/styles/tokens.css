@@ -17,7 +17,10 @@
   --page: #f9f9f7;
   --text-primary: #0b0b0b;
   --text-secondary: #52514e;
-  --text-muted: #898781;
+  /* 4.63:1 on --page. It was #898781, 3.41:1, and it sets the 11–12px
+     captions, axis ticks and timestamps — the smallest text on the page is the
+     last that can afford to miss AA. Dark mode keeps #898781, which passes. */
+  --text-muted: #73716b;
   --gridline: #e1e0d9;
   --axis: #c3c2b7;
   --border: rgba(11, 11, 11, 0.1);

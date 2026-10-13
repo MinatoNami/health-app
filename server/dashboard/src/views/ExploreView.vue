@@ -40,32 +40,49 @@ async function loadCatalog() {
   }
 }
 
+/* Two guards on one load.
+ *
+ * Coalescing: picking a metric changes `selected`, which resets `agg`, and both
+ * are watched — so a single choice, and the first mount, each fetched the same
+ * series two or three times. Triggers in the same turn now make one request.
+ *
+ * Ordering: responses can land out of order — click 7d then 1y quickly and the
+ * 7d answer may arrive last. Only the newest request may write the chart. */
+let loadTimer = null
+let loadSeq = 0
+function scheduleLoad() {
+  clearTimeout(loadTimer)
+  loadTimer = setTimeout(load, 0)
+}
+
 async function load() {
   if (!selected.value) return
+  const seq = ++loadSeq
   loading.value = true
   error.value = ''
   try {
-    series.value = await api.series({
+    const result = await api.series({
       metric: selected.value, agg: agg.value,
       from: props.range.from, to: props.range.to,
     })
+    if (seq === loadSeq) series.value = result
   } catch (e) {
-    error.value = e.message
+    if (seq === loadSeq) error.value = e.message
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 
 watch(selected, () => {
   agg.value = current.value?.default_agg || 'avg'
-  load()
+  scheduleLoad()
 })
 // deep, because the date inputs mutate range.from/range.to in place rather
 // than replacing the object — without it, editing a date silently leaves this
 // view showing the previous range's data.
-watch([agg, () => props.range], load, { deep: true })
+watch([agg, () => props.range], scheduleLoad, { deep: true })
 
-loadCatalog().then(load)
+loadCatalog().then(scheduleLoad)
 </script>
 
 <template>

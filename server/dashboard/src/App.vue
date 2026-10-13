@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import { api } from './api.js'
+import { api, SIGNED_OUT_EVENT } from './api.js'
 import OverviewView from './views/OverviewView.vue'
 import ExploreView from './views/ExploreView.vue'
 import ExportView from './views/ExportView.vue'
@@ -49,16 +49,23 @@ function applyPreset(days) {
   range.value = { from: isoDaysAgo(days), to: localIsoDate(new Date()) }
 }
 
+// Only the newest request may write: flipping presets quickly can land an
+// older range's response last, and the chips then show one range's figures
+// under another's label.
+let overviewSeq = 0
+
 async function loadOverview() {
+  const seq = ++overviewSeq
   refreshing.value = true
   error.value = ''
   try {
-    overview.value = await api.overview({ from: range.value.from, to: range.value.to })
+    const result = await api.overview({ from: range.value.from, to: range.value.to })
+    if (seq === overviewSeq) overview.value = result
   } catch (e) {
     if (e.unauthorized) user.value = null
-    else error.value = e.message
+    else if (seq === overviewSeq) error.value = e.message
   } finally {
-    refreshing.value = false
+    if (seq === overviewSeq) refreshing.value = false
   }
 }
 
@@ -86,6 +93,9 @@ watch(range, () => { if (user.value && tab.value === 'overview') loadOverview() 
 watch(tab, (value) => { if (value === 'overview' && user.value && !overview.value) loadOverview() })
 
 onMounted(async () => {
+  // Only Overview used to notice an expired session; every other view showed
+  // "Not signed in" as an error and waited for a reload.
+  window.addEventListener(SIGNED_OUT_EVENT, () => { user.value = null })
   try {
     const me = await api.me()
     if (me.authenticated) {

@@ -8,7 +8,13 @@
 }
 .topbar h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
 
-.nav { display: flex; gap: 4px; }
+/* Scrolls rather than wraps or overflows: five tabs plus the account controls
+   are wider than a 375px phone, and pushed the page into sideways scrolling. */
+.nav {
+  display: flex; gap: 4px; max-width: 100%;
+  overflow-x: auto; scrollbar-width: none;
+}
+.nav button { flex: none; }
 .nav button {
   background: none; border: 0; padding: 7px 13px; border-radius: 8px;
   font-size: 14px; color: var(--text-secondary);

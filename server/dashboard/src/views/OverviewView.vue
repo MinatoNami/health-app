@@ -71,6 +71,9 @@ const stale = computed(() => snapshot.value?.metrics_not_syncing ?? [])
 const lead = computed(() => {
   if (brief.value?.headline) return brief.value.headline
   if (!snapshot.value) return null
+  // With nothing usable there is no baseline to have moved against, and
+  // "nothing moved" would be a claim about data that does not exist yet.
+  if (!usable.value.length) return 'Not enough data yet to compare this week against a baseline.'
   if (!moved.value.length) return 'Nothing moved much against your 28-day baseline this week.'
   const names = moved.value.map((m) => short(m))
   return `Against your 28-day baseline, ${names.join(', ')} moved this week.`

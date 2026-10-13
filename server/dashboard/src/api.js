@@ -30,11 +30,6 @@ async function request(path, options = {}) {
   }
 
   const response = await fetch(API_BASE + path, { credentials: 'include', ...options, headers })
-  if (response.status === 401 || response.status === 403) {
-    const error = new Error('Not signed in')
-    error.unauthorized = true
-    throw error
-  }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`
     try {
@@ -42,10 +37,25 @@ async function request(path, options = {}) {
     } catch {
       /* non-JSON error body — the status is enough */
     }
+    // DRF answers a missing session with 403, not 401, so a 403 alone does not
+    // mean "signed out": a CSRF rejection is a 403 too, and reporting that as
+    // "Not signed in" sent people to a password that was never the problem.
+    if (response.status === 401 || (response.status === 403 && SIGNED_OUT.test(detail))) {
+      const error = new Error('Not signed in')
+      error.unauthorized = true
+      // Any view can be the one to notice an expired session; the app shell is
+      // the one that shows the sign-in form. The login call itself is excluded:
+      // a wrong password is not a session ending.
+      if (path !== '/v1/auth/session') window.dispatchEvent(new Event(SIGNED_OUT_EVENT))
+      throw error
+    }
     throw new Error(detail)
   }
   return response.json()
 }
+
+const SIGNED_OUT = /credentials were not provided|not authenticated|invalid token/i
+export const SIGNED_OUT_EVENT = 'health:signed-out'
 
 const qs = (params) =>
   Object.entries(params)

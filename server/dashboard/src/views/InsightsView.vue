@@ -72,12 +72,14 @@ const activeProject = computed(
  * caption it with figures it never mentioned. */
 const opening = computed(() => {
   if (!snapshot.value || !empty.value) return null
-  const moved = snapshot.value.metrics
-    .filter((m) => m.significance === 'notable' && m.confidence !== 'insufficient')
+  const usable = snapshot.value.metrics.filter((m) => m.confidence !== 'insufficient')
+  const moved = usable
+    .filter((m) => m.significance === 'notable')
     .map((m) => `${m.label.toLowerCase()} ${m.change > 0 ? 'up' : 'down'} ${Math.abs(m.change_pct).toFixed(0)}%`)
   const stale = snapshot.value.metrics_not_syncing || []
   const parts = []
-  parts.push(moved.length ? `Against your 28-day baseline: ${moved.join(', ')}.` : 'Nothing moved much against your baseline this week.')
+  if (!usable.length) parts.push('Not enough data yet to compare this week against a baseline.')
+  else parts.push(moved.length ? `Against your 28-day baseline: ${moved.join(', ')}.` : 'Nothing moved much against your baseline this week.')
   if (stale.length) {
     parts.push(`${stale.map((s) => s.label).join(' and ')} stopped arriving — a gap, not a zero.`)
   }
@@ -402,6 +404,19 @@ function startProgress(key) {
   }, PROGRESS_INTERVAL_MS)
 }
 
+/* `crypto.randomUUID` exists only in a secure context, and this page is also
+ * reached over plain http on the tailnet. There it threw before the `try`
+ * below, leaving `asking` set and a pending bubble that never resolved.
+ * `getRandomValues` has no such restriction. */
+function uuid4() {
+  if (crypto.randomUUID) return crypto.randomUUID()
+  const b = crypto.getRandomValues(new Uint8Array(16))
+  b[6] = (b[6] & 0x0f) | 0x40
+  b[8] = (b[8] & 0x3f) | 0x80
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
 async function run(label, call) {
   // The pending row keeps its id when the answer replaces it: it is the same
   // slot becoming the same conversation's reply, and reusing it avoids the
@@ -417,7 +432,7 @@ async function run(label, call) {
   jumpToBottom()
   // Chosen here rather than by the server so polling can start before the ask
   // returns — which is the whole point, since the ask is what takes the time.
-  const progressKey = crypto.randomUUID()
+  const progressKey = uuid4()
   startProgress(progressKey)
   try {
     const result = await call({ ...sessionArgs(), progress_key: progressKey })
@@ -759,7 +774,9 @@ onBeforeUnmount(() => {
   .insights { grid-template-columns: 1fr; }
   .sidebar-col {
     position: fixed; z-index: 20; top: 0; left: 0; bottom: 0;
-    width: 280px; height: 100vh; min-height: 0;
+    /* dvh: on iOS Safari 100vh includes the area under the toolbar, which
+       pushed the bottom of the drawer and the composer out of reach. */
+    width: 280px; height: 100vh; height: 100dvh; min-height: 0;
     border-radius: 0; border-left: 0;
     transform: translateX(-100%); transition: transform 160ms ease;
   }
@@ -779,6 +796,7 @@ onBeforeUnmount(() => {
   /* Tall enough that the composer sits at a predictable place rather than
      wandering up and down as the transcript grows. */
   height: calc(100vh - 190px);
+  height: calc(100dvh - 190px);
   min-height: 420px;
 }
 
