@@ -72,7 +72,7 @@ screen behind it.
 
 | Tab | What it is |
 |---|---|
-| **Today** | One measured sentence, what moved, what is steady, what stopped |
+| **Today** | One measured sentence, what moved, what is steady, what stopped, then last night and the week's habits |
 | **Insights** | The conversation, chat history, the measured week |
 | **Trends** | One metric over time, with gaps drawn as gaps |
 | **Data** | Sources, server state, and Settings pushed from it |
@@ -163,6 +163,19 @@ HealthExporter/
 
 `SyncEngine` is the single `@Published` surface the views observe. Adding a new
 piece of server state means adding it there, not fetching from a view.
+
+---
+
+## Accessibility
+
+Text follows Dynamic Type. `scaledFont(_:weight:design:)` and `figureFont(_:)`
+in `DesignTokens` wrap `@ScaledMetric`, so every size is the designed one at
+the default setting and scales with the nearest text style otherwise. Use them
+rather than `.font(.system(size:))`, which is fixed — the one exception is a
+`Text + Text` run, which must stay a `Text`: set weight per piece and apply
+`scaledFont` to the whole. The widest custom rows cap at
+`accessibility2`. `Ink.faint` clears 4.5:1 on every surface; section labels are
+headers to VoiceOver; icon-only buttons carry labels and 44pt targets.
 
 ---
 

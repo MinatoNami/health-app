@@ -66,7 +66,7 @@ both display where processing happens, and say "an external service at
 
 Not your records. The model receives a **prepared summary**: per-metric averages
 over the last 7 days and the preceding 28, with units, valid-day counts and
-confidence — plus whatever it fetches through twelve read-only tools that return
+confidence — plus whatever it fetches through thirteen read-only tools that return
 the same kind of computed figures.
 
 It has no database credentials, no SQL, and no access to individual samples.

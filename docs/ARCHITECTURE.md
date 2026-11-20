@@ -50,7 +50,7 @@ label them differently for the same reason.
 These are the rules the whole thing is organised around. Most of the code that
 looks over-careful is enforcing one of them.
 
-**The model never does arithmetic.** It reaches data through twelve read-only
+**The model never does arithmetic.** It reaches data through thirteen read-only
 tools that return already-computed figures with units, windows, valid-day counts
 and confidence attached. No SQL, no credentials, no raw rows.
 
