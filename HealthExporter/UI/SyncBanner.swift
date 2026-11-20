@@ -85,16 +85,16 @@ struct SyncBanner: View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(alignment: .top, spacing: 11) {
                 Image(systemName: state.symbol)
-                    .font(.system(size: 16))
+                    .scaledFont(16)
                     .foregroundStyle(state.tint)
                     .frame(width: 20)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(state.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .scaledFont(13, weight: .semibold)
                         .foregroundStyle(state.tint)
                     Text(state.detail)
-                        .font(.system(size: 12))
+                        .scaledFont(12)
                         .foregroundStyle(Ink.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -103,7 +103,7 @@ struct SyncBanner: View {
 
             if let title = state.action, let onAction {
                 Button(title, action: onAction)
-                    .font(.system(size: 14, weight: .semibold))
+                    .scaledFont(14, weight: .semibold)
                     .foregroundStyle(Ink.ground)
                     .frame(maxWidth: .infinity, minHeight: 42)
                     .background(state.tint, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -134,7 +134,9 @@ struct SyncBanner: View {
         case .waitingForUnlock:
             return .locked
         case .syncing(let metric, let progress, let total):
-            return .running("\(metric.replacingOccurrences(of: "_", with: " ")) · \(progress) of \(total)")
+            // The name a person would say, not the slug with its underscores
+            // swapped for spaces ("heart rate variability sdnn").
+            return .running("\(metric.metricDisplayName) · \(progress) of \(total)")
         case .delivering(let remaining):
             return .running("\(remaining) batch\(remaining == 1 ? "" : "es") to upload")
         case .idle:

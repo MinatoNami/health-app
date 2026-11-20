@@ -17,7 +17,7 @@ Two properties are worth preserving if this list grows:
 
 from datetime import date, timedelta
 
-from .. import correlations, health_analysis, patterns
+from .. import correlations, health_analysis, lifestyle, patterns
 from ..models import Goal
 
 MAX_WINDOW_DAYS = 365
@@ -157,7 +157,15 @@ def get_sleep_summary(days: int | None = None, tz_name: str | None = None, **_) 
     summary["baseline_comparison"] = health_analysis.compare_to_baseline(
         "sleep_analysis", tz_name=tz_name
     )
+    # Regularity on its own fixed windows — 7 days against the 28 before — whatever
+    # `days` asked for, and it says so in its own from/to.
+    summary["regularity"] = lifestyle.sleep_regularity(tz_name=tz_name)
     return summary
+
+
+def get_lifestyle_signals(tz_name: str | None = None, **_) -> dict:
+    """Overnight vitals, sleep regularity, weekly activity, daylight, cardio fitness."""
+    return lifestyle.signals(tz_name=tz_name)
 
 
 def get_nutrition_summary(days: int | None = None, tz_name: str | None = None, **_) -> dict:
@@ -445,6 +453,16 @@ DEFINITIONS = [
         "fn": get_patterns,
     },
     {
+        "name": "get_lifestyle_signals",
+        "description": "Last night's overnight vitals against this person's own range (flagged "
+        "only when two or more are outside it), sleep regularity (Sleep Regularity Index), "
+        "exercise minutes over rolling weeks against the WHO guideline, time in daylight, and "
+        "the cardio fitness (VO2 max) trend. Use for questions about recovery, how last night "
+        "went, sleep schedule, whether they are active enough, daylight, or fitness.",
+        "parameters": {"type": "object", "properties": {}},
+        "fn": get_lifestyle_signals,
+    },
+    {
         "name": "get_anomalies",
         "description": "Metrics currently sitting well outside this person's own recent range, "
         "sustained over several days.",
@@ -476,6 +494,7 @@ LABELS = {
     "get_correlations": "Looking for associations",
     "get_patterns": "Looking for weekly patterns",
     "get_anomalies": "Looking for anything unusual",
+    "get_lifestyle_signals": "Reading your overnight vitals and habits",
 }
 
 

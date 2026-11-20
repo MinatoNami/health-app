@@ -8,10 +8,13 @@
  */
 import { onMounted, ref } from 'vue'
 import { api } from '../api.js'
+import { unitFor } from '../format.js'
 
 const status = ref(null)
 const goals = ref([])
 const analysable = ref([])
+/* "Steps (count)" and "≥ 60 count/min" are HealthKit showing through. */
+const goalUnit = (m) => unitFor(m.metric_slug, m.unit)
 const quality = ref([])
 const feedback = ref(null)
 const error = ref('')
@@ -81,9 +84,20 @@ onMounted(load)
       <h3>Insights</h3>
       <dl>
         <dt>Processed</dt>
-        <dd :class="{ warn: status && !status.reachable }">
-          {{ status?.reachable ? status.destination?.description : 'Model unreachable' }}
-          <span v-if="status?.detail" class="muted">{{ status.detail }}</span>
+        <!-- Switched off and unreachable are different states: one is a
+             choice, the other a laptop that is asleep. Only the second is a
+             warning. -->
+        <dd :class="{ warn: status?.enabled && !status.reachable }">
+          {{
+            status?.reachable
+              ? status.destination?.description
+              : status && !status.enabled
+                ? 'Switched off on this server'
+                : 'Model unreachable'
+          }}
+          <!-- The detail explains an outage. When the model is simply off it
+               only restates the line above. -->
+          <span v-if="status?.detail && status.enabled" class="muted">{{ status.detail }}</span>
         </dd>
 
         <dt>Model</dt>
@@ -106,10 +120,15 @@ onMounted(load)
         <div v-for="goal in goals" :key="goal.id" class="goal">
           <div>
             <strong>{{ goal.label }}</strong>
-            <span class="muted"> ≥ {{ goal.target_value.toLocaleString() }} {{ goal.unit }} {{ goal.cadence }}</span>
+            <span class="muted"> ≥ {{ goal.target_value.toLocaleString() }} {{ goalUnit(goal) }} {{ goal.cadence }}</span>
+            <!-- Days met, not a streak counter. A streak resets to zero on
+                 the first missed day, and that reset is when people stop; the
+                 run is shown only once it is worth mentioning. -->
             <div v-if="goal.progress" class="muted">
-              {{ goal.progress.days_met }}/{{ goal.progress.days_with_data }} days ·
-              streak {{ goal.progress.current_streak_days }}
+              met on {{ goal.progress.days_met }} of {{ goal.progress.days_with_data }} recorded days
+              <template v-if="goal.progress.current_streak_days >= 3">
+                · {{ goal.progress.current_streak_days }} in a row
+              </template>
             </div>
           </div>
           <button class="linkbtn" @click="removeGoal(goal.id)">Remove</button>
@@ -120,10 +139,13 @@ onMounted(load)
       <form class="goal-form" @submit.prevent="saveGoal">
         <select v-model="newGoal.metric_slug">
           <option v-for="m in analysable" :key="m.metric_slug" :value="m.metric_slug">
-            {{ m.label }} ({{ m.unit }})
+            {{ m.label }}{{ goalUnit(m) ? ` (${goalUnit(m)})` : '' }}
           </option>
         </select>
-        <input v-model="newGoal.target_value" type="number" step="any" min="0" placeholder="target" />
+        <input
+          v-model="newGoal.target_value" type="number" step="any" min="0"
+          placeholder="daily target" aria-label="Daily target"
+        />
         <button class="btn secondary" type="submit">Set goal</button>
       </form>
     </section>
@@ -238,6 +260,21 @@ onMounted(load)
 
         <dt>Consistency</dt>
         <dd>Spread of your sleep midpoint: when you sleep, not how long.</dd>
+
+        <dt>Last night</dt>
+        <dd>Heart rate, HRV, breathing, wrist temperature, blood oxygen and sleep against
+          the range of your previous 28 nights. Flagged only when two or more are outside it
+          at once — one alone is what sensors do.</dd>
+
+        <dt>Regularity</dt>
+        <dd>The Sleep Regularity Index: how alike your sleep and wake times are 24 hours
+          apart, 0–100. A stronger predictor of long-term health than duration in large
+          studies.</dd>
+
+        <dt>Activity</dt>
+        <dd>Exercise minutes over a rolling week, against the WHO's 150–300. Minutes packed
+          into a weekend count the same. Days the watch was not worn are left out, not
+          counted as rest.</dd>
 
         <dt>Escalation</dt>
         <dd>Decided by rules before the model runs. Anything urgent is answered from

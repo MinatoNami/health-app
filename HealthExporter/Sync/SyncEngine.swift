@@ -201,7 +201,11 @@ final class SyncEngine: ObservableObject {
         "StepCount", "DistanceWalkingRunning", "DistanceCycling", "ActiveEnergyBurned",
         "BasalEnergyBurned", "FlightsClimbed", "AppleExerciseTime", "AppleStandTime",
         "RestingHeartRate", "HeartRateVariabilitySDNN", "BodyMass", "OxygenSaturation",
-        "RespiratoryRate", "VO2Max", "DietaryEnergyConsumed", "DietaryWater"
+        "RespiratoryRate", "VO2Max", "DietaryEnergyConsumed", "DietaryWater",
+        // Analysed server-side as a lifestyle signal. Only the watch writes it,
+        // so a raw sum is not inflated by a second source — but without a
+        // rollup every day reads as an estimate and drags its confidence down.
+        "TimeInDaylight"
     ]
 
     // MARK: - Entry points
@@ -911,6 +915,10 @@ final class SyncEngine: ObservableObject {
     /// in doubt.
     @Published private(set) var snapshot: HealthSnapshot?
     @Published private(set) var snapshotError: String?
+    /// Habits and recovery. Fetched beside the snapshot and kept apart from it
+    /// for the same reason the insight is: a failure here should cost these
+    /// cards, not the week's figures above them.
+    @Published private(set) var lifestyle: LifestyleSignals?
     @Published private(set) var insightError: String?
     @Published private(set) var insightStatus: InsightStatus?
     @Published private(set) var isAsking = false
@@ -969,6 +977,8 @@ final class SyncEngine: ObservableObject {
         var snapshot: HealthSnapshot?
         var trends: AnalyticsOverview?
         var insightStatus: InsightStatus?
+        /// Optional, so a cache written before this existed still decodes.
+        var lifestyle: LifestyleSignals?
         var savedAt: Date?
     }
 
@@ -987,6 +997,7 @@ final class SyncEngine: ObservableObject {
         if snapshot == nil { snapshot = cached.snapshot }
         if trends == nil { trends = cached.trends }
         if insightStatus == nil { insightStatus = cached.insightStatus }
+        if lifestyle == nil { lifestyle = cached.lifestyle }
         cachedAt = cached.savedAt
 
         // The conversation that was on screen last time is deliberately *not*
@@ -999,7 +1010,8 @@ final class SyncEngine: ObservableObject {
 
     private func saveCachedViews() {
         let payload = CachedViews(
-            snapshot: snapshot, trends: trends, insightStatus: insightStatus, savedAt: Date()
+            snapshot: snapshot, trends: trends, insightStatus: insightStatus,
+            lifestyle: lifestyle, savedAt: Date()
         )
         cachedAt = payload.savedAt
         let store = viewCache
@@ -1008,7 +1020,7 @@ final class SyncEngine: ObservableObject {
 
     func refreshSnapshot() async {
         guard settings.sink.endpoint != nil, isSignedIn else {
-            snapshotError = "Sign in on the Settings tab to see your summary."
+            snapshotError = "Sign in under Data → Account, brief & diagnostics to see your summary."
             return
         }
         let sink = HTTPSink(configuration: settings.sink)
@@ -1020,6 +1032,12 @@ final class SyncEngine: ObservableObject {
             // The previous reading is kept: stale numbers still say more than a
             // blank screen, and the error line says they are stale.
             snapshotError = error.localizedDescription
+        }
+        // A failure keeps the previous reading, like the snapshot — and says
+        // nothing of its own: the snapshot's error line already covers a server
+        // that is not answering.
+        if case .success(let signals) = await sink.fetchLifestyle() {
+            lifestyle = signals
         }
         if case .success(let status) = await sink.fetchInsightStatus() {
             insightStatus = status

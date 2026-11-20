@@ -679,9 +679,17 @@ onBeforeUnmount(() => {
           <p v-if="notice" class="notice">{{ notice }}</p>
           <p v-if="error" class="error">{{ error }}</p>
 
+          <!-- Two different states. Switched off is a choice and nothing to
+               fix; unreachable is usually a laptop that has gone to sleep. -->
           <p v-if="!ready && status" class="offline">
-            The model is unreachable, so answers are unavailable. The measured
-            numbers alongside do not need it.
+            <template v-if="!status.enabled">
+              Answers are switched off on this server. Everything above is measured
+              and does not need a model.
+            </template>
+            <template v-else>
+              The model is unreachable — usually the laptop running it is asleep — so
+              answers are unavailable. Everything above is measured and does not need it.
+            </template>
           </p>
         </div>
 

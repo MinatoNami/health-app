@@ -523,6 +523,20 @@ final class HTTPSink: ExportSink {
         await fetch(configuration.apiEndpoint("/v1/insights/daily"), as: DailyBrief.self, timeout: 20)
     }
 
+    /// Overnight vitals, sleep regularity, weekly activity, daylight and cardio
+    /// fitness. Deterministic like the snapshot. Sends the phone's timezone,
+    /// because "last night" is cut on the person's clock, not the server's.
+    func fetchLifestyle() async -> Result<LifestyleSignals, Error> {
+        await fetch(
+            configuration.apiEndpoint(
+                "/v1/analysis/lifestyle",
+                query: [URLQueryItem(name: "tz", value: TimeZone.current.identifier)]
+            ),
+            as: LifestyleSignals.self,
+            timeout: 20
+        )
+    }
+
     func fetchInsightStatus() async -> Result<InsightStatus, Error> {
         await fetch(configuration.apiEndpoint("/v1/insights/status"), as: InsightStatus.self, timeout: 15)
     }

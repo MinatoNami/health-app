@@ -22,8 +22,9 @@
 import { computed, onMounted, ref } from 'vue'
 import ChartCard from '../components/ChartCard.vue'
 import CoverageStrip from '../components/CoverageStrip.vue'
+import LifestyleSignals from '../components/LifestyleSignals.vue'
 import { api } from '../api.js'
-import { shortLabel, unitFor } from '../format.js'
+import { hoursMinutes, shortLabel, unitFor } from '../format.js'
 
 const props = defineProps({
   data: { type: Object, default: null },
@@ -32,15 +33,22 @@ const props = defineProps({
 
 const snapshot = ref(null)
 const brief = ref(null)
+const lifestyle = ref(null)
 
-/* Both deterministic and both cheap — no model runs to serve either, which is
- * why the top of the page can depend on them. Settled independently: a missing
- * brief should cost the sentence, not the tiles. */
+/* All three deterministic and cheap — no model runs to serve any of them, which
+ * is why the top of the page can depend on them. Settled independently: a
+ * missing brief should cost the sentence, not the tiles, and a missing
+ * lifestyle payload should cost its cards and nothing else. */
 onMounted(async () => {
   const settle = (p) => p.catch(() => null)
-  const [s, b] = await Promise.all([settle(api.snapshot()), settle(api.dailyBrief())])
+  const [s, b, l] = await Promise.all([
+    settle(api.snapshot()),
+    settle(api.dailyBrief()),
+    settle(api.lifestyle()),
+  ])
   snapshot.value = s
   brief.value = b
+  lifestyle.value = l
 })
 
 const TITLES = {
@@ -91,7 +99,12 @@ const detail = computed(() => brief.value?.detail || '')
  * is full coverage for weight and comparing its 3 against sleep's 7 is
  * comparing incomparable things. */
 const leadCoverage = computed(() => {
-  const pool = (moved.value.length ? moved.value : usable.value)
+  // Daily metrics only. The strip draws one cell per day, so weight — full
+  // coverage at two weighings a week — drew as five empty days out of seven
+  // under every headline that was not about weight at all.
+  const daily = (m) => (m.expected_cadence ?? 1) >= 1
+  const source = moved.value.length ? moved.value : usable.value
+  const pool = (source.some(daily) ? source.filter(daily) : source)
     .map((m) => m.current)
     .filter((c) => c?.window_days)
   if (!pool.length) return null
@@ -157,10 +170,16 @@ function fmtCompact(v) {
             <span class="tile-label">{{ short(m) }}</span>
             <span class="delta" :class="tone(m)">{{ delta(m) }}</span>
           </div>
-          <div class="tile-value">
+          <div v-if="m.metric_slug === 'sleep_analysis'" class="tile-value">
+            {{ hoursMinutes(m.current.value) }}
+          </div>
+          <div v-else class="tile-value">
             {{ fmt(m.current.value) }}<span v-if="unit(m)" class="tile-unit">{{ unit(m) }}</span>
           </div>
-          <div class="tile-sub">28-day baseline {{ fmt(m.baseline.value) }} {{ unit(m) }}</div>
+          <div class="tile-sub">
+            28-day baseline
+            {{ m.metric_slug === 'sleep_analysis' ? hoursMinutes(m.baseline.value) : `${fmt(m.baseline.value)} ${unit(m)}` }}
+          </div>
           <CoverageStrip
             class="tile-cov"
             :valid-days="m.current.valid_days"
@@ -176,11 +195,17 @@ function fmtCompact(v) {
     <div v-if="steady.length" class="card steady">
       <span class="seclabel">Steady</span>
       <span v-for="m in steady" :key="m.metric_slug" class="steady-item">
-        {{ short(m) }} {{ fmt(m.current.value) }} {{ unit(m) }}
+        {{ short(m) }}
+        <template v-if="m.metric_slug === 'sleep_analysis'">{{ hoursMinutes(m.current.value) }}</template>
+        <template v-else>{{ fmt(m.current.value) }} {{ unit(m) }}</template>
       </span>
       <span class="spacer" />
       <span class="muted">within day-to-day variation</span>
     </div>
+
+    <!-- Last night and the habits behind the week. Fixed windows like the rest
+         of this half — the range control below does not scope them. -->
+    <LifestyleSignals :signals="lifestyle" />
 
     <!-- ── Ranged: everything below answers to the row above it ────────── -->
     <slot name="filters" />

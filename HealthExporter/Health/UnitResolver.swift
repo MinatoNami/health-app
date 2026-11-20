@@ -100,9 +100,13 @@ final class UnitResolver {
              HKQuantityTypeIdentifier.walkingAsymmetryPercentage.rawValue,
              HKQuantityTypeIdentifier.walkingDoubleSupportPercentage.rawValue:
             return .percent()
+        // Time in daylight is here for its rollup: a statistics query needs its
+        // unit before any sample has been read, and without a preference
+        // `staticUnit` has nothing to return and the rollup is silently skipped.
         case HKQuantityTypeIdentifier.appleExerciseTime.rawValue,
              HKQuantityTypeIdentifier.appleStandTime.rawValue,
-             HKQuantityTypeIdentifier.appleMoveTime.rawValue:
+             HKQuantityTypeIdentifier.appleMoveTime.rawValue,
+             HKQuantityTypeIdentifier.timeInDaylight.rawValue:
             return .minute()
         case HKQuantityTypeIdentifier.bloodPressureSystolic.rawValue,
              HKQuantityTypeIdentifier.bloodPressureDiastolic.rawValue:

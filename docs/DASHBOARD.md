@@ -18,7 +18,7 @@ no build-time API host — the dashboard is served by the server it talks to.
 
 | View | What it is |
 |---|---|
-| **Overview** | KPI tiles and headline charts over the selected range |
+| **Overview** | The week's lead, habits & recovery, then charts over the selected range |
 | **Insights** | Chats on the left, the conversation in the middle, the measured week on the right |
 | **Explore** | Any metric, any valid aggregation |
 | **Export** | Pick metrics and a range, see the row count, download CSV |
@@ -87,6 +87,7 @@ dashboard/src/
 │   ├── ChatMessage.vue   one turn, with its rating controls
 │   ├── ChatSidebar.vue   history, projects, search, row menus
 │   ├── ContextRail.vue   the measured week beside the conversation
+│   ├── LifestyleSignals.vue  last night, sleep regularity, activity, daylight, fitness
 │   ├── LineChart.vue, ColumnChart.vue, ChartCard.vue
 └── views/
     ├── InsightsView.vue, OverviewView.vue, ExploreView.vue,
@@ -123,6 +124,17 @@ the confidence word turns six metrics into eighteen coloured things.
 **Colour is never the only channel.** Every chart ships direct labels and a
 table view; the safety banner carries words as well as a tint; a pressed thumb
 is filled *and* `aria-pressed`.
+
+---
+
+## Charts and today
+
+Today is still running, so its point is drawn partial — a faint bar, or a
+hollow end marker with "so far" — rather than hidden or drawn as a whole day.
+Nightly metrics are the exception: their "today" is last night, which is over
+(`NIGHTLY` in `format.js`). Units go through `unitFor` everywhere, and axis ticks
+keep the decimals their step needs. Percentages arrive from the server already
+converted from HealthKit's fraction — nothing here rescales them.
 
 ---
 

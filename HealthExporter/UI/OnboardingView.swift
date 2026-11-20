@@ -17,6 +17,7 @@ import SwiftUI
 struct OnboardingView: View {
     @EnvironmentObject private var authorization: HealthAuthorization
     @EnvironmentObject private var services: AppServices
+    @EnvironmentObject private var engine: SyncEngine
 
     /// Set when the flow is finished or skipped, so this never reappears.
     let finish: () -> Void
@@ -64,16 +65,16 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 26) {
                     VStack(alignment: .leading, spacing: 14) {
                         Image(systemName: "bolt.heart")
-                            .font(.system(size: 30, weight: .light))
+                            .scaledFont(30, weight: .light)
                             .foregroundStyle(Ink.accent)
                             .padding(.bottom, 2)
                         Text("Your health data, on a server you own.")
-                            .font(.system(size: 27, weight: .semibold))
+                            .scaledFont(27, weight: .semibold)
                             .kerning(-0.5)
                             .foregroundStyle(Ink.primary)
                             .fixedSize(horizontal: false, vertical: true)
                         Text("This app reads Apple Health, sends it to your own machine, and asks a model you also own to explain what it finds. Nothing goes anywhere you have not configured.")
-                            .font(.system(size: 15))
+                            .scaledFont(15)
                             .lineSpacing(3)
                             .foregroundStyle(Ink.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -102,7 +103,7 @@ struct OnboardingView: View {
                     path.append(.choose)
                 } label: {
                     Text("Choose what to share")
-                        .font(.system(size: 15, weight: .semibold))
+                        .scaledFont(15, weight: .semibold)
                         .foregroundStyle(Ink.ground)
                         .frame(maxWidth: .infinity, minHeight: 50)
                         .background(Ink.accent, in: Capsule())
@@ -110,7 +111,7 @@ struct OnboardingView: View {
                 .buttonStyle(.plain)
 
                 Button("Not now", action: finish)
-                    .font(.system(size: 13))
+                    .scaledFont(13)
                     .foregroundStyle(Ink.faint)
                     .frame(minHeight: 44)
             }
@@ -126,7 +127,7 @@ struct OnboardingView: View {
             ZStack {
                 Circle().fill(Ink.measured.opacity(0.13))
                 Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .bold))
+                    .scaledFont(11, weight: .bold)
                     .foregroundStyle(Ink.measured)
             }
             .frame(width: 26, height: 26)
@@ -134,11 +135,11 @@ struct OnboardingView: View {
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 14.5, weight: .semibold))
+                    .scaledFont(14.5, weight: .semibold)
                     .foregroundStyle(Ink.primary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(detail)
-                    .font(.system(size: 13))
+                    .scaledFont(13)
                     .foregroundStyle(Ink.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -149,11 +150,11 @@ struct OnboardingView: View {
     private var onceEverWarning: some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 16))
+                .scaledFont(16)
                 .foregroundStyle(Ink.absent)
                 .padding(.top, 1)
             Text("iOS asks about each data type **once, ever**. Choose what to include on the next screen — changing your mind later means a trip to Settings.")
-                .font(.system(size: 12.5))
+                .scaledFont(12.5)
                 .lineSpacing(2)
                 .foregroundStyle(Ink.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -183,7 +184,7 @@ struct OnboardingView: View {
                 VStack(spacing: 10) {
                     if let error = authorization.lastRequestError {
                         Text(error)
-                            .font(.system(size: 12))
+                            .scaledFont(12)
                             .foregroundStyle(Ink.absentInk)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -193,7 +194,7 @@ struct OnboardingView: View {
                         HStack(spacing: 8) {
                             if requesting { ProgressView().controlSize(.small).tint(Ink.ground) }
                             Text(requesting ? "Asking Health…" : "Request Health Access")
-                                .font(.system(size: 15, weight: .semibold))
+                                .scaledFont(15, weight: .semibold)
                         }
                         .foregroundStyle(Ink.ground)
                         .frame(maxWidth: .infinity, minHeight: 50)
@@ -205,7 +206,7 @@ struct OnboardingView: View {
                     Text(enabledCount == 0
                          ? "Enable at least one group to continue."
                          : "\(enabledCount) group\(enabledCount == 1 ? "" : "s") — iOS will ask about each type once.")
-                        .font(.system(size: 12))
+                        .scaledFont(12)
                         .foregroundStyle(Ink.faint)
                 }
                 .padding(.horizontal, 20)
@@ -239,15 +240,15 @@ struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     VStack(alignment: .leading, spacing: 13) {
                         Image(systemName: "externaldrive.badge.checkmark")
-                            .font(.system(size: 28, weight: .light))
+                            .scaledFont(28, weight: .light)
                             .foregroundStyle(Ink.measured)
                             .padding(.bottom, 2)
                         Text("Now point it somewhere.")
-                            .font(.system(size: 25, weight: .semibold))
+                            .scaledFont(25, weight: .semibold)
                             .kerning(-0.4)
                             .foregroundStyle(Ink.primary)
                         Text("Health data is being read on this phone, but nothing is analysed until it reaches a server you run. Until then the app collects and queues — nothing is lost.")
-                            .font(.system(size: 15))
+                            .scaledFont(15)
                             .lineSpacing(3)
                             .foregroundStyle(Ink.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -265,21 +266,35 @@ struct OnboardingView: View {
             }
 
             VStack(spacing: 12) {
-                NavigationLink {
-                    SettingsView()
-                } label: {
-                    Text("Connect a server")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(Ink.ground)
-                        .frame(maxWidth: .infinity, minHeight: 50)
-                        .background(Ink.accent, in: Capsule())
-                }
-                .buttonStyle(.plain)
+                // Once signed in, the way out is a finish, not "Do this later"
+                // — which was the only exit left, and said the opposite of what
+                // had just happened.
+                if engine.isSignedIn {
+                    Button(action: finish) {
+                        Text("Done")
+                            .scaledFont(15, weight: .semibold)
+                            .foregroundStyle(Ink.ground)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .background(Ink.accent, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    NavigationLink {
+                        SettingsView()
+                    } label: {
+                        Text("Connect a server")
+                            .scaledFont(15, weight: .semibold)
+                            .foregroundStyle(Ink.ground)
+                            .frame(maxWidth: .infinity, minHeight: 50)
+                            .background(Ink.accent, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
 
-                Button("Do this later", action: finish)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Ink.faint)
-                    .frame(minHeight: 44)
+                    Button("Do this later", action: finish)
+                        .scaledFont(13)
+                        .foregroundStyle(Ink.faint)
+                        .frame(minHeight: 44)
+                }
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 10)
@@ -301,7 +316,7 @@ struct OnboardingView: View {
                 .frame(width: 4, height: 4)
                 .padding(.top, 8)
             Text(text)
-                .font(.system(size: 13.5))
+                .scaledFont(13.5)
                 .foregroundStyle(Ink.muted)
         }
     }
