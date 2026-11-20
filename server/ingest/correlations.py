@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from statistics import NormalDist
 
-from . import health_analysis
+from . import analytics, health_analysis
 
 # Long by default. At four weeks, Holm across a dozen pairs needs a rho around
 # 0.5 before it will call anything significant, which for ordinary health signals
@@ -402,6 +402,26 @@ def _contrast(
 
     high_outcome = mean(high, 2)
     low_outcome = mean(low, 2)
+
+    def say(signal: Signal, value: float) -> str:
+        # Bedtime is minutes after noon so it stays continuous across midnight,
+        # which is right for the arithmetic and meaningless in a sentence:
+        # "679 min after noon" is 23:19, and only one of those is a time anyone
+        # recognises as their own bedtime.
+        if signal.source == "bedtime":
+            return health_analysis._clock(value)
+        rounded = round(value, signal.decimals)
+        text = f"{rounded:,}" if abs(rounded) >= 1000 else f"{rounded}"
+        unit = analytics.spoken_unit(signal.slug, signal.unit)
+        return f"{text} {unit}" if unit else text
+
+    if driver.source == "bedtime":
+        high_label, low_label = "later bedtimes", "earlier bedtimes"
+        high_days, low_days = f"latest-bedtime {point_name}", "earliest"
+    else:
+        high_label = f"high {driver.label.lower()}"
+        low_label = f"low {driver.label.lower()}"
+        high_days, low_days = f"highest-{driver.label.lower()} {point_name}", "lowest"
     return {
         "group_size": size,
         "driver_high_mean": round(mean(high, 1), driver.decimals),
@@ -409,13 +429,15 @@ def _contrast(
         "outcome_on_high_days": round(high_outcome, outcome.decimals),
         "outcome_on_low_days": round(low_outcome, outcome.decimals),
         "difference": round(high_outcome - low_outcome, outcome.decimals),
+        # What the two groups are called on a chart, so a client does not have
+        # to know that a "high bedtime" is a late one.
+        "high_label": high_label,
+        "low_label": low_label,
         "description": (
-            f"On the {size} highest-{driver.label.lower()} {point_name} "
-            f"({round(mean(high, 1), driver.decimals)} {driver.unit} on average), "
-            f"{outcome.label.lower()} averaged "
-            f"{round(high_outcome, outcome.decimals)} {outcome.unit}; on the {size} "
-            f"lowest ({round(mean(low, 1), driver.decimals)} {driver.unit}), "
-            f"{round(low_outcome, outcome.decimals)} {outcome.unit}."
+            f"On the {size} {high_days} "
+            f"({say(driver, mean(high, 1))} on average), "
+            f"{outcome.label.lower()} averaged {say(outcome, high_outcome)}; on the {size} "
+            f"{low_days} ({say(driver, mean(low, 1))}), {say(outcome, low_outcome)}."
         ),
     }
 

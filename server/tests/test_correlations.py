@@ -199,6 +199,34 @@ class DiscoveryTests(CorrelationTestCase):
         self.assertIn("ms", contrast["description"])
         self.assertIn("h", contrast["description"])
 
+    def test_a_bedtime_contrast_reads_as_a_clock_time(self):
+        """Bedtime is minutes after noon for the arithmetic; "679 min after noon"
+        on a screen is 23:19 that nobody recognises as their own bedtime."""
+        pairs = [
+            (self.as_of - timedelta(days=i), 600 + i * 10, 8.0 - i * 0.05)
+            for i in range(12)
+        ]
+
+        contrast = correlations._contrast(
+            pairs, correlations.SIGNALS["bedtime"], correlations.SIGNALS["sleep_hours"], "nights"
+        )
+
+        self.assertNotIn("after noon", contrast["description"])
+        self.assertIn("latest-bedtime nights", contrast["description"])
+        self.assertRegex(contrast["description"], r"\(\d\d:\d\d on average\)")
+        self.assertEqual(contrast["high_label"], "later bedtimes")
+        self.assertEqual(contrast["low_label"], "earlier bedtimes")
+
+    def test_a_contrast_spells_units_the_way_people_do(self):
+        pairs = [(self.as_of - timedelta(days=i), 50 + i, 40 + i * 0.5) for i in range(12)]
+
+        contrast = correlations._contrast(
+            pairs, correlations.SIGNALS["resting_hr"], correlations.SIGNALS["hrv"], "days"
+        )
+
+        self.assertNotIn("count/min", contrast["description"])
+        self.assertIn("bpm", contrast["description"])
+
     def test_a_thin_overlap_is_refused_rather_than_estimated(self):
         for offset in range(6):
             day = self.as_of - timedelta(days=offset)

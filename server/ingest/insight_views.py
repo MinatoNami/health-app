@@ -29,7 +29,7 @@ from rest_framework.decorators import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from . import analytics, correlations, health_analysis, patterns
+from . import analytics, correlations, health_analysis, lifestyle, patterns
 from .analytics_views import AUTH, AnalyticsThrottle, _FixedScopeThrottle
 from .auth import owner_of as _owner
 from .llm import client as llm_client
@@ -171,6 +171,16 @@ def nutrition(request):
 @throttle_classes([AnalyticsThrottle])
 def anomalies(request):
     return Response({"anomalies": health_analysis.anomalies(as_of=_as_of(request), tz_name=_tz(request))})
+
+
+@api_view(["GET"])
+@authentication_classes(AUTH)
+@permission_classes([IsAuthenticated])
+@throttle_classes([AnalyticsThrottle])
+def lifestyle_signals(request):
+    """Overnight vitals, sleep regularity, weekly activity, daylight and cardio
+    fitness — each section `null` when there is no data behind it."""
+    return Response(lifestyle.signals(as_of=_as_of(request), tz_name=_tz(request)))
 
 
 def _window(request, default: int, maximum: int):
