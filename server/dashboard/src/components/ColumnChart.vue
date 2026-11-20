@@ -7,6 +7,7 @@
  * stroke drawn around the bar.
  */
 import { computed, ref } from 'vue'
+import { tickLabel } from '../format.js'
 
 const props = defineProps({
   points: { type: Array, required: true },
@@ -58,6 +59,8 @@ const ticks = computed(() => {
   for (let v = step; v <= scale.value.max; v += step) out.push(v)
   return out
 })
+
+const tickStep = computed(() => (ticks.value.length > 1 ? ticks.value[1] - ticks.value[0] : 1))
 
 function niceStep(raw) {
   const mag = Math.pow(10, Math.floor(Math.log10(Math.abs(raw) || 1)))
@@ -170,14 +173,14 @@ function onMove(event) {
           :x="PAD.left - 8" :y="scale.y(t) + 3.5"
           text-anchor="end" font-size="10" fill="var(--text-muted)"
           style="font-variant-numeric: tabular-nums"
-        >{{ fmt(t) }}</text>
+        >{{ tickLabel(t, tickStep) }}</text>
       </g>
 
       <path
         v-for="(p, i) in clean" :key="p.date"
         :d="barPath(i, p.value)"
         fill="var(--series-1)"
-        :opacity="hover === null || hover === i ? 1 : 0.55"
+        :opacity="(p.partial ? 0.35 : 1) * (hover === null || hover === i ? 1 : 0.55)"
       />
 
       <!-- One direct label: the peak. A number on every column is unreadable. -->
@@ -207,7 +210,7 @@ function onMove(event) {
       :style="{ left: `${((scale.x(hover) + scale.width / 2) / W) * 100}%` }"
     >
       <strong>{{ fmt(clean[hover].value) }}</strong> {{ unit }}
-      <span>{{ shortDate(clean[hover].date) }}</span>
+      <span>{{ clean[hover].partial ? 'today, so far' : shortDate(clean[hover].date) }}</span>
       <span v-if="clean[hover].source === 'raw_sum'" class="est">estimated</span>
     </div>
   </div>

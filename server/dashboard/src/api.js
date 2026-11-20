@@ -113,6 +113,7 @@ export const api = {
   correlations: (params = {}) => request(`/v1/analysis/correlations?${tzq(params)}`),
   patterns: (params = {}) => request(`/v1/analysis/patterns?${tzq(params)}`),
   anomalies: (params = {}) => request(`/v1/analysis/anomalies?${tzq(params)}`),
+  lifestyle: (params = {}) => request(`/v1/analysis/lifestyle?${tzq(params)}`),
   goals: () => request('/v1/analysis/goals'),
   saveGoal: (body) =>
     request('/v1/analysis/goals', { method: 'POST', body: JSON.stringify(body) }),

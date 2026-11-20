@@ -82,7 +82,8 @@ function lag(days) {
  * below is a field of the payload. */
 function weekLine(p) {
   const v = (n) => withUnit(num(n), p.metric_slug, p.unit)
-  return `${p.label} on ${p.group} averages ${v(p.group_mean)}, ${v(Math.abs(p.difference))} ${p.direction} than the rest of the week (${v(p.rest_mean)}), across ${p.observations} of them.`
+  // "averaged", which reads right after "Steps" and "Weight" alike.
+  return `${p.label} on ${p.group} averaged ${v(p.group_mean)}, ${v(Math.abs(p.difference))} ${p.direction} than the rest of the week (${v(p.rest_mean)}), across ${p.observations} of them.`
 }
 </script>
 
@@ -124,7 +125,7 @@ function weekLine(p) {
 
         <template v-if="a.contrast">
           <div class="fbar">
-            <div class="fbar-key">high {{ a.driver.label.toLowerCase() }}</div>
+            <div class="fbar-key">{{ a.contrast.high_label || `high ${a.driver.label.toLowerCase()}` }}</div>
             <div class="fbar-track">
               <div
                 class="fbar-fill high"
@@ -134,7 +135,7 @@ function weekLine(p) {
             <div class="fbar-val">{{ withUnit(num(a.contrast.outcome_on_high_days), null, a.outcome.unit) }}</div>
           </div>
           <div class="fbar">
-            <div class="fbar-key">low {{ a.driver.label.toLowerCase() }}</div>
+            <div class="fbar-key">{{ a.contrast.low_label || `low ${a.driver.label.toLowerCase()}` }}</div>
             <div class="fbar-track">
               <div
                 class="fbar-fill"
@@ -186,7 +187,7 @@ function weekLine(p) {
           <template v-else>{{ correlations.associations_found }} significant.</template>
         </template>
         <template v-if="skipped.length">
-          {{ skipped.length }} could not be tested.
+          {{ ' ' }}{{ skipped.length }} could not be tested.
         </template>
         <button class="linkbtn" @click="showExamined = !showExamined">
           {{ showExamined ? 'Hide' : 'Show what was examined' }}

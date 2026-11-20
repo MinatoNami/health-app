@@ -19,6 +19,10 @@ const UNITS = {
   apple_exercise_time: 'min',
   sleep_analysis: 'hr',
   respiratory_rate: 'br/min',
+  heart_rate_recovery_one_minute: 'BPM',
+  apple_sleeping_wrist_temperature: '°C',
+  time_in_daylight: 'min',
+  vo2_max: 'mL/kg/min',
 }
 
 /* `count` means "a number of the thing the label already names" — "9,470 count"
@@ -52,4 +56,42 @@ export function shortLabel(slug, fallback) {
 export function withUnit(value, slug, raw) {
   const unit = unitFor(slug, raw)
   return unit ? `${value} ${unit}` : `${value}`
+}
+
+/* Hours as a person says them. "7.8 hr" is a decimal nobody sleeps; "7h 48m"
+ * is the same night in the form the phone and the overnight card both use. */
+export function hoursMinutes(hours) {
+  if (hours == null) return '—'
+  const total = Math.round(hours * 60)
+  return `${Math.floor(total / 60)}h ${String(total % 60).padStart(2, '0')}m`
+}
+
+/* Filed under the morning they ended, so "today" for these is last night —
+ * complete once it is over, unlike today's steps. Mirrors the server's
+ * sleep bucketing and analytics.END_ANCHORED. */
+export const NIGHTLY = new Set([
+  'sleep_analysis',
+  'apple_sleeping_wrist_temperature',
+  'apple_sleeping_breathing_disturbances',
+])
+
+/* Today's date where the browser is, as the YYYY-MM-DD the API uses. Not
+ * toISOString(), which is UTC and calls a Singapore morning yesterday. */
+export function localToday() {
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/* Axis labels that keep the precision their step needs. Rounding every tick
+ * to whole numbers turned a 72–73 kg axis into "72, 72, 73, 73". */
+export function tickLabel(value, step) {
+  // One notation per axis: switching from "8,000" to "10.0K" halfway up reads
+  // as two different scales.
+  if (step >= 1000) return tickLabel(value / 1000, step / 1000) + 'K'
+  const decimals = step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step) - 1e-9))
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
 }
