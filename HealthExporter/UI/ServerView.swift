@@ -20,7 +20,7 @@ struct ServerView: View {
                         ContentUnavailableView(
                             "Not signed in",
                             systemImage: "person.crop.circle.badge.xmark",
-                            description: Text("Sign in on the Settings tab to see what the server has stored.")
+                            description: Text("Sign in under Data → Account, brief & diagnostics to see what the server has stored.")
                         )
                     }
                     .listRowBackground(Ink.surface)

@@ -12,6 +12,7 @@ import SwiftUI
 /// built to catch: nothing errors, the numbers just quietly stop.
 struct DataView: View {
     @EnvironmentObject private var engine: SyncEngine
+    @EnvironmentObject private var services: AppServices
 
     var body: some View {
         NavigationStack {
@@ -29,6 +30,7 @@ struct DataView: View {
             .background(Ink.ground)
             .scrollContentBackground(.hidden)
             .navigationTitle("Data")
+            .navigationDestination(isPresented: $services.showSettings) { SettingsView() }
             .refreshable { await engine.refreshServerStatus(fresh: true) }
             .task {
                 if engine.serverStatus == nil { await engine.refreshServerStatus() }
@@ -53,7 +55,7 @@ struct DataView: View {
                 staleCallout(stale.prefix(3).map(\.metricSlug.metricDisplayName))
                 if stale.count > 3 {
                     Text("+ \(stale.count - 3) more not seen in 48 hours")
-                        .font(.system(size: 12))
+                        .scaledFont(12)
                         .foregroundStyle(Ink.faint)
                 }
             }
@@ -63,15 +65,15 @@ struct DataView: View {
     private func staleCallout(_ names: [String]) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 17))
+                .scaledFont(17)
                 .foregroundStyle(Ink.absent)
             VStack(alignment: .leading, spacing: 3) {
                 Text(names.joined(separator: ", "))
-                    .font(.system(size: 13, weight: .semibold))
+                    .scaledFont(13, weight: .semibold)
                     .foregroundStyle(Ink.absentInk)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Not seen in 48 hours. Normal for something you rarely record — or the first sign sync stopped for it.")
-                    .font(.system(size: 12))
+                    .scaledFont(12)
                     .foregroundStyle(Ink.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -97,15 +99,15 @@ struct DataView: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Metric groups")
-                            .font(.system(size: 14.5))
+                            .scaledFont(14.5)
                             .foregroundStyle(Ink.primary)
                         Text(enabledSummary)
-                            .font(.figure(11.5, weight: .regular))
+                            .figureFont(11.5, weight: .regular)
                             .foregroundStyle(Ink.faint)
                     }
                     Spacer(minLength: 0)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(12, weight: .semibold)
                         .foregroundStyle(Ink.faint)
                 }
                 .frame(minHeight: 54)
@@ -130,9 +132,9 @@ struct DataView: View {
             VStack(spacing: 0) {
                 if let status = engine.serverStatus {
                     statRow("Records stored", status.recordsTotal.formatted(), first: true)
-                    statRow("Last upload", status.lastBatchDate.map {
-                        $0.formatted(date: .omitted, time: .shortened)
-                    } ?? "never")
+                    // With the day when it was not today: on the screen built to
+                    // catch a stalled sync, "4:05 PM" from Tuesday read as today.
+                    statRow("Last upload", status.lastBatchDate.map(Self.moment) ?? "never")
                     statRow(
                         "Waiting to send",
                         "\(engine.pendingBatches)",
@@ -153,11 +155,11 @@ struct DataView: View {
             } label: {
                 HStack {
                     Text("Everything the server holds")
-                        .font(.system(size: 13.5))
+                        .scaledFont(13.5)
                         .foregroundStyle(Ink.muted)
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .scaledFont(12, weight: .semibold)
                         .foregroundStyle(Ink.faint)
                 }
                 .frame(minHeight: 44)
@@ -172,11 +174,11 @@ struct DataView: View {
             if !first { Divider().overlay(Ink.divider) }
             HStack {
                 Text(title)
-                    .font(.system(size: 13.5))
+                    .scaledFont(13.5)
                     .foregroundStyle(Ink.secondary)
                 Spacer()
                 Text(value)
-                    .font(.figure(13.5))
+                    .figureFont(13.5)
                     .foregroundStyle(tint ?? Ink.primary)
             }
             .padding(.horizontal, 15)
@@ -184,19 +186,25 @@ struct DataView: View {
         }
     }
 
+    static func moment(_ date: Date) -> String {
+        Calendar.current.isDateInToday(date)
+            ? date.formatted(date: .omitted, time: .shortened)
+            : date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
+    }
+
     // MARK: - Settings
 
     private var settingsRow: some View {
-        NavigationLink {
-            SettingsView()
+        Button {
+            services.showSettings = true
         } label: {
             HStack {
                 Text("Account, brief & diagnostics")
-                    .font(.system(size: 14))
+                    .scaledFont(14)
                     .foregroundStyle(Ink.secondary)
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .scaledFont(12, weight: .semibold)
                     .foregroundStyle(Ink.faint)
             }
             .frame(minHeight: 52)

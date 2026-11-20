@@ -34,11 +34,14 @@ struct InsightsView: View {
         NavigationStack {
             Group {
                 if !engine.isSignedIn {
-                    ContentUnavailableView(
-                        "Not signed in",
-                        systemImage: "person.crop.circle.badge.xmark",
-                        description: Text("Sign in on the Settings tab.")
-                    )
+                    ContentUnavailableView {
+                        Label("Not signed in", systemImage: "person.crop.circle.badge.xmark")
+                    } description: {
+                        Text("Sign in to your server to ask about your data.")
+                    } actions: {
+                        Button("Sign In") { services.openSettings() }
+                            .buttonStyle(.borderedProminent)
+                    }
                 } else {
                     conversation
                 }
@@ -47,6 +50,15 @@ struct InsightsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { if engine.isSignedIn { chatToolbar } }
             .task { if engine.snapshot == nil { await engine.refreshSnapshot() } }
+            // A question handed over from an "Ask about this" row elsewhere.
+            // Placed in the composer, not sent: the person may want to change
+            // it first.
+            .task(id: services.draftQuestion) {
+                guard let draft = services.draftQuestion else { return }
+                question = draft
+                composerFocused = true
+                services.draftQuestion = nil
+            }
         }
     }
 
@@ -137,13 +149,13 @@ struct InsightsView: View {
 
                         if let notice = engine.chatNotice {
                             Text(notice)
-                                .font(.system(size: 12.5))
+                                .scaledFont(12.5)
                                 .foregroundStyle(Ink.faint)
                         }
 
                         if let error = engine.insightError ?? engine.snapshotError {
                             Text(error)
-                                .font(.system(size: 12.5))
+                                .scaledFont(12.5)
                                 .foregroundStyle(Ink.absent)
                         }
 
@@ -165,7 +177,7 @@ struct InsightsView: View {
                             proxy.scrollTo(bottomAnchor, anchor: .bottom)
                         } label: {
                             Label("Latest", systemImage: "arrow.down")
-                                .font(.system(size: 12, weight: .semibold))
+                                .scaledFont(12, weight: .semibold)
                                 .foregroundStyle(Ink.secondary)
                                 .padding(.horizontal, 13)
                                 .padding(.vertical, 7)
@@ -299,10 +311,13 @@ private struct Composer: View {
                             visible: question.isEmpty)
                     .lineLimit(1...4)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 14))
+                    .scaledFont(14)
                     .foregroundStyle(Ink.primary)
                     .tint(Ink.accent)
                     .focused($focused)
+                    // The prompt is drawn behind the field, so VoiceOver has
+                    // nothing to read unless it is said here.
+                    .accessibilityLabel(showsSuggestions ? "Ask about your health data" : "Ask a follow-up")
 
                 // Accent once there is something to send, inert grey before —
                 // straight from the two boards, and the only moving part in the
@@ -312,10 +327,12 @@ private struct Composer: View {
                     onSend(question)
                 } label: {
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
+                        .scaledFont(14, weight: .bold)
                         .foregroundStyle(canSend ? Ink.ground : Ink.faint)
                         .frame(width: 32, height: 32)
                         .background(canSend ? Ink.accent : Ink.hairline, in: Circle())
+                        // Drawn at 32pt to sit inside the pill; tappable at 44.
+                        .contentShape(Rectangle().inset(by: -6))
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
@@ -351,7 +368,7 @@ private struct Composer: View {
 private struct ChipStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 12.5))
+            .scaledFont(12.5)
             .foregroundStyle(Ink.secondary)
             .padding(.horizontal, 14)
             .frame(minHeight: 40)
@@ -378,13 +395,13 @@ private struct BriefBubble: View {
             Text("Morning brief").sectionLabelStyle()
 
             Text(brief.headline)
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(16, weight: .semibold)
                 .foregroundStyle(Ink.primary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if !brief.detail.isEmpty {
                 Text(brief.detail)
-                    .font(.system(size: 13.5))
+                    .scaledFont(13.5)
                     .foregroundStyle(Ink.secondary)
                     .lineSpacing(2.5)
                     .fixedSize(horizontal: false, vertical: true)
@@ -393,17 +410,17 @@ private struct BriefBubble: View {
             ForEach(brief.movers) { mover in
                 HStack(alignment: .firstTextBaseline) {
                     Text(mover.label)
-                        .font(.system(size: 13))
+                        .scaledFont(13)
                         .foregroundStyle(Ink.secondary)
                     Spacer(minLength: 6)
                     if let value = mover.current.value {
                         Text(value.formatted(.number.precision(.fractionLength(value < 10 ? 1 : 0))))
-                            .font(.figure(13))
+                            .figureFont(13)
                             .foregroundStyle(Ink.primary)
                     }
                     if let pct = mover.changePct {
                         Text("\(pct > 0 ? "+" : "−")\(Int(abs(pct).rounded()))%")
-                            .font(.system(size: 12, weight: .semibold))
+                            .scaledFont(12, weight: .semibold)
                             .monospacedDigit()
                             .foregroundStyle(Ink.muted)
                             .frame(width: 46, alignment: .trailing)
@@ -412,13 +429,13 @@ private struct BriefBubble: View {
             }
 
             Button("Why did that change?", action: onAskWhy)
-                .font(.system(size: 13, weight: .semibold))
+                .scaledFont(13, weight: .semibold)
                 .foregroundStyle(Ink.accent)
                 .buttonStyle(.plain)
                 .padding(.top, 2)
 
             Text("Through \(brief.asOf)")
-                .font(.figure(11, weight: .regular))
+                .figureFont(11, weight: .regular)
                 .foregroundStyle(Ink.faint)
         }
         .padding(15)
@@ -457,18 +474,19 @@ private struct SnapshotBubble: View {
                         ForEach(stale) { item in
                             HStack {
                                 Text(item.label)
-                                    .font(.system(size: 13))
+                                    .scaledFont(13)
                                     .foregroundStyle(Ink.secondary)
                                 Spacer(minLength: 6)
-                                Text("\(item.daysSince ?? 0)d ago")
-                                    .font(.figure(12))
+                                // No date is not "0d ago", which read as today.
+                                Text(item.daysSince.map { "\($0)d ago" } ?? "date unknown")
+                                    .figureFont(12)
                                     .foregroundStyle(Ink.absent)
                             }
                         }
                         // The rule the whole app is built around, said where a
                         // reader is most likely to mistake absence for a zero.
                         Text("Not syncing. A gap is not a zero.")
-                            .font(.system(size: 11.5))
+                            .scaledFont(11.5)
                             .foregroundStyle(Ink.faint)
                     }
                     .padding(.horizontal, 15)
@@ -481,7 +499,7 @@ private struct SnapshotBubble: View {
             // Outside the card, in the board, and it belongs there: it is an
             // instruction about the screen rather than a row of the table.
             Text("Ask anything about these figures. Answers cite the days they were measured from.")
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Ink.faint)
                 .lineSpacing(2.5)
                 .fixedSize(horizontal: false, vertical: true)
@@ -498,7 +516,7 @@ private struct MetricLine: View {
     var body: some View {
         HStack(spacing: 12) {
             Text(MetricStyle.shortLabel(metric.metricSlug, fallback: metric.label))
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Ink.secondary)
             Spacer(minLength: 6)
             // Both shared with Today rather than reimplemented here, which is
@@ -507,13 +525,13 @@ private struct MetricLine: View {
             // renderings of the same figure that can drift is precisely the
             // thing the server-side-analysis rule exists to avoid.
             Text(MetricFormat.value(metric.current.value, slug: metric.metricSlug))
-                .font(.figure(13))
+                .figureFont(13)
                 .foregroundStyle(Ink.primary)
             Text(MetricStyle.unit(metric.unit, slug: metric.metricSlug))
-                .font(.system(size: 11))
+                .scaledFont(11)
                 .foregroundStyle(Ink.faint)
             Text(delta)
-                .font(.system(size: 12, weight: .semibold))
+                .scaledFont(12, weight: .semibold)
                 .monospacedDigit()
                 .foregroundStyle(tint)
                 .frame(width: 46, alignment: .trailing)
@@ -542,7 +560,7 @@ private struct UserBubble: View {
         HStack {
             Spacer(minLength: 40)
             Text(text)
-                .font(.system(size: 14))
+                .scaledFont(14)
                 .foregroundStyle(Ink.primary)
                 .lineSpacing(2)
                 .padding(.horizontal, 15)
@@ -572,7 +590,7 @@ private struct PendingBubble: View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small).tint(Ink.muted)
             Text("\(label.isEmpty ? "Reading your summaries" : label)…")
-                .font(.system(size: 14))
+                .scaledFont(14)
                 .foregroundStyle(Ink.muted)
                 .contentTransition(.opacity)
                 .animation(.easeInOut(duration: 0.2), value: label)
@@ -602,15 +620,15 @@ private struct AnswerBubble: View {
                 Label(safety.headline,
                       systemImage: safety.level == "urgent"
                         ? "exclamationmark.triangle.fill" : "stethoscope")
-                    .font(.system(size: 14, weight: .semibold))
+                    .scaledFont(14, weight: .semibold)
                     .foregroundStyle(safety.level == "urgent" ? Ink.accent : Ink.absent)
                 ForEach(safety.reasons, id: \.self) { reason in
-                    Text(reason).font(.system(size: 12.5)).foregroundStyle(Ink.muted)
+                    Text(reason).scaledFont(12.5).foregroundStyle(Ink.muted)
                 }
             }
 
             if let error = turn.error {
-                Text(error).font(.system(size: 12.5)).foregroundStyle(Ink.muted)
+                Text(error).scaledFont(12.5).foregroundStyle(Ink.muted)
             }
 
             if let answer = turn.answer {
@@ -619,14 +637,14 @@ private struct AnswerBubble: View {
                 // long and questions are one line, boxing both makes the answer
                 // look like a quotation of itself.
                 Text(answer.summary)
-                    .font(.system(size: 15))
+                    .scaledFont(15)
                     .foregroundStyle(Ink.primary)
                     .lineSpacing(3.5)
                     .fixedSize(horizontal: false, vertical: true)
 
                 ForEach(answer.observations) { observation in
                     Text(observation.statement)
-                        .font(.system(size: 15))
+                        .scaledFont(15)
                         .foregroundStyle(Ink.primary)
                         .lineSpacing(3.5)
                         .fixedSize(horizontal: false, vertical: true)
@@ -639,7 +657,7 @@ private struct AnswerBubble: View {
                     Button(showDetail ? "Less" : "Suggestions and limits (\(detailCount))") {
                         withAnimation { showDetail.toggle() }
                     }
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .scaledFont(12.5, weight: .semibold)
                     .foregroundStyle(Ink.muted)
                     .buttonStyle(.plain)
                 }
@@ -650,10 +668,10 @@ private struct AnswerBubble: View {
                         ForEach(answer.actions) { action in
                             VStack(alignment: .leading, spacing: 3) {
                                 Text("\u{2022} \(action.action)")
-                                    .font(.system(size: 14))
+                                    .scaledFont(14)
                                     .foregroundStyle(Ink.primary)
                                 Text("\(action.reason) \u{b7} \(action.timeframe)")
-                                    .font(.system(size: 11.5))
+                                    .scaledFont(11.5)
                                     .foregroundStyle(Ink.faint)
                                     .padding(.leading, 12)
                             }
@@ -663,7 +681,7 @@ private struct AnswerBubble: View {
                         Text("Limits").sectionLabelStyle().padding(.top, 2)
                         ForEach(answer.limitations, id: \.self) { limitation in
                             Text("\u{2022} \(limitation)")
-                                .font(.system(size: 13))
+                                .scaledFont(13)
                                 .foregroundStyle(Ink.secondary)
                         }
                     }
@@ -671,7 +689,7 @@ private struct AnswerBubble: View {
 
                 if answer.professionalReviewRecommended {
                     Text("Worth raising with a healthcare professional.")
-                        .font(.system(size: 13))
+                        .scaledFont(13)
                         .foregroundStyle(Ink.absent)
                 }
             }
@@ -680,7 +698,7 @@ private struct AnswerBubble: View {
 
             if !turn.note.isEmpty && !editingNote {
                 Text(turn.note)
-                    .font(.system(size: 12.5))
+                    .scaledFont(12.5)
                     .foregroundStyle(Ink.muted)
                     .padding(.leading, 9)
                     .overlay(alignment: .leading) {
@@ -691,7 +709,7 @@ private struct AnswerBubble: View {
             if editingNote {
                 TextField("What was wrong or right about this answer?", text: $draft, axis: .vertical)
                     .lineLimit(1...4)
-                    .font(.system(size: 13))
+                    .scaledFont(13)
                     .textFieldStyle(.plain)
                     .foregroundStyle(Ink.primary)
                     .tint(Ink.accent)
@@ -705,14 +723,14 @@ private struct AnswerBubble: View {
                 HStack(spacing: 14) {
                     Spacer()
                     Button("Cancel") { editingNote = false }
-                        .font(.system(size: 13))
+                        .scaledFont(13)
                         .foregroundStyle(Ink.muted)
                         .buttonStyle(.plain)
                     Button("Save") {
                         onFeedback(turn.rating, draft)
                         editingNote = false
                     }
-                    .font(.system(size: 13, weight: .semibold))
+                    .scaledFont(13, weight: .semibold)
                     .foregroundStyle(Ink.accent)
                     .buttonStyle(.plain)
                 }
@@ -739,7 +757,7 @@ private struct AnswerBubble: View {
                 Spacer(minLength: 8)
                 if !answer.periodExamined.isEmpty {
                     Text(answer.periodExamined)
-                        .font(.figure(10, weight: .regular))
+                        .figureFont(10, weight: .regular)
                         .foregroundStyle(Ink.faint)
                 }
             }
@@ -750,13 +768,13 @@ private struct AnswerBubble: View {
                 Rectangle().fill(Ink.divider).frame(height: 1)
                 HStack(alignment: .top, spacing: 10) {
                     Text(observation.evidence)
-                        .font(.system(size: 13))
+                        .scaledFont(13)
                         .foregroundStyle(Ink.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 6)
                     if !observation.confidence.isEmpty {
                         Text(observation.confidence)
-                            .font(.figure(10, weight: .regular))
+                            .figureFont(10, weight: .regular)
                             .textCase(.uppercase)
                             .foregroundStyle(Ink.faint)
                     }
@@ -771,7 +789,7 @@ private struct AnswerBubble: View {
             // where it was shown on every screen including the empty one. It
             // qualifies advice, so it belongs where advice appears.
             Text("Wellness guidance from your own data. Not medical advice.")
-                .font(.system(size: 11))
+                .scaledFont(11)
                 .foregroundStyle(Ink.faint)
                 .lineSpacing(1.5)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -803,7 +821,7 @@ private struct AnswerBubble: View {
                     Text("\(at) \u{b7} No model ran.")
                 }
             }
-            .font(.figure(10.5, weight: .regular))
+            .figureFont(10.5, weight: .regular)
             .foregroundStyle(Ink.faint)
 
             Spacer(minLength: 8)
@@ -814,10 +832,12 @@ private struct AnswerBubble: View {
                     withAnimation { didCopy = true }
                 } label: {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                        .footerTarget()
                 }
                 .font(.caption)
                 .buttonStyle(.plain)
                 .foregroundStyle(didCopy ? Ink.accent : Ink.faint)
+                .accessibilityLabel(didCopy ? "Copied" : "Copy answer")
                 .task(id: didCopy) {
                     guard didCopy else { return }
                     try? await Task.sleep(for: .seconds(1.6))
@@ -831,11 +851,12 @@ private struct AnswerBubble: View {
                 // while a prompt is being tuned.
                 if !turn.question.isEmpty {
                     Button { onAgain(turn.question) } label: {
-                        Image(systemName: "arrow.clockwise")
+                        Image(systemName: "arrow.clockwise").footerTarget()
                     }
-                    .font(.system(size: 13))
+                    .scaledFont(13)
                     .buttonStyle(.plain)
                     .foregroundStyle(Ink.faint)
+                    .accessibilityLabel("Ask again")
                 }
             }
 
@@ -850,10 +871,12 @@ private struct AnswerBubble: View {
                     editingNote = true
                 } label: {
                     Image(systemName: turn.note.isEmpty ? "text.bubble" : "text.bubble.fill")
+                        .footerTarget()
                 }
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .buttonStyle(.plain)
                 .foregroundStyle(turn.note.isEmpty ? Ink.faint : Ink.accent)
+                .accessibilityLabel(turn.note.isEmpty ? "Add note" : "Edit note")
             }
         }
     }
@@ -864,12 +887,24 @@ private struct AnswerBubble: View {
             // rating you cannot take back is one nobody trusts enough to give.
             onFeedback(turn.rating == value ? nil : value, nil)
         } label: {
-            Image(systemName: turn.rating == value ? filled : hollow)
+            Image(systemName: turn.rating == value ? filled : hollow).footerTarget()
         }
-        .font(.system(size: 13))
+        .scaledFont(13)
         .buttonStyle(.plain)
         .foregroundStyle(turn.rating == value ? Ink.accent : Ink.faint)
         .accessibilityLabel(value > 0 ? "Useful" : "Not useful")
+        // Filled is drawn; selected has to be said.
+        .accessibilityAddTraits(turn.rating == value ? .isSelected : [])
+    }
+}
+
+private extension View {
+    /// A 13pt glyph with a 44pt target. The glyphs stay small — the footer is
+    /// meant to be quiet — but a 16pt target under a thumb is a mis-tap on the
+    /// neighbouring control, and the neighbours here are a rating and a note.
+    func footerTarget() -> some View {
+        frame(minWidth: 28, minHeight: 28)
+            .contentShape(Rectangle().inset(by: -8))
     }
 }
 
@@ -890,7 +925,7 @@ private struct CompactionSeam: View {
                     withAnimation { expanded.toggle() }
                 } label: {
                     Text("\(turns) earlier message\(turns == 1 ? "" : "s") compacted")
-                        .font(.figure(10.5, weight: .regular))
+                        .figureFont(10.5, weight: .regular)
                         .foregroundStyle(Ink.faint)
                 }
                 .buttonStyle(.plain)
@@ -899,7 +934,7 @@ private struct CompactionSeam: View {
 
             if expanded, let summary {
                 Text(summary)
-                    .font(.system(size: 12.5))
+                    .scaledFont(12.5)
                     .foregroundStyle(Ink.muted)
                     .lineSpacing(2)
                     .padding(11)

@@ -150,6 +150,30 @@ final class AppServices: ObservableObject {
     /// Set when Insights was opened from the morning alert, so it can lead with
     /// the brief rather than the general screen.
     @Published var showBriefOnOpen = false
+    /// Whether Settings is pushed on the Data tab.
+    ///
+    /// Owned here so a sign-in prompt anywhere can take the person to the one
+    /// screen that can sign them in. The prompts used to say "on the Settings
+    /// tab" — there is no Settings tab — or switch to Data and leave them to
+    /// find the row.
+    @Published var showSettings = false
+    /// A question to put in the composer when Insights next appears, from an
+    /// "Ask about this" row elsewhere. Cleared once it has been placed.
+    @Published var draftQuestion: String?
+
+    /// Data tab, Settings pushed.
+    func openSettings() {
+        selectedTab = .data
+        showSettings = true
+    }
+
+    /// Insights, with a question waiting in the composer rather than sent: the
+    /// person may want to change it, and an answer takes a local model tens of
+    /// seconds they did not agree to spend.
+    func ask(_ question: String) {
+        draftQuestion = question
+        selectedTab = .insights
+    }
 
     /// Whether first-run onboarding still has to happen.
     ///

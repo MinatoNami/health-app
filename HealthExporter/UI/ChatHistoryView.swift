@@ -24,6 +24,9 @@ struct ChatHistoryView: View {
     @State private var search = ""
     @State private var renaming: ChatSession?
     @State private var newTitle = ""
+    /// The chat a delete is waiting on. Deleting removes it from the server for
+    /// good, so it is asked rather than done on a full swipe.
+    @State private var deleting: ChatSession?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -37,7 +40,7 @@ struct ChatHistoryView: View {
                             let chats = engine.chats.filter { $0.projectId == project.id }
                             if chats.isEmpty {
                                 Text("No chats in here yet.")
-                                    .font(.system(size: 12.5))
+                                    .scaledFont(12.5)
                                     .foregroundStyle(Ink.faint)
                                     .listRowBackground(Ink.surface)
                             }
@@ -51,7 +54,7 @@ struct ChatHistoryView: View {
                             // every answer inside.
                             if !project.instructions.isEmpty {
                                 Text(project.instructions)
-                                    .font(.system(size: 11.5))
+                                    .scaledFont(11.5)
                                     .foregroundStyle(Ink.faint)
                             }
                         }
@@ -70,7 +73,7 @@ struct ChatHistoryView: View {
                     Button("Load older chats") {
                         Task { await engine.loadChats(search: search, more: true) }
                     }
-                    .font(.system(size: 13))
+                    .scaledFont(13)
                     .foregroundStyle(Ink.accent)
                     .buttonStyle(.plain)
                     .listRowBackground(Ink.surface)
@@ -82,13 +85,13 @@ struct ChatHistoryView: View {
                     if let problem = engine.chatsError {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Could not load your chats.")
-                                .font(.system(size: 14))
+                                .scaledFont(14)
                                 .foregroundStyle(Ink.primary)
                             Text(problem)
-                                .font(.system(size: 12.5))
+                                .scaledFont(12.5)
                                 .foregroundStyle(Ink.muted)
                             Button("Try again") { Task { await engine.loadChats(search: search) } }
-                                .font(.system(size: 13, weight: .semibold))
+                                .scaledFont(13, weight: .semibold)
                                 .foregroundStyle(Ink.accent)
                                 .buttonStyle(.plain)
                         }
@@ -97,7 +100,7 @@ struct ChatHistoryView: View {
                         Text(search.isEmpty
                              ? "No chats yet. Ask something to start one."
                              : "Nothing matched.")
-                            .font(.system(size: 13.5))
+                            .scaledFont(13.5)
                             .foregroundStyle(Ink.muted)
                             .listRowBackground(Ink.surface)
                     }
@@ -132,13 +135,26 @@ struct ChatHistoryView: View {
                 renaming = nil
             }
         }
+        .confirmationDialog(
+            "Delete this chat?",
+            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+            titleVisibility: .visible,
+            presenting: deleting
+        ) { chat in
+            Button("Delete", role: .destructive) {
+                Task { await engine.deleteChat(chat.id) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("It is removed from your server and cannot be recovered. Archive keeps it.")
+        }
         .task { await engine.loadChats() }
     }
 
     private var header: some View {
         HStack {
             Text("Chats")
-                .font(.system(size: 17, weight: .semibold))
+                .scaledFont(17, weight: .semibold)
                 .foregroundStyle(Ink.primary)
             Spacer(minLength: 8)
             Button {
@@ -146,7 +162,7 @@ struct ChatHistoryView: View {
                 dismiss()
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 17, weight: .semibold))
+                    .scaledFont(17, weight: .semibold)
                     .foregroundStyle(Ink.accent)
                     .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
@@ -167,12 +183,13 @@ struct ChatHistoryView: View {
     private var searchField: some View {
         HStack(spacing: 9) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .semibold))
+                .scaledFont(13, weight: .semibold)
                 .foregroundStyle(Ink.faint)
             TextField("", text: $search)
                 .prompt("Search questions", visible: search.isEmpty, size: 13)
+                .accessibilityLabel("Search questions")
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Ink.primary)
                 .tint(Ink.accent)
                 .submitLabel(.search)
@@ -186,7 +203,7 @@ struct ChatHistoryView: View {
                     search = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 13))
+                        .scaledFont(13)
                         .foregroundStyle(Ink.faint)
                 }
                 .buttonStyle(.plain)
@@ -254,9 +271,11 @@ struct ChatHistoryView: View {
         .listRowBackground(Ink.surface)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 7, leading: 18, bottom: 7, trailing: 18))
-        .swipeActions(edge: .trailing) {
+        // No full swipe: the first action is a permanent delete on the server,
+        // and a swipe that went one finger-width too far was all it took.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive) {
-                Task { await engine.deleteChat(chat.id) }
+                deleting = chat
             } label: {
                 Label("Delete", systemImage: "trash")
             }
@@ -291,12 +310,12 @@ struct ChatHistoryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.system(size: 14))
+                .scaledFont(14)
                 .foregroundStyle(Ink.primary)
                 .lineSpacing(1.5)
                 .lineLimit(1)
             Text(subtitle)
-                .font(.figure(11.5, weight: .regular))
+                .figureFont(11.5, weight: .regular)
                 .foregroundStyle(Ink.faint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -334,7 +353,7 @@ struct RetentionNote: View {
             Text(keepRated
                  ? "Chats are deleted after \(days) days. Rated answers are kept."
                  : "Chats are deleted after \(days) days.")
-                .font(.system(size: 11.5))
+                .scaledFont(11.5)
                 .foregroundStyle(Ink.faint)
                 .lineSpacing(2.5)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -412,6 +431,11 @@ struct SideDrawer<Panel: View, Content: View>: View {
                     .background(Ink.surface)
                     .ignoresSafeArea(edges: .vertical)
                     .offset(x: offset)
+                    // Offset off screen is still on screen to VoiceOver, which
+                    // walked into a closed drawer's chat list. The scrub
+                    // gesture closes it, as any modal panel should.
+                    .accessibilityHidden(!isOpen)
+                    .accessibilityAction(.escape) { close() }
                     .shadow(color: .black.opacity(0.18 * progress), radius: 12, x: 2)
             }
             .animation(.snappy(duration: 0.28), value: isOpen)

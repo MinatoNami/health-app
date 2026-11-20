@@ -177,12 +177,12 @@ private struct BootView: View {
 
             VStack(spacing: 18) {
                 Image(systemName: "heart.text.square.fill")
-                    .font(.system(size: 54))
+                    .scaledFont(54)
                     .foregroundStyle(Ink.accent)
                     .accessibilityHidden(true)
 
                 Text("Health Exporter")
-                    .font(.system(size: 20, weight: .semibold))
+                    .scaledFont(20, weight: .semibold)
                     .foregroundStyle(Ink.primary)
 
                 VStack(spacing: 8) {
@@ -193,7 +193,7 @@ private struct BootView: View {
                         .animation(.easeInOut(duration: 0.3), value: progress.fraction)
 
                     Text(progress.label)
-                        .font(.system(size: 12.5))
+                        .scaledFont(12.5)
                         .foregroundStyle(Ink.muted)
                         // Reserves the line so a longer label does not shift the
                         // bar upward as the steps advance.

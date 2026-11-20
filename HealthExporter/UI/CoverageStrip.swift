@@ -55,7 +55,7 @@ struct CoverageSummary: View {
         HStack(spacing: 10) {
             CoverageStrip(validDays: validDays, windowDays: windowDays)
             Text("\(validDays) of \(windowDays) \(noun) measured")
-                .font(.figure(12, weight: .regular))
+                .figureFont(12, weight: .regular)
                 .foregroundStyle(Ink.muted)
         }
         .accessibilityElement(children: .ignore)
@@ -95,7 +95,7 @@ struct ConfidencePill: View {
                 .fill(tint)
                 .frame(width: 5, height: 5)
             Text(label)
-                .font(.system(size: 11, weight: .semibold))
+                .scaledFont(11, weight: .semibold)
                 .foregroundStyle(tint)
         }
         .padding(.horizontal, 9)

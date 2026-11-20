@@ -15,18 +15,18 @@ struct MetricBar: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text(slug.metricDisplayName)
-                    .font(.system(size: 12.5))
+                    .scaledFont(12.5)
                     .foregroundStyle(Ink.secondary)
                     .lineLimit(1)
                 if isStale {
                     Image(systemName: "moon.zzz")
-                        .font(.system(size: 11))
+                        .scaledFont(11)
                         .foregroundStyle(Ink.absent)
                         .accessibilityHidden(true)
                 }
                 Spacer(minLength: 6)
                 Text(Self.compact(count))
-                    .font(.figure(11.5, weight: .medium))
+                    .figureFont(11.5, weight: .medium)
                     .foregroundStyle(Ink.faint)
             }
             GeometryReader { geo in
