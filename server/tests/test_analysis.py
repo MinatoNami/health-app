@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from django.core.cache import cache
 from django.test import TestCase
 
-from ingest import health_analysis, safety
+from ingest import analytics, health_analysis, safety
 from ingest.models import ApiToken, Batch, Device, Goal, Record
 
 SGT = ZoneInfo("Asia/Singapore")
@@ -654,3 +654,81 @@ class AnalysisEndpointTests(AnalysisTestCase):
             headers=self.auth(),
         )
         self.assertEqual(response.status_code, 400)
+
+
+class PercentUnitTests(AnalysisTestCase):
+    """HealthKit's percent unit is a fraction — 97% blood oxygen arrives as
+    0.97 — and every reader downstream means a percentage. Left unconverted,
+    a normal reading sat at 0.97 against safety's blood-oxygen floor of 92,
+    and the model was told blood oxygen "averaged 0.97 %"."""
+
+    def oxygen(self, offset: int, value: float, rollup=True):
+        day = self.as_of - timedelta(days=offset)
+        extra = {"id": f"stat:oxygen_saturation:{day.isoformat()}", "kind": Record.Kind.STATISTIC} if rollup else {}
+        return self.sample(
+            day, value, slug="oxygen_saturation", unit="%", aggregation="discrete", **extra
+        )
+
+    def test_rollups_and_raw_samples_read_as_percentages(self):
+        self.oxygen(0, 0.97)
+        self.oxygen(1, 0.96, rollup=False)
+
+        days = health_analysis.day_values(
+            "oxygen_saturation", self.as_of - timedelta(days=1), self.as_of
+        )
+
+        self.assertEqual([round(d.value, 1) for d in days], [96.0, 97.0])
+
+    def test_a_value_already_in_percent_is_not_scaled_again(self):
+        self.oxygen(0, 97.0)
+
+        days = health_analysis.day_values("oxygen_saturation", self.as_of, self.as_of)
+
+        self.assertEqual(days[0].value, 97.0)
+
+    def test_body_fat_is_a_percentage_too(self):
+        self.sample(self.as_of, 0.22, slug="body_fat_percentage", unit="%", aggregation="discrete")
+
+        days = health_analysis.day_values("body_fat_percentage", self.as_of, self.as_of)
+
+        self.assertAlmostEqual(days[0].value, 22.0)
+
+    def test_a_count_of_samples_is_not_scaled(self):
+        for hour in (8, 12, 16):
+            self.sample(
+                self.as_of, 0.97, slug="oxygen_saturation", unit="%", aggregation="discrete",
+                start=at(self.as_of, hour), end=at(self.as_of, hour),
+            )
+        start, end = health_analysis._bounds(self.as_of, self.as_of, None)
+
+        payload = analytics.daily_series("oxygen_saturation", start, end, "count")
+
+        self.assertEqual(payload["points"][0]["value"], 3)
+
+    def test_normal_blood_oxygen_does_not_cross_the_safety_floor(self):
+        for offset in range(35):
+            self.oxygen(offset, 0.97)
+
+        snapshot = health_analysis.snapshot(metrics=["oxygen_saturation"])
+
+        oxygen = snapshot["metrics"][0]
+        self.assertEqual(oxygen["current"]["value"], 97.0)
+        self.assertEqual(safety.check_measurements(snapshot), [])
+
+    def test_genuinely_low_blood_oxygen_still_does(self):
+        for offset in range(7, 35):
+            self.oxygen(offset, 0.97)
+        for offset in range(7):
+            self.oxygen(offset, 0.90)
+
+        hits = safety.check_measurements(health_analysis.snapshot(metrics=["oxygen_saturation"]))
+
+        self.assertEqual([(h["metric_slug"], h["side"]) for h in hits], [("oxygen_saturation", "below")])
+        self.assertEqual(hits[0]["value"], 90.0)
+
+    def test_the_latest_reading_tile_is_a_percentage(self):
+        self.oxygen(0, 0.95, rollup=False)
+
+        latest = analytics.latest_values(["oxygen_saturation"])
+
+        self.assertAlmostEqual(latest["oxygen_saturation"]["value"], 95.0)

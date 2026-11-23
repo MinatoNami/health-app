@@ -74,6 +74,12 @@ class MetricSpec:
     # user-entered flag is a tautology rather than a warning; and nobody should
     # be alerted that they stopped keeping a diary.
     self_reported: bool = False
+    # An absolute change smaller than this is "stable" whatever the person's own
+    # spread says. For a metric the device smooths heavily — Apple's VO2 max
+    # estimate barely moves day to day — the robust spread is tiny, and a
+    # change far inside the measurement's own error would otherwise grade as
+    # notable.
+    noise_floor: float = 0.0
 
 
 # Nutrition, derived from the nutrient catalog rather than restated here: the
@@ -128,6 +134,36 @@ METRICS: dict[str, MetricSpec] = {
         ),
         MetricSpec("distance_walking_running", "Walking + running distance", "km", "sum", "higher_better", decimals=2),
         MetricSpec("heart_rate", "Heart rate", "count/min", "avg", "neutral"),
+        # Collected for a long time and analysed by nothing. Each is cheap to
+        # summarise honestly, and each is a signal the research behind
+        # docs/ANALYSIS.md#lifestyle-signals rates as worth a person's attention.
+        #
+        # Daylight is written by the watch's ambient light sensor, one source,
+        # so a raw sum is not inflated by a second device the way steps are.
+        MetricSpec("time_in_daylight", "Time in daylight", "min", "sum", "higher_better"),
+        # Sparse by nature: the watch estimates it only during outdoor walks,
+        # runs and hikes. The floor is one MET (3.5 mL/kg/min) — the step the
+        # mortality literature is measured in, and inside the watch's own error
+        # against a lab test — so five weeks of wobble never reads as fitness
+        # gained or lost.
+        MetricSpec(
+            "vo2_max", "Cardio fitness (VO2 max)", "mL/kg/min", "avg", "higher_better",
+            decimals=1, min_current_days=1, min_baseline_days=2, expected_cadence=0.15,
+            noise_floor=3.5,
+        ),
+        # The absolute nightly value. Health shows it as a deviation from the
+        # person's own baseline, which is exactly what a baseline comparison of
+        # it produces — the `change` is the deviation.
+        MetricSpec(
+            "apple_sleeping_wrist_temperature", "Sleeping wrist temperature", "degC", "avg",
+            "neutral", decimals=2,
+        ),
+        # Written after workouts that end with a cool-down, so it is as sparse as
+        # the workouts behind it.
+        MetricSpec(
+            "heart_rate_recovery_one_minute", "Heart-rate recovery", "count/min", "avg",
+            "higher_better", min_current_days=1, min_baseline_days=2, expected_cadence=0.2,
+        ),
     ]
     + _NUTRITION_SPECS
 }
@@ -409,6 +445,8 @@ def compare_to_baseline(
         change_pct = (delta / baseline_value * 100) if baseline_value else None
         if grade != "insufficient":
             significance = classify_change(delta, [d.value for d in baseline])
+            if abs(delta) < spec.noise_floor:
+                significance = "stable"
 
     return {
         "metric_slug": slug,
@@ -600,9 +638,12 @@ def streak(slug: str, target: float, as_of: date | None = None, tz_name: str | N
 
 def _records(slug: str, start_day: date, end_day: date, tz_name: str | None):
     start, end = _bounds(start_day, end_day, tz_name)
+    # The same anchor `day_values` buckets by, or the quality report for a
+    # nightly metric counts a different set of nights from the figure it grades.
+    field = analytics.anchor_field(slug)
     return (
         analytics.live_records()
-        .filter(metric_slug=slug, start__gte=start, start__lt=end)
+        .filter(metric_slug=slug, **{f"{field}__gte": start, f"{field}__lt": end})
         .exclude(kind=Record.Kind.STATISTIC)
     )
 
@@ -1469,6 +1510,21 @@ def daily_brief(as_of: date | None = None, tz_name: str | None = None) -> dict:
     """
     snap = snapshot(as_of=as_of, tz_name=tz_name)
 
+    # Imported here because lifestyle builds on this module. The night checked
+    # is the one that ended the morning after the last complete day — this
+    # morning, when nothing was passed.
+    from . import lifestyle
+
+    morning = date.fromisoformat(snap["as_of"]) + timedelta(days=1)
+    night = lifestyle.overnight_vitals(morning=morning, tz_name=tz_name)
+    # Only the night that ended this morning. When it has not uploaded yet the
+    # check falls back to the night before — right for a card that names its
+    # night, wrong for a notification that does not: yesterday's alert would
+    # fire again about the same night.
+    overnight_flagged = (
+        night["status"] == "outside_range" and night["morning_of"] == morning.isoformat()
+    )
+
     movers = sorted(
         (
             m
@@ -1496,6 +1552,11 @@ def daily_brief(as_of: date | None = None, tz_name: str | None = None) -> dict:
     ]
 
     fragments = [phrase(m) for m in movers[:4]]
+    # Leads when it fires. It is about last night, the most time-sensitive
+    # thing here, and it fires rarely by construction — two measurements out
+    # of the person's own range at once — so it does not crowd out the week.
+    if overnight_flagged:
+        fragments.insert(0, f"{night['outside_range']} overnight vitals outside your usual range")
     # Staleness leads when nothing moved. "Nothing much changed" as the headline
     # with "sleep not syncing" trailing behind it buries the only actionable
     # thing in the message under a reassurance.
@@ -1520,11 +1581,20 @@ def daily_brief(as_of: date | None = None, tz_name: str | None = None) -> dict:
         "line": " · ".join(fragments),
         "movers": movers[:5],
         "not_syncing": stale,
+        "overnight": {
+            "status": night["status"],
+            "night_of": night["night_of"],
+            "outside": [
+                {"label": m["label"], "status": m["status"]}
+                for m in night["metrics"]
+                if m["status"] in ("above", "below")
+            ],
+        },
         "overall_confidence": snap["overall_confidence"],
         # Something is worth saying only when a metric actually moved or broke.
         # A daily alert that fires with "nothing changed" every day is one people
         # switch off, and then miss the day it matters.
-        "worth_notifying": bool(movers or stale),
+        "worth_notifying": bool(movers or stale or overnight_flagged),
     }
 
 
@@ -1645,6 +1715,11 @@ def anomalies(
 
         z = comparison["change"] / spread
         if abs(z) < threshold:
+            continue
+        # The same floor the weekly comparison applies. Apple's VO2 max is so
+        # smoothed that its spread is tiny, and a change far inside the
+        # watch's own error would otherwise read as a sustained shift.
+        if abs(comparison["change"]) < spec.noise_floor:
             continue
 
         # Sustained, not a single day: how many of the current window's days sit

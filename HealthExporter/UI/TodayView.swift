@@ -45,7 +45,11 @@ struct TodayView: View {
                     // between "you trained less" and "nothing has uploaded
                     // since Tuesday" is the whole point of saying so.
                     if let banner = runningBanner {
-                        SyncBanner(state: banner) { services.selectedTab = .data }
+                        // A rejected token goes straight to sign-in; everything
+                        // else to Data, where the pipe is diagnosed.
+                        SyncBanner(state: banner) {
+                            if banner.action != nil { services.openSettings() } else { services.selectedTab = .data }
+                        }
                     }
 
                     if let snapshot = engine.snapshot {
@@ -58,6 +62,12 @@ struct TodayView: View {
                             if !steady(snapshot).isEmpty { steadySection(snapshot) }
                             ForEach(stale(snapshot)) { staleCallout($0) }
                         }
+                        // Below the week, in both states: each section grades
+                        // its own data, and "still learning your range" is as
+                        // true on day three as the baseline message above it.
+                        if let lifestyle = engine.lifestyle, LifestyleSection.hasContent(lifestyle) {
+                            LifestyleSection(signals: lifestyle)
+                        }
                     } else {
                         placeholder
                     }
@@ -68,6 +78,8 @@ struct TodayView: View {
             }
             .background(Ink.ground)
             .scrollContentBackground(.hidden)
+            // The only tab without it, and the first one people pull on.
+            .refreshable { await engine.refreshSnapshot() }
             .safeAreaInset(edge: .bottom) { askBar }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { syncButton } }
@@ -83,7 +95,7 @@ struct TodayView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(Date().formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated)))
-                .font(.figure(13, weight: .medium))
+                .figureFont(13, weight: .medium)
                 .tracking(0.8)
                 .textCase(.uppercase)
                 .foregroundStyle(Ink.faint)
@@ -101,7 +113,7 @@ struct TodayView: View {
                 .fill(engine.settings.lastFullSyncAt == nil ? Ink.faint : Ink.measured)
                 .frame(width: 6, height: 6)
             Text(lastSyncedLabel)
-                .font(.figure(12, weight: .regular))
+                .figureFont(12, weight: .regular)
                 .foregroundStyle(Ink.faint)
         }
         .accessibilityElement(children: .combine)
@@ -109,7 +121,7 @@ struct TodayView: View {
 
     private var lastSyncedLabel: String {
         guard let at = engine.settings.lastFullSyncAt else { return "not synced" }
-        return "synced " + at.formatted(date: .omitted, time: .shortened)
+        return "synced " + DataView.moment(at)
     }
 
     private var syncButton: some View {
@@ -132,7 +144,7 @@ struct TodayView: View {
     private func lead(_ snapshot: HealthSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 13) {
             Text(headline(snapshot))
-                .font(.lead)
+                .scaledFont(26, weight: .semibold)
                 .kerning(-0.5)
                 .lineSpacing(2)
                 // Dimmed when nothing is reaching the server. The numbers are
@@ -144,7 +156,7 @@ struct TodayView: View {
 
             if isStalled {
                 Text("Figures through \(readableDay(snapshot.asOf)) — the last day that reached the server.")
-                    .font(.system(size: 12.5))
+                    .scaledFont(12.5)
                     .foregroundStyle(Ink.absentInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -181,7 +193,7 @@ struct TodayView: View {
     private func buildingLead(_ snapshot: HealthSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 13) {
             Text("Not enough days yet to compare anything.")
-                .font(.lead)
+                .scaledFont(26, weight: .semibold)
                 .kerning(-0.5)
                 .lineSpacing(2)
                 .foregroundStyle(Ink.secondary)
@@ -195,7 +207,7 @@ struct TodayView: View {
             }
 
             Text("A week against your own baseline needs a baseline. Yours is being built — comparisons start appearing once there are enough days on both sides of the window.")
-                .font(.system(size: 13.5))
+                .scaledFont(13.5)
                 .lineSpacing(2)
                 .foregroundStyle(Ink.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -216,17 +228,17 @@ struct TodayView: View {
                     if index > 0 { Divider().overlay(Ink.divider) }
                     HStack {
                         Text(MetricStyle.shortLabel(metric.metricSlug, fallback: metric.label))
-                            .font(.system(size: 13.5))
+                            .scaledFont(13.5)
                             .foregroundStyle(Ink.secondary)
                         Spacer()
                         Text(MetricFormat.value(metric.current.value, slug: metric.metricSlug))
-                            .font(.figure(13.5))
+                            .figureFont(13.5)
                             .foregroundStyle(Ink.primary)
                         Text(MetricStyle.unit(metric.unit, slug: metric.metricSlug))
-                            .font(.system(size: 11.5))
+                            .scaledFont(11.5)
                             .foregroundStyle(Ink.faint)
                         Text("· \(metric.current.validDays)d")
-                            .font(.figure(11.5, weight: .regular))
+                            .figureFont(11.5, weight: .regular)
                             .foregroundStyle(Ink.faint)
                     }
                     .padding(.horizontal, 15)
@@ -236,7 +248,7 @@ struct TodayView: View {
             .cardStyle()
 
             Text("Averages over the days recorded, not single readings. One day is not a trend and is not shown as one.")
-                .font(.system(size: 12.5))
+                .scaledFont(12.5)
                 .foregroundStyle(Ink.faint)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -349,14 +361,14 @@ struct TodayView: View {
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "exclamationmark.circle")
-                    .font(.system(size: 17))
+                    .scaledFont(17)
                     .foregroundStyle(Ink.absent)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(staleTitle(item))
-                        .font(.system(size: 13, weight: .semibold))
+                        .scaledFont(13, weight: .semibold)
                         .foregroundStyle(Ink.absentInk)
                     Text("Not zero — absent. Nothing has been recorded since then.")
-                        .font(.system(size: 12))
+                        .scaledFont(12)
                         .foregroundStyle(Ink.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -386,16 +398,16 @@ struct TodayView: View {
     private var grantAccessCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Grant Health access to begin")
-                .font(.system(size: 16, weight: .semibold))
+                .scaledFont(16, weight: .semibold)
                 .foregroundStyle(Ink.primary)
             Text("You'll be asked once per data type, ever. Choose the groups first — afterwards, changing your mind means a trip to Settings.")
-                .font(.system(size: 13))
+                .scaledFont(13)
                 .foregroundStyle(Ink.muted)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Request Health Access") {
                 Task { await authorization.requestAuthorization() }
             }
-            .font(.system(size: 14, weight: .semibold))
+            .scaledFont(14, weight: .semibold)
             .foregroundStyle(Ink.ground)
             .padding(.horizontal, 18)
             .padding(.vertical, 11)
@@ -409,11 +421,19 @@ struct TodayView: View {
     private var placeholder: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(engine.isSignedIn ? "No reading yet." : "Sign in to see your week.")
-                .font(.system(size: 22, weight: .semibold))
+                .scaledFont(22, weight: .semibold)
                 .foregroundStyle(Ink.secondary)
+            if !engine.isSignedIn {
+                Button("Sign In") { services.openSettings() }
+                    .scaledFont(14, weight: .semibold)
+                    .foregroundStyle(Ink.ground)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 11)
+                    .background(Ink.accent, in: Capsule())
+            }
             if let error = engine.snapshotError {
                 Text(error)
-                    .font(.system(size: 13))
+                    .scaledFont(13)
                     .foregroundStyle(Ink.absentInk)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -426,7 +446,7 @@ struct TodayView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 15))
+                    .scaledFont(15)
                     .foregroundStyle(Ink.accent)
                 // Not disabled while the baseline builds. The server answers
                 // a thin week honestly — that is what the confidence grades are
@@ -435,7 +455,7 @@ struct TodayView: View {
                 Text(engine.snapshot.map(isBuildingBaseline) == true
                      ? "Ask — answers will say how thin the data is"
                      : "Ask about your health data")
-                    .font(.system(size: 14))
+                    .scaledFont(14)
                     .foregroundStyle(Ink.faint)
                 Spacer(minLength: 0)
             }
@@ -466,35 +486,41 @@ private struct MoverRow: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         Text(MetricStyle.shortLabel(comparison.metricSlug, fallback: comparison.label))
-                            .font(.system(size: 15, weight: .medium))
+                            .scaledFont(15, weight: .medium)
                             .foregroundStyle(Ink.primary)
                         Spacer(minLength: 0)
                         HStack(alignment: .firstTextBaseline, spacing: 5) {
                             Text(MetricFormat.value(comparison.current.value, slug: comparison.metricSlug))
-                                .font(.figure(24))
+                                .figureFont(24)
                                 .foregroundStyle(Ink.primary)
                             Text(MetricStyle.unit(comparison.unit, slug: comparison.metricSlug))
-                                .font(.system(size: 12))
+                                .scaledFont(12)
                                 .foregroundStyle(Ink.muted)
                         }
                     }
                     HStack(spacing: 4) {
                         Text(MetricFormat.change(comparison.changePct))
-                            .font(.system(size: 13, weight: .semibold))
+                            .scaledFont(13, weight: .semibold)
                             .foregroundStyle(tint)
                         Text("on \(MetricFormat.value(comparison.baseline.value, slug: comparison.metricSlug)) \(MetricStyle.unit(comparison.unit, slug: comparison.metricSlug))")
-                            .font(.system(size: 13))
+                            .scaledFont(13)
                             .foregroundStyle(Ink.muted)
                     }
                 }
+                // `faint`, as on Data. `hairline` measured 1.34:1 — a chevron
+                // nobody could see.
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Ink.hairline)
+                    .scaledFont(12, weight: .semibold)
+                    .foregroundStyle(Ink.faint)
+                    .accessibilityHidden(true)
             }
             .frame(minHeight: 62)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // A label, a large figure and a delta on one line stop fitting past
+        // this size; capped here rather than rebuilt for every width.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
     }
 
     /// Neutral-direction metrics get no colour at all. Calling a weight change
@@ -515,10 +541,10 @@ private struct SteadyChip: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Text(MetricStyle.shortLabel(comparison.metricSlug, fallback: comparison.label))
-                .font(.system(size: 12))
+                .scaledFont(12)
                 .foregroundStyle(Ink.muted)
             Text(MetricFormat.value(comparison.current.value, slug: comparison.metricSlug))
-                .font(.figure(13))
+                .figureFont(13)
                 .foregroundStyle(Ink.primary)
         }
         .padding(.horizontal, 12)
@@ -529,6 +555,226 @@ private struct SteadyChip: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(Ink.hairline, lineWidth: 1)
         )
+    }
+}
+
+/// Habits and recovery: last night against the person's own range, then one
+/// row per habit. Measurements and what they were judged against — never a
+/// score. Colour appears only on a range edge that was actually crossed, and
+/// carries the word as well.
+private struct LifestyleSection: View {
+    let signals: LifestyleSignals
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            Text("Habits & recovery").sectionLabelStyle()
+            if let overnight = signals.overnight {
+                OvernightCard(overnight: overnight)
+            }
+            let rows = Self.rows(signals)
+            if !rows.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                        if index > 0 { Divider().overlay(Ink.divider) }
+                        HabitRow(row: row)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .cardStyle()
+            }
+        }
+    }
+
+    /// Whether there is anything to put under the header at all.
+    static func hasContent(_ signals: LifestyleSignals) -> Bool {
+        signals.overnight != nil || !rows(signals).isEmpty
+    }
+
+    private static func whole(_ value: Double) -> String { "\(Int(value.rounded()))" }
+
+    private static func rows(_ signals: LifestyleSignals) -> [HabitRow.Model] {
+        var out: [HabitRow.Model] = []
+        if let r = signals.sleepRegularity {
+            if let sri = r.sri {
+                // Named rather than shown "/ 100", which read as a grade.
+                let parts = [r.label, r.baseline.sri.map { "previous 4 weeks \(whole($0))" }]
+                out.append(.init(
+                    title: "Sleep regularity",
+                    value: whole(sri),
+                    unit: "index",
+                    detail: parts.compactMap { $0 }.joined(separator: " · ")
+                ))
+            } else {
+                out.append(.init(title: "Sleep regularity", value: "—", unit: "", detail: r.confidenceReason))
+            }
+        }
+        if let a = signals.activity {
+            let weeks = a.weeksCounted == 1 ? "week" : "weeks"
+            var detail = "150–300 min guideline met \(a.weeksMet) of the last \(a.weeksCounted) \(weeks)"
+            // A gap stays a gap: a week the watch sat in a drawer for two days
+            // says so rather than reading as a light week.
+            if a.current.knownDays < 7 {
+                detail += " · \(a.current.knownDays) of 7 days recorded"
+            }
+            out.append(.init(title: "Exercise, 7 days", value: "\(a.current.minutes)", unit: "min", detail: detail))
+        }
+        if let d = signals.daylight, let value = d.current.value {
+            var detail = "28-day baseline " + (d.baseline.value.map { "\(whole($0)) min" } ?? "—")
+            if let pct = d.changePct, d.significance == "notable" {
+                detail += " · \(MetricFormat.change(pct))"
+            }
+            out.append(.init(title: "Time in daylight", value: whole(value), unit: "min/day", detail: detail))
+        }
+        if let f = signals.cardioFitness, let latest = f.latest {
+            let direction = f.direction == "unclear" ? "too few estimates to say" : f.direction
+            out.append(.init(
+                title: "Cardio fitness",
+                value: String(format: "%.1f", latest),
+                unit: "VO₂ max",
+                detail: "90 days: \(direction) · \(f.estimates) estimates"
+            ))
+        }
+        return out
+    }
+}
+
+private struct OvernightCard: View {
+    let overnight: LifestyleSignals.Overnight
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .scaledFont(14, weight: .semibold)
+                    .foregroundStyle(Ink.primary)
+                Spacer(minLength: 8)
+                Text(statusText)
+                    .scaledFont(12, weight: overnight.isFlagged ? .semibold : .regular)
+                    .foregroundStyle(overnight.isFlagged ? Ink.absentInk : Ink.muted)
+            }
+            VStack(spacing: 6) {
+                ForEach(overnight.metrics) { metric in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(metric.label)
+                            .scaledFont(13)
+                            .foregroundStyle(Ink.secondary)
+                        Spacer(minLength: 6)
+                        Text(value(metric))
+                            .figureFont(13)
+                            .foregroundStyle(Ink.primary)
+                        Text(range(metric))
+                            .scaledFont(11, weight: metric.isOutside ? .semibold : .regular)
+                            .foregroundStyle(metric.isOutside ? Ink.absentInk : Ink.faint)
+                            .frame(minWidth: 96, alignment: .trailing)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+            Text(overnight.observation)
+                .scaledFont(12)
+                .foregroundStyle(Ink.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(overnight.isFlagged ? Ink.absent.opacity(0.07) : Color.clear)
+        .cardStyle()
+        // Three columns to a row; past this size they stop fitting.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+    }
+
+    private var title: String {
+        if overnight.isLastNight == true { return "Last night" }
+        guard let raw = overnight.nightOf, let day = Self.parser.date(from: raw) else {
+            return "Overnight"
+        }
+        return "Night of " + day.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated))
+    }
+
+    private var statusText: String {
+        switch overnight.status {
+        case "outside_range": return "Outside your usual range"
+        case "within_range": return "Within your usual range"
+        case "building": return "Learning your range"
+        default: return "No recent night"
+        }
+    }
+
+    private func value(_ m: LifestyleSignals.OvernightMetric) -> String {
+        guard let v = m.value else { return "—" }
+        return format(v, m)
+    }
+
+    private func range(_ m: LifestyleSignals.OvernightMetric) -> String {
+        guard let low = m.typicalLow, let high = m.typicalHigh else {
+            return m.status == "missing" ? "not recorded" : "no range yet"
+        }
+        let span = "\(format(low, m, unit: false))–\(format(high, m, unit: false))"
+        return m.isOutside ? "\(m.status) usual \(span)" : "usual \(span)"
+    }
+
+    /// Sleep as hours and minutes, breathing as breaths, the rest as sent.
+    private func format(_ v: Double, _ m: LifestyleSignals.OvernightMetric, unit: Bool = true) -> String {
+        switch m.metric {
+        case "sleep_duration":
+            let minutes = Int((v * 60).rounded())
+            return "\(minutes / 60)h \(String(format: "%02d", minutes % 60))m"
+        case "wrist_temperature":
+            return String(format: "%.2f", v) + (unit ? " °C" : "")
+        case "respiratory_rate":
+            return String(format: "%.1f", v) + (unit ? " br/min" : "")
+        case "blood_oxygen":
+            return String(format: "%.0f", v) + (unit ? "%" : "")
+        case "overnight_hrv":
+            return "\(Int(v.rounded()))" + (unit ? " ms" : "")
+        default:
+            return "\(Int(v.rounded()))" + (unit ? " bpm" : "")
+        }
+    }
+
+    private static let parser: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+}
+
+private struct HabitRow: View {
+    struct Model {
+        var title: String
+        var value: String
+        var unit: String
+        var detail: String
+    }
+
+    let row: Model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(row.title)
+                    .scaledFont(14, weight: .medium)
+                    .foregroundStyle(Ink.primary)
+                Spacer(minLength: 8)
+                Text(row.value)
+                    .figureFont(18)
+                    .foregroundStyle(Ink.primary)
+                if !row.unit.isEmpty {
+                    Text(row.unit)
+                        .scaledFont(11)
+                        .foregroundStyle(Ink.muted)
+                }
+            }
+            if !row.detail.isEmpty {
+                Text(row.detail)
+                    .scaledFont(12)
+                    .foregroundStyle(Ink.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 11)
+        .accessibilityElement(children: .combine)
     }
 }
 

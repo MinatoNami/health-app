@@ -13,6 +13,9 @@ import SwiftUI
 /// happened, and this app's whole argument is that it does not do that.
 struct TrendsView: View {
     @EnvironmentObject private var engine: SyncEngine
+    @EnvironmentObject private var services: AppServices
+    /// The first fetch, so "No series yet" is not what loading looks like.
+    @State private var loading = false
 
     @State private var slug: String?
 
@@ -36,7 +39,12 @@ struct TrendsView: View {
             .scrollContentBackground(.hidden)
             .navigationTitle("Trends")
             .refreshable { await engine.refreshTrends() }
-            .task { if engine.trends == nil { await engine.refreshTrends() } }
+            .task {
+                guard engine.trends == nil else { return }
+                loading = true
+                await engine.refreshTrends()
+                loading = false
+            }
         }
         .tint(Ink.accent)
     }
@@ -59,7 +67,7 @@ struct TrendsView: View {
                     let isOn = option == selected
                     Button { slug = option } label: {
                         Text(MetricStyle.shortLabel(option, fallback: option.metricDisplayName))
-                            .font(.system(size: 12.5, weight: .medium))
+                            .scaledFont(12.5, weight: .medium)
                             .foregroundStyle(isOn ? Ink.accent : Ink.muted)
                             .frame(minHeight: 34)
                             .padding(.horizontal, 14)
@@ -68,8 +76,14 @@ struct TrendsView: View {
                             .overlay(
                                 Capsule().strokeBorder(isOn ? Ink.accent : Ink.hairline, lineWidth: 1)
                             )
+                            // Drawn at 34pt, tappable at 44.
+                            .padding(.vertical, 5)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    // The accent outline says which is chosen; VoiceOver needs
+                    // it said.
+                    .accessibilityAddTraits(isOn ? .isSelected : [])
                 }
             }
             .padding(.vertical, 2)
@@ -109,7 +123,7 @@ struct TrendsView: View {
                 .cardStyle()
 
                 Text("Days with no reading are left out rather than drawn as zero — joining a line across them would show a value that was never recorded.")
-                    .font(.system(size: 13))
+                    .scaledFont(13)
                     .foregroundStyle(Ink.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -125,10 +139,10 @@ struct TrendsView: View {
     private func stat(_ value: String, _ label: String) -> some View {
         VStack(spacing: 4) {
             Text(value)
-                .font(.figure(18))
+                .figureFont(18)
                 .foregroundStyle(Ink.primary)
             Text(label)
-                .font(.system(size: 10.5))
+                .scaledFont(10.5)
                 .tracking(0.5)
                 .foregroundStyle(Ink.faint)
         }
@@ -136,14 +150,37 @@ struct TrendsView: View {
         .padding(.vertical, 14)
     }
 
+    @ViewBuilder
     private var empty: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(engine.isSignedIn ? "No series yet." : "Sign in to see your trends.")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Ink.secondary)
-            Text("Charts appear once the server has a few days of a metric to draw.")
-                .font(.system(size: 13))
-                .foregroundStyle(Ink.muted)
+        if loading {
+            HStack(spacing: 10) {
+                ProgressView().tint(Ink.muted)
+                Text("Loading trends…")
+                    .scaledFont(14)
+                    .foregroundStyle(Ink.muted)
+            }
+            .padding(.top, 8)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(engine.isSignedIn ? "No series yet." : "Sign in to see your trends.")
+                    .scaledFont(22, weight: .semibold)
+                    .foregroundStyle(Ink.secondary)
+                if engine.isSignedIn {
+                    // Also what a failed fetch looks like — refreshTrends is
+                    // silent by design — so it says how to try again.
+                    Text("Charts appear once the server has a few days of a metric to draw. Pull down to check again.")
+                        .scaledFont(13)
+                        .foregroundStyle(Ink.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Button("Sign In") { services.openSettings() }
+                        .scaledFont(14, weight: .semibold)
+                        .foregroundStyle(Ink.ground)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 11)
+                        .background(Ink.accent, in: Capsule())
+                }
+            }
         }
     }
 }

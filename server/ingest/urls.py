@@ -33,6 +33,7 @@ urlpatterns = [
     path("v1/analysis/sleep", insight_views.sleep, name="analysis-sleep"),
     path("v1/analysis/nutrition", insight_views.nutrition, name="analysis-nutrition"),
     path("v1/analysis/anomalies", insight_views.anomalies, name="analysis-anomalies"),
+    path("v1/analysis/lifestyle", insight_views.lifestyle_signals, name="analysis-lifestyle"),
     path("v1/analysis/correlations", insight_views.correlation_report, name="analysis-correlations"),
     path("v1/analysis/patterns", insight_views.pattern_report, name="analysis-patterns"),
     path("v1/analysis/goals", insight_views.goals, name="analysis-goals"),

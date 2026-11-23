@@ -18,6 +18,12 @@ const error = ref('')
 const search = ref('')
 
 const current = computed(() => catalog.value.find((m) => m.metric_slug === selected.value))
+
+/* The day a sample fell on where the reader is. Slicing the ISO string took
+ * the UTC date, so a sample from this Singapore morning said "last" yesterday
+ * beside a chart that ends today. */
+const localDay = (iso) =>
+  iso ? new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase()
   if (!q) return catalog.value
@@ -120,7 +126,7 @@ loadCatalog().then(scheduleLoad)
 
     <p v-if="current" class="muted" style="margin-top: 10px">
       {{ current.count.toLocaleString() }} samples · {{ current.aggregation || 'n/a' }} ·
-      first {{ (current.first_sample || '').slice(0, 10) }} · last {{ (current.last_sample || '').slice(0, 10) }}
+      first {{ localDay(current.first_sample) }} · last {{ localDay(current.last_sample) }}
     </p>
   </div>
 </template>

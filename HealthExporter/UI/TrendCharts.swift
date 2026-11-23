@@ -24,6 +24,15 @@ struct TrendChart: View {
     /// appearing anywhere in the app is a layout pass.
     private let points: [ServerStatus.Series.Point]
     private let domain: ClosedRange<Double>
+    /// Which contiguous run of days each point belongs to, keyed by point id.
+    ///
+    /// Swift Charts joins every point of one series, so two nights without the
+    /// watch drew as a smooth curve through days nobody measured — exactly what
+    /// the date axis exists to avoid. A gap of more than a day starts a new
+    /// series, and the line breaks there.
+    private let runs: [String: Int]
+    /// Runs one day long, which a line alone would not draw at all.
+    private let loners: Set<String>
 
     init(title: String, series: ServerStatus.Series, style: Style) {
         self.title = title
@@ -32,36 +41,56 @@ struct TrendChart: View {
         let drawable = series.points.filter { $0.parsedDay != nil }
         self.points = drawable
         self.domain = Self.domain(for: drawable, style: style)
+
+        var runs: [String: Int] = [:]
+        var sizes: [Int: Int] = [:]
+        var run = 0
+        var previous: Date?
+        for point in drawable.sorted(by: { $0.day < $1.day }) {
+            if let previous, point.day.timeIntervalSince(previous) > 36 * 3600 { run += 1 }
+            runs[point.id] = run
+            sizes[run, default: 0] += 1
+            previous = point.day
+        }
+        self.runs = runs
+        self.loners = Set(runs.filter { sizes[$0.value] == 1 }.map(\.key))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .scaledFont(14, weight: .semibold)
                     .foregroundStyle(Ink.primary)
+                // A visible word rather than a `.help` tooltip, which never
+                // appears on a touch screen.
                 if series.mayDoubleCount {
-                    Image(systemName: "questionmark.circle")
-                        .font(.system(size: 11))
+                    Text("≈ estimated")
+                        .scaledFont(11)
                         .foregroundStyle(Ink.muted)
-                        .help("Some days are estimated from raw samples")
+                        .accessibilityLabel("Some days are estimated from raw samples")
                 }
                 Spacer()
                 if let latest = points.last {
                     // One number, not a column of them: the current value is
-                    // the only figure worth putting on a summary chart.
-                    Text(format(latest.value))
-                        .font(.figure(14))
-                        .foregroundStyle(Ink.primary)
-                    + Text(series.unit.map { " \($0)" } ?? "")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Ink.faint)
+                    // the only figure worth putting on a summary chart. Spelled
+                    // the way every other screen spells it — "count" was the
+                    // wire format showing through.
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text(MetricFormat.value(latest.value, slug: series.metricSlug))
+                            .figureFont(14)
+                            .foregroundStyle(Ink.primary)
+                        Text(MetricStyle.unit(series.unit ?? "", slug: series.metricSlug))
+                            .scaledFont(11.5)
+                            .foregroundStyle(Ink.faint)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
             }
 
             if points.isEmpty {
                 Text("No data in this range")
-                    .font(.system(size: 12.5))
+                    .scaledFont(12.5)
                     .foregroundStyle(Ink.faint)
                     .frame(maxWidth: .infinity, minHeight: 74)
             } else {
@@ -104,18 +133,29 @@ struct TrendChart: View {
                 AreaMark(
                     x: .value("Day", point.day),
                     yStart: .value("Baseline", domain.lowerBound),
-                    yEnd: .value(title, point.value)
+                    yEnd: .value(title, point.value),
+                    series: .value("Run", runs[point.id] ?? 0)
                 )
                 .foregroundStyle(Ink.measured.opacity(0.12).gradient)
                 .interpolationMethod(.monotone)
 
                 LineMark(
                     x: .value("Day", point.day),
-                    y: .value(title, point.value)
+                    y: .value(title, point.value),
+                    series: .value("Run", runs[point.id] ?? 0)
                 )
                 .foregroundStyle(Ink.measured)
                 .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 .interpolationMethod(.monotone)
+
+                if loners.contains(point.id) {
+                    PointMark(
+                        x: .value("Day", point.day),
+                        y: .value(title, point.value)
+                    )
+                    .foregroundStyle(Ink.measured)
+                    .symbolSize(24)
+                }
             }
         }
         // Discrete metrics like heart rate never approach zero, so a

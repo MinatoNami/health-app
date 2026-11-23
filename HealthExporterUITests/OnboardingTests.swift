@@ -101,10 +101,16 @@ final class OnboardingTests: XCTestCase {
         let deadline = Date().addingTimeInterval(25)
         while Date() < deadline, !server.exists { dismissServerAlertIfPresent() }
         XCTAssertTrue(server.exists, "the server step did not render")
-        XCTAssertTrue(app.buttons["Connect a server"].exists)
         capture("OnboardingServer")
 
-        app.buttons["Do this later"].tap()
+        // Signed in already — a simulator an earlier test signed in on — the
+        // step finishes with Done; otherwise it offers to connect or defer.
+        if app.buttons["Done"].exists {
+            app.buttons["Done"].tap()
+        } else {
+            XCTAssertTrue(app.buttons["Connect a server"].exists)
+            app.buttons["Do this later"].tap()
+        }
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 15),
                       "finishing onboarding did not reveal the app")
     }

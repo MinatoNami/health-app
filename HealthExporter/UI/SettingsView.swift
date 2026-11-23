@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject private var engine: SyncEngine
     @State private var showResetConfirmation = false
     @State private var showDeleteConfirmation = false
+    @State private var showSignOutConfirmation = false
     @State private var username = ""
     /// Never persisted: it exists only for the request that exchanges it for a
     /// token, and is cleared as soon as that returns.
@@ -25,7 +26,7 @@ struct SettingsView: View {
                     Text("Samples older than this are read — so the sync cursor still "
                          + "advances past them — but not exported. Reaching back years "
                          + "mostly buys you per-second heart rate data.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                     // One literal, not three joined with `+`. `Text` only parses
@@ -38,7 +39,7 @@ struct SettingsView: View {
                         The cursor has already advanced past those samples, so you also have \
                         to reset it below.
                         """)
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                 }
@@ -56,7 +57,7 @@ struct SettingsView: View {
                     Text("Rollup IDs are deterministic per metric and day, so re-sending "
                          + "recent days is an upsert, not a duplicate. Covers samples that "
                          + "arrive late and change a past day's total.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                     Button("Rebuild All Daily Totals") { engine.rebuildDailyTotals() }
@@ -65,7 +66,7 @@ struct SettingsView: View {
                             + "once. Last done \($0.formatted(date: .abbreviated, time: .shortened))."
                     } ?? "Re-sends one rollup per metric per day back to the backfill date, "
                         + "once. Runs on the next sync.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                 }
@@ -90,7 +91,7 @@ struct SettingsView: View {
                     }
                     Text("HTTPS only. Batches that fail to upload stay in the outbox and "
                          + "are retried; permanent failures are parked rather than looped.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                 }
@@ -109,7 +110,7 @@ struct SettingsView: View {
                          + "than installing a CA profile, which would trust that CA for every "
                          + "site. Get the value from ./deploy.sh pin. Leave empty to validate "
                          + "normally against system roots instead.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                 }
@@ -120,12 +121,12 @@ struct SettingsView: View {
                         Label("Signed in", systemImage: "person.crop.circle.badge.checkmark")
                             .foregroundStyle(.green)
                         Button("Sign Out", role: .destructive) {
-                            Task { await engine.signOut() }
+                            showSignOutConfirmation = true
                         }
                         .foregroundStyle(Ink.danger)
                         Text("Signing out revokes this device's token on the server, so a "
                              + "copy of it left anywhere else stops working too.")
-                            .font(.system(size: 11.5))
+                            .scaledFont(11.5)
                             .foregroundStyle(Ink.faint)
                             .lineSpacing(2)
                     } else {
@@ -156,7 +157,7 @@ struct SettingsView: View {
                                   || engine.settings.sink.endpoint == nil)
                         Text("The server returns a token, which is kept in the Keychain. Your "
                              + "password is never stored on the device.")
-                            .font(.system(size: 11.5))
+                            .scaledFont(11.5)
                             .foregroundStyle(Ink.faint)
                             .lineSpacing(2)
                     }
@@ -183,7 +184,7 @@ struct SettingsView: View {
                     case .untested:
                         Text("Checks the URL, the certificate pin, and the token in one "
                              + "request. Sends no health data.")
-                            .font(.system(size: 11.5))
+                            .scaledFont(11.5)
                             .foregroundStyle(Ink.faint)
                             .lineSpacing(2)
                     case .running:
@@ -204,7 +205,7 @@ struct SettingsView: View {
                     Button("Open Settings") { authorization.openHealthSettings() }
                     Text("iOS will not re-prompt for a data type once you've decided on "
                          + "it. Settings is the only way to change your mind.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                 }
@@ -241,7 +242,7 @@ struct SettingsView: View {
                         Text("The server refused these for their content — too large, "
                              + "malformed, or a newer format than it understands. They "
                              + "are kept on this phone. Retry once the server is updated.")
-                            .font(.system(size: 11.5))
+                            .scaledFont(11.5)
                             .foregroundStyle(Ink.faint)
                             .lineSpacing(2)
                     }
@@ -252,14 +253,14 @@ struct SettingsView: View {
                     Text("Clears every anchor. The next sync re-reads all history from "
                          + "the backfill date and re-uploads it — hundreds of megabytes, "
                          + "and hours of background time.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                     Text("It does not duplicate anything: every record carries a stable "
                          + "id, so the server updates in place rather than inserting again. "
                          + "Deletions also survive — a re-sent record cannot resurrect one "
                          + "you removed from Health.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                     Button("Delete Pending Batches", role: .destructive) {
@@ -268,7 +269,7 @@ struct SettingsView: View {
                     .foregroundStyle(Ink.danger)
                     Text("Empties the outbox. Use after a failed run leaves duplicate "
                          + "batches behind.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                 }
@@ -286,6 +287,18 @@ struct SettingsView: View {
             // ended up with a system-blue toggle over a warm near-black ground.
             .tint(Ink.accent)
             .navigationTitle("Settings")
+            // Signing out revokes the token on the server, so uploads stop until
+            // somebody signs in again — worth one question first.
+            // An alert, not a sheet: the screenshot test already looks for the
+            // confirming "Sign Out" among `app.alerts`.
+            .alert("Sign out of this server?", isPresented: $showSignOutConfirmation) {
+                Button("Sign Out", role: .destructive) {
+                    Task { await engine.signOut() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This phone's token is revoked and uploads stop until you sign in again.")
+            }
             .confirmationDialog("Reset all sync cursors?",
                                 isPresented: $showResetConfirmation,
                                 titleVisibility: .visible) {
@@ -315,7 +328,7 @@ struct DiagnosticsView: View {
                     Text("These are in the catalog but unknown to this iOS version, so "
                          + "they're skipped rather than crashing. Listed here so a typo "
                          + "or version gap never silently loses a metric.")
-                        .font(.system(size: 11.5))
+                        .scaledFont(11.5)
                         .foregroundStyle(Ink.faint)
                         .lineSpacing(2)
                     ForEach(MetricCatalog.unresolved, id: \.self) { name in

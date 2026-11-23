@@ -22,7 +22,7 @@ your Sundays" is how a finding turns into a horoscope.
 import statistics
 from datetime import date, timedelta
 
-from . import health_analysis
+from . import analytics, health_analysis
 
 DEFAULT_DAYS = 90
 MAX_DAYS = 365
@@ -68,14 +68,18 @@ def _say(value: float, spec) -> str:
     """
     rounded = _fmt(value, spec.decimals)
     text = f"{rounded:,}" if abs(rounded) >= 1000 else f"{rounded}"
-    return text if spec.unit == "count" else f"{text} {spec.unit}"
+    unit = analytics.spoken_unit(spec.slug, spec.unit)
+    return f"{text} {unit}" if unit else text
 
 
 def _describe(spec, label: str, group: list[float], others: list[float], significance: str) -> str:
     difference = statistics.fmean(group) - statistics.fmean(others)
     direction = "higher" if difference > 0 else "lower"
     return (
-        f"{spec.label} on {label} averages {_say(statistics.fmean(group), spec)}, "
+        # Past tense, which reads right after a plural label ("steps",
+        # "exercise minutes") and a singular one ("weight") alike — "steps on
+        # weekends averages" did not.
+        f"{spec.label} on {label} averaged {_say(statistics.fmean(group), spec)}, "
         f"{_say(abs(difference), spec)} {direction} than the rest of the week "
         f"({_say(statistics.fmean(others), spec)}) "
         f"across {len(group)} of them. That gap is {significance} against this person's "

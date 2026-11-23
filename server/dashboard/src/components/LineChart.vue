@@ -10,6 +10,7 @@
  * into a nested scrollbar.
  */
 import { computed, ref } from 'vue'
+import { tickLabel } from '../format.js'
 
 const props = defineProps({
   points: { type: Array, required: true }, // [{ date, value, source }]
@@ -64,12 +65,29 @@ const scale = computed(() => {
 const MAX_GAP_DAYS = 3
 const DAY_MS = 86_400_000
 
+/* Today, when it is the last point: drawn faint and hollow, joined to the line
+ * by a faint connector rather than continuing it, because half a day is not a
+ * day and the line should not claim it is. */
+const partial = computed(() => {
+  const n = clean.value.length
+  return n && clean.value[n - 1].partial ? n - 1 : null
+})
+
+const connector = computed(() => {
+  const i = partial.value
+  if (i === null || i === 0 || !scale.value) return null
+  if ((dayTime(clean.value[i]) - dayTime(clean.value[i - 1])) / DAY_MS > MAX_GAP_DAYS) return null
+  const s = scale.value
+  return `M${s.x(i - 1).toFixed(1)},${s.y(clean.value[i - 1].value).toFixed(1)} L${s.x(i).toFixed(1)},${s.y(clean.value[i].value).toFixed(1)}`
+})
+
 /* Contiguous runs, split wherever the data actually stops. */
 const segments = computed(() => {
   if (!scale.value) return []
   const runs = []
   let current = []
   clean.value.forEach((p, i) => {
+    if (i === partial.value) return
     if (i > 0 && (dayTime(p) - dayTime(clean.value[i - 1])) / DAY_MS > MAX_GAP_DAYS) {
       runs.push(current)
       current = []
@@ -99,6 +117,8 @@ const areaPaths = computed(() => {
 
 /* A lone reading with no neighbour would otherwise draw nothing at all. */
 const isolated = computed(() => segments.value.filter((run) => run.length === 1).map((run) => run[0]))
+
+const tickStep = computed(() => (ticks.value.length > 1 ? ticks.value[1] - ticks.value[0] : 1))
 
 const ticks = computed(() => {
   if (!scale.value) return []
@@ -213,7 +233,7 @@ function onMove(event) {
           :x="PAD.left - 8" :y="scale.y(t) + 3.5"
           text-anchor="end" font-size="10" fill="var(--text-muted)"
           style="font-variant-numeric: tabular-nums"
-        >{{ fmt(t) }}</text>
+        >{{ tickLabel(t, tickStep) }}</text>
       </g>
 
       <path v-for="(d, k) in areaPaths" :key="'a' + k" :d="d" fill="var(--series-1)" opacity="0.1" />
@@ -221,6 +241,10 @@ function onMove(event) {
         v-for="(d, k) in paths" :key="'p' + k"
         :d="d" fill="none" stroke="var(--series-1)"
         stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+      />
+      <path
+        v-if="connector" :d="connector" fill="none" stroke="var(--series-1)"
+        stroke-width="2" stroke-linecap="round" opacity="0.35"
       />
       <!-- Single readings with no neighbour still need to be visible. -->
       <circle
@@ -242,11 +266,17 @@ function onMove(event) {
         />
       </g>
 
-      <!-- End marker: ≥8px diameter, 2px surface ring. -->
+      <!-- End marker: ≥8px diameter, 2px surface ring. Hollow when it is
+           today, which is still being written. -->
       <circle
-        v-if="last !== null && hover === null"
+        v-if="last !== null && hover === null && last !== partial"
         :cx="scale.x(last)" :cy="scale.y(clean[last].value)" r="4.5"
         fill="var(--series-1)" stroke="var(--surface-1)" stroke-width="2"
+      />
+      <circle
+        v-if="last !== null && hover === null && last === partial"
+        :cx="scale.x(last)" :cy="scale.y(clean[last].value)" r="4"
+        fill="var(--surface-1)" stroke="var(--series-1)" stroke-width="2"
       />
 
       <!-- Selective direct labels: the endpoint, and the peak when it is not
@@ -256,6 +286,13 @@ function onMove(event) {
         :x="scale.x(last) + 8" :y="scale.y(clean[last].value) + 3.5"
         font-size="11" font-weight="600" fill="var(--text-primary)"
       >{{ fmt(clean[last].value) }}</text>
+      <!-- Under the value rather than after it: the right margin is sized
+           for a number, and "so far" beside one ran off the chart. -->
+      <text
+        v-if="last !== null && last === partial"
+        :x="scale.x(last) + 8" :y="scale.y(clean[last].value) + 16"
+        font-size="9" fill="var(--text-muted)"
+      >so far</text>
       <text
         v-if="extreme !== null && extreme !== last && clean.length > 4"
         :x="scale.x(extreme)" :y="scale.y(clean[extreme].value) - 9"
@@ -277,7 +314,7 @@ function onMove(event) {
 
     <div v-if="hover !== null && scale" class="tip" :style="{ left: `${(scale.x(hover) / W) * 100}%` }">
       <strong>{{ fmt(clean[hover].value) }}</strong> {{ unit }}
-      <span>{{ shortDate(clean[hover].date) }}</span>
+      <span>{{ clean[hover].partial ? 'today, so far' : shortDate(clean[hover].date) }}</span>
       <span v-if="clean[hover].source === 'raw_sum'" class="est">estimated</span>
     </div>
   </div>

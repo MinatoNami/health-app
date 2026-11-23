@@ -171,6 +171,133 @@ struct DailyBrief: Codable, Equatable {
     }
 }
 
+/// Habits and recovery, from `/v1/analysis/lifestyle`.
+///
+/// Overnight vitals against the person's own range, sleep regularity, the
+/// week's exercise minutes, daylight and cardio fitness. Every status and every
+/// range is decided server-side and only laid out here — a typical range
+/// recomputed on the phone would be a second opinion about the same night.
+///
+/// Each section is optional because the server sends `null` for one with no
+/// data behind it, and the screen leaves it off rather than drawing an empty
+/// card.
+struct LifestyleSignals: Codable, Equatable {
+    struct OvernightMetric: Codable, Equatable, Identifiable {
+        var metric: String
+        var label: String
+        var unit: String
+        var value: Double?
+        var typicalLow: Double?
+        var typicalHigh: Double?
+        /// `above`, `below`, `within`, `no_range` or `missing`.
+        var status: String
+
+        var id: String { metric }
+        var isOutside: Bool { status == "above" || status == "below" }
+
+        enum CodingKeys: String, CodingKey {
+            case metric, label, unit, value, status
+            case typicalLow = "typical_low"
+            case typicalHigh = "typical_high"
+        }
+    }
+
+    struct Overnight: Codable, Equatable {
+        /// `outside_range`, `within_range`, `building` or `no_recent_night`.
+        var status: String
+        var nightOf: String?
+        var isLastNight: Bool?
+        var metrics: [OvernightMetric]
+        var outsideRange: Int
+        var observation: String
+
+        var isFlagged: Bool { status == "outside_range" }
+
+        enum CodingKeys: String, CodingKey {
+            case status, metrics, observation
+            case nightOf = "night_of"
+            case isLastNight = "is_last_night"
+            case outsideRange = "outside_range"
+        }
+    }
+
+    struct Regularity: Codable, Equatable {
+        struct Baseline: Codable, Equatable {
+            var sri: Double?
+        }
+
+        var sri: Double?
+        var label: String?
+        var baseline: Baseline
+        var change: Double?
+        var significance: String
+        var confidenceReason: String
+
+        enum CodingKeys: String, CodingKey {
+            case sri, label, baseline, change, significance
+            case confidenceReason = "confidence_reason"
+        }
+    }
+
+    struct Week: Codable, Equatable {
+        var minutes: Int
+        var knownDays: Int
+        var metGuideline: Bool?
+        var concentrated: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case minutes, concentrated
+            case knownDays = "known_days"
+            case metGuideline = "met_guideline"
+        }
+    }
+
+    struct Activity: Codable, Equatable {
+        var current: Week
+        var weeksMet: Int
+        var weeksCounted: Int
+        var observation: String
+
+        enum CodingKeys: String, CodingKey {
+            case current, observation
+            case weeksMet = "weeks_met"
+            case weeksCounted = "weeks_counted"
+        }
+    }
+
+    struct Fitness: Codable, Equatable {
+        var latest: Double?
+        var direction: String
+        var changeOverWindow: Double?
+        var estimates: Int
+
+        enum CodingKeys: String, CodingKey {
+            case latest, direction, estimates
+            case changeOverWindow = "change_over_window"
+        }
+    }
+
+    var asOf: String
+    var overnight: Overnight?
+    var sleepRegularity: Regularity?
+    var activity: Activity?
+    /// The ordinary baseline comparison, so it decodes as one.
+    var daylight: HealthSnapshot.Comparison?
+    var cardioFitness: Fitness?
+
+    var isEmpty: Bool {
+        overnight == nil && sleepRegularity == nil && activity == nil
+            && daylight == nil && cardioFitness == nil
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case asOf = "as_of"
+        case overnight, activity, daylight
+        case sleepRegularity = "sleep_regularity"
+        case cardioFitness = "cardio_fitness"
+    }
+}
+
 /// One generated answer, in the structured shape §12 of the integration notes
 /// asks for. Structured rather than prose so it can be rendered, stored, and
 /// checked — and so the safety layer can read what it says.

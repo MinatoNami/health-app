@@ -46,6 +46,14 @@ needs to be summarised honestly:
 | `expected_cadence` | The denominator for coverage. Weight measured three times in a week is *full* coverage for weight; scoring it 3/7 marks normal behaviour as a data problem. |
 | `self_reported` | Written down by a person, not measured by a sensor. See [Nutrition](#nutrition). |
 
+**Percentages arrive as fractions.** HealthKit's percent unit stores 97% blood
+oxygen as 0.97 and 22% body fat as 0.22, and the record keeps HealthKit's value.
+`analytics` converts on the way out of every daily series and latest reading,
+so the snapshot, trends, anomalies, the dashboard and the safety floors all read
+percentages. Until it did, a normal 97% sat at 0.97 against the blood-oxygen
+floor of 92, and the model was told blood oxygen "averaged 0.97 %". The CSV
+export is a record dump and still carries HealthKit's fraction.
+
 A metric absent from `METRICS` is not analysable — no baseline, no trend, no
 goal. That is deliberate: `blood_glucose` is uploaded and charted, and nothing
 here knows how to baseline it, so a goal against it would report progress it
@@ -208,6 +216,92 @@ your Thursdays and possibly your Sundays" is how a finding turns into a horoscop
 
 ---
 
+## Lifestyle signals
+
+`lifestyle.py`, served at `/v1/analysis/lifestyle` and to the model as
+`get_lifestyle_signals`. Chosen from a review of what the major wearables
+shipped in 2024–26 and of the outcome research behind them, then held to the
+rules above. Every input was already being uploaded; nothing here needed a new
+HealthKit type.
+
+None of it is a score. Every vendor in this space ships a composite —
+readiness, recovery, energy — and none publishes the formula. Each section here
+is a measurement, the range or reference it was judged against, how much data it
+rests on, and what it cannot say.
+
+**Overnight vitals.** The most recent night's sleeping heart rate, HRV,
+breathing rate, wrist temperature, blood oxygen and sleep duration against the
+range of the 28 nights before it: median ± two robust deviations, with a floor
+per signal so a month of near-identical nights does not produce a range the next
+ordinary night falls out of. HRV is judged on a log scale, which is how it
+varies. Seven nights are needed before anything is called typical, and the
+night is **flagged only when two or more signals are outside their range at
+once** — the rule Apple's Vitals app uses, because one metric out on one night
+is what a sensor does. A flag lists ordinary explanations (alcohol, a late meal,
+travel, hard training) and never names a condition.
+
+Each night is its **main sleep**: overlapping intervals merged first, so a
+night two sources recorded counts once, then stretches under an hour apart
+joined, and the longest one ending that morning kept. Filing every asleep
+interval under the date it ended let a 14:00 nap stretch the night to
+mid-afternoon and average the morning's heart rate into "sleeping heart rate".
+
+This is the one place a date of *today* appears in the layer, deliberately:
+windows end yesterday because today is a partial *day*, but last night ended
+this morning and is complete. The night is always named by date, so a phone
+that has not synced yet shows the previous night as the previous night. A flag
+leads the morning brief — but only for the night that ended that morning, so an
+unsynced phone does not get yesterday's alert again. `as_of` moves the night
+with it: the night checked is the one ending the morning after.
+
+**Sleep regularity.** The Sleep Regularity Index (Phillips 2017): the share of
+minutes in the same state — asleep or awake — 24 hours apart, scaled so 100 is
+an identical schedule every day. In 60,977 UK Biobank adults it predicted
+mortality better than sleep duration did, and adding duration explained nothing
+more. Computed on a minute mask per noon-to-noon sleep-day, so overlapping
+sources collapse naturally. Minutes are wall-clock, not elapsed time — across a
+DST change an unchanged schedule is an hour apart in elapsed time, and scored as
+irregular. An interval is split where the offset changes before it is placed,
+so a stage straddling the autumn change is not reversed and dropped, and the
+hour skipped in spring is marked as not existing: a pair compares only the
+minutes both days had. Same windows as everything else: this week against
+the four before, graded against the spread of the person's own day-to-day
+scores. A sleep-day with under three hours recorded is left out rather than
+scored as awake — regularity indices tolerate data missing at random and are
+badly thrown by data missing for a reason, and a watch on the charger is one.
+The cohort's quintile cut-points travel with the figure as context, labelled as
+not a target.
+
+**Weekly activity.** Exercise minutes over four rolling weeks against the WHO's
+150–300. A day with no exercise rollup is ambiguous — watch off, or watch on
+and no exercise — and heart-rate data that day settles it: worn, so the honest
+figure is zero. With neither, the day stays out of the sum. A week already past
+150 has met it however few days were seen; a week under 150 with fewer than
+five known days is reported as unknown. Weeks met out of four, not a streak,
+and a week with over half its minutes on one or two days is described as the
+weekend-warrior pattern, which large cohorts associate with much the same
+benefit.
+
+The guideline is the one published figure set beside a behaviour here, and it
+is a guideline for behaviour, not a norm for a measurement — the line
+"personal baselines, never population norms" was drawn for. The model is told
+to quote it as context and never to extend the practice to any other metric.
+
+**Daylight and cardio fitness.** Time in daylight goes through the ordinary
+baseline comparison. VO2 max is a 90-day trend rather than a weekly one — the
+watch estimates it only on outdoor walks and runs — and a change under one MET
+(3.5 mL/kg/min) is reported as steady: that is the unit the outcome research is
+measured in, and inside the watch's own error. `MetricSpec.noise_floor` applies
+the same floor to the weekly comparison and to anomalies.
+
+**Nightly samples are filed under the morning they end.** Wrist temperature and
+breathing disturbances arrive as one sample spanning the night, so bucketing by
+`start` put a night's temperature on the evening before and a day away from the
+same night's sleep. `analytics.END_ANCHORED` buckets them by `end`, in the raw
+series and the quality report alike.
+
+---
+
 ## Safety
 
 Rules, before and after the model, because a language model asked "is 105 bpm
@@ -236,7 +330,7 @@ snapshot is returned either way.
 
 ## The tool surface
 
-Twelve read-only tools. The model reaches data only through these, and every one
+Thirteen read-only tools. The model reaches data only through these, and every one
 returns already-computed figures with units, windows, valid-day counts and
 confidence attached. No SQL, no credentials, no raw rows — and per-day arrays are
 stripped before the model sees them, because handing it 90 daily values invites
@@ -256,6 +350,7 @@ exactly the arithmetic this design exists to prevent.
 | `get_data_quality` | What can and cannot be concluded per metric |
 | `get_goals` | Targets and measured progress |
 | `get_anomalies` | Sustained shifts from personal baseline |
+| `get_lifestyle_signals` | Overnight vitals, sleep regularity, weekly activity, daylight, cardio fitness |
 
 Every one has a matching deterministic endpoint under `/v1/analysis/*`, so any
 figure in an answer can be checked without a model in the loop.

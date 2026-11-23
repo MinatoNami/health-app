@@ -7,6 +7,7 @@
 import { computed, ref } from 'vue'
 import LineChart from './LineChart.vue'
 import ColumnChart from './ColumnChart.vue'
+import { NIGHTLY, localToday, unitFor } from '../format.js'
 
 const props = defineProps({
   series: { type: Object, required: true },
@@ -17,12 +18,25 @@ const props = defineProps({
 })
 
 const showTable = ref(false)
-const points = computed(() => props.series?.points ?? [])
+
+/* The unit a person reads, not HealthKit's: "count/min" is BPM. */
+const displayUnit = computed(() => unitFor(props.series?.metric_slug ?? '', props.unit))
+
+/* Today is still running: half a day of steps drawn as a whole one reads as a
+ * collapse that is only the clock, so today's point is marked partial and drawn
+ * as such rather than hidden. (Percentages arrive as percentages — the server
+ * converts HealthKit's 0.97 once, for every reader.) */
+const points = computed(() => {
+  const raw = props.series?.points ?? []
+  // A night that ended this morning is over; only a day can still be running.
+  const today = NIGHTLY.has(props.series?.metric_slug) ? null : localToday()
+  return raw.map((p) => ({ ...p, partial: p.date === today }))
+})
 
 const subtitle = computed(() => {
   const agg = props.series?.aggregation
   const label = { sum: 'daily total', avg: 'daily average', min: 'daily minimum', max: 'daily maximum', count: 'samples per day' }[agg] || agg
-  return props.unit ? `${label} · ${props.unit}` : label
+  return displayUnit.value ? `${label} · ${displayUnit.value}` : label
 })
 
 function fmt(v) {
@@ -62,14 +76,16 @@ function fmt(v) {
             <tr v-for="p in [...points].reverse()" :key="p.date">
               <td>{{ p.date }}</td>
               <td>{{ fmt(p.value) }}</td>
-              <td>{{ p.source === 'statistic' ? 'rollup' : 'estimated' }}</td>
+              <td>
+                {{ p.source === 'statistic' ? 'rollup' : 'estimated' }}<template v-if="p.partial"> · today, so far</template>
+              </td>
             </tr>
           </tbody>
         </table>
       </div>
 
-      <ColumnChart v-else-if="cumulative" :points="points" :unit="unit" />
-      <LineChart v-else :points="points" :unit="unit" />
+      <ColumnChart v-else-if="cumulative" :points="points" :unit="displayUnit" />
+      <LineChart v-else :points="points" :unit="displayUnit" />
     </div>
   </section>
 </template>

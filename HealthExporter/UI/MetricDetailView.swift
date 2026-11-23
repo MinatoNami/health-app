@@ -43,26 +43,29 @@ struct MetricDetailView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(MetricFormat.value(comparison.current.value, slug: comparison.metricSlug))
-                    .font(.figure(50))
+                    .figureFont(50)
                     .kerning(-1.4)
                     .foregroundStyle(Ink.primary)
                 Text(unitPhrase)
-                    .font(.system(size: 16))
+                    .scaledFont(16)
                     .foregroundStyle(Ink.muted)
             }
             if comparison.isUsable, comparison.changePct != nil {
+                // One scaled font on the whole run, and weight per piece: a
+                // concatenated `Text` has to stay a `Text`, so the size cannot
+                // be set on each half.
                 (
                     Text(MetricFormat.change(comparison.changePct))
-                        .font(.system(size: 14, weight: .semibold))
+                        .fontWeight(.semibold)
                         .foregroundColor(tint)
                     + Text(" on your 28-day average of \(MetricFormat.value(comparison.baseline.value, slug: comparison.metricSlug)) \(MetricStyle.unit(comparison.unit, slug: comparison.metricSlug))")
-                        .font(.system(size: 14))
                         .foregroundColor(Ink.muted)
                 )
+                .scaledFont(14)
                 .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text(comparison.confidenceReason)
-                    .font(.system(size: 14))
+                    .scaledFont(14)
                     .foregroundStyle(Ink.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -107,12 +110,12 @@ struct MetricDetailView: View {
             // *why* a grade is what it is, and paraphrasing that on the client
             // is how the phone and the dashboard start disagreeing.
             Text(comparison.confidenceReason.prefix(1).capitalized + comparison.confidenceReason.dropFirst() + ".")
-                .font(.system(size: 12.5))
+                .scaledFont(12.5)
                 .foregroundStyle(Ink.muted)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("The 28-day baseline has \(comparison.baseline.validDays) of \(comparison.baseline.windowDays).")
-                .font(.system(size: 12.5))
+            Text("The 28-day baseline has \(comparison.baseline.validDays) of \(comparison.baseline.windowDays) days with data.")
+                .scaledFont(12.5)
                 .foregroundStyle(Ink.faint)
         }
         .padding(16)
@@ -132,7 +135,7 @@ struct MetricDetailView: View {
                         .frame(width: 4, height: 4)
                         .padding(.top, 8)
                     Text(caveat)
-                        .font(.system(size: 13.5))
+                        .scaledFont(13.5)
                         .foregroundStyle(Ink.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -171,20 +174,22 @@ struct MetricDetailView: View {
     // MARK: - Ask
 
     private var askRow: some View {
+        // Carries the question with it. It used to open an empty composer,
+        // which made the row's own words a promise the next screen forgot.
         Button {
-            services.selectedTab = .insights
+            services.ask("What changed in my \(comparison.label.lowercased()) this week, and how sure can we be?")
         } label: {
             HStack(spacing: 11) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 16))
+                    .scaledFont(16)
                     .foregroundStyle(Ink.accent)
                 Text("Ask about this week's \(comparison.label.lowercased())")
-                    .font(.system(size: 14))
+                    .scaledFont(14)
                     .foregroundStyle(Ink.primary)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 0)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .scaledFont(12, weight: .semibold)
                     .foregroundStyle(Ink.faint)
             }
             .frame(minHeight: 52)

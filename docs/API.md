@@ -42,6 +42,7 @@ name) and most take `as_of`.
 | GET | `/v1/analysis/anomalies` | session/bearer | Sustained shifts from personal baseline |
 | GET | `/v1/analysis/correlations` | session/bearer | Pre-registered pairs, Holm-corrected |
 | GET | `/v1/analysis/patterns` | session/bearer | Weekend and weekday rhythms |
+| GET | `/v1/analysis/lifestyle` | session/bearer | Overnight vitals, sleep regularity, weekly activity, daylight, cardio fitness — each `null` without data |
 | GET/POST | `/v1/analysis/goals` | session/bearer | Targets and measured progress |
 | DELETE | `/v1/analysis/goals/<id>` | session/bearer | Remove a goal |
 

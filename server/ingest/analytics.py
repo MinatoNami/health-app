@@ -118,6 +118,19 @@ def display_name(slug: str) -> str:
     return " ".join(words)
 
 
+# Units as they read in a sentence. The wire keeps HealthKit's own — `count/min`
+# is precise and right for a payload — but "54 count/min" and "6,275 count" in
+# a sentence a person reads are the wire showing through.
+_SPOKEN_UNITS = {"count/min": "bpm", "degC": "°C", "count": ""}
+
+
+def spoken_unit(slug: str | None, unit: str) -> str:
+    """The unit to print after a number in prose."""
+    if slug == "respiratory_rate":
+        return "breaths/min"
+    return _SPOKEN_UNITS.get(unit, unit)
+
+
 class InvalidRange(ValueError):
     """A date the caller supplied could not be parsed."""
 
@@ -186,6 +199,35 @@ def metric_catalog() -> list[dict]:
     return catalog
 
 
+# HealthKit's percent unit is a fraction: blood oxygen of 97% arrives as 0.97,
+# body fat of 22% as 0.22. Stored as sent — the record is HealthKit's — and
+# converted here, on the way out of every series and reading, because every
+# reader downstream means a percentage: the snapshot prints "%", the dashboard
+# axis says "%", and safety's blood-oxygen floor is written as 92. Left as a
+# fraction, a normal 97% was 0.97 against that 92, and the model was told blood
+# oxygen "averaged 0.97 %".
+PERCENT_UNIT = "%"
+
+
+def as_percent(value: float | None) -> float | None:
+    """A HealthKit percent as the percentage people read.
+
+    Guarded per value, so a reading that somehow arrives as 97 already is not
+    turned into 9,700: no percentage these metrics carry is under 1.5%.
+    """
+    if value is None:
+        return None
+    return value * 100 if abs(value) <= 1.5 else value
+
+
+def _reading(value: float, unit: str | None, agg: str) -> float:
+    """A daily value in the units a reader expects. A count of samples is a
+    count whatever the samples measured."""
+    if unit == PERCENT_UNIT and agg != "count":
+        return as_percent(value)
+    return value
+
+
 # Which question a rollup row answers, keyed by the `aggregation` the phone
 # stamped on it. A cumulative type goes through `.cumulativeSum` and its rollup
 # is the day's total; a discrete type goes through `.discreteAverage` and its
@@ -218,12 +260,34 @@ def _rollup_series(metric: str, start, end, tz, agg: str) -> dict[date, float]:
         )
         .annotate(day=TruncDate("start", tzinfo=tz))
         .values("day")
-        .annotate(value=Max("value"))
+        .annotate(value=Max("value"), unit=Max("unit"))
     )
-    return {row["day"]: row["value"] for row in rows if row["value"] is not None}
+    return {
+        row["day"]: _reading(row["value"], row["unit"], agg)
+        for row in rows
+        if row["value"] is not None
+    }
+
+
+# Written once per night as a single sample spanning it, so `start` is the
+# evening before. Bucketed by `end` like sleep itself — filed under the morning
+# the night ended — or a night's wrist temperature lands on a different day
+# from the same night's hours asleep, and every comparison between the two is
+# quietly off by one. Neither type gets a daily rollup, so only the raw path
+# needs to know.
+END_ANCHORED = {
+    "apple_sleeping_wrist_temperature",
+    "apple_sleeping_breathing_disturbances",
+}
+
+
+def anchor_field(metric: str) -> str:
+    """Which timestamp files a sample of this metric under a day."""
+    return "end" if metric in END_ANCHORED else "start"
 
 
 def _raw_series(metric: str, start, end, tz, agg: str) -> dict[date, float]:
+    field = anchor_field(metric)
     aggregate = {
         "sum": Sum("value"),
         "avg": Avg("value"),
@@ -233,13 +297,17 @@ def _raw_series(metric: str, start, end, tz, agg: str) -> dict[date, float]:
     }[agg]
     rows = (
         live_records()
-        .filter(metric_slug=metric, start__gte=start, start__lt=end)
+        .filter(metric_slug=metric, **{f"{field}__gte": start, f"{field}__lt": end})
         .exclude(kind=Record.Kind.STATISTIC)  # never mix rollups into a raw sum
-        .annotate(day=TruncDate("start", tzinfo=tz))
+        .annotate(day=TruncDate(field, tzinfo=tz))
         .values("day")
-        .annotate(value=aggregate)
+        .annotate(value=aggregate, unit=Max("unit"))
     )
-    return {row["day"]: row["value"] for row in rows if row["value"] is not None}
+    return {
+        row["day"]: _reading(row["value"], row["unit"], agg)
+        for row in rows
+        if row["value"] is not None
+    }
 
 
 def daily_series(
@@ -367,7 +435,7 @@ def latest_values(metrics: list[str]) -> dict[str, dict]:
         )
         if row and row["value"] is not None:
             out[metric] = {
-                "value": row["value"],
+                "value": _reading(row["value"], row["unit"], "avg"),
                 "unit": row["unit"] or "",
                 "at": row["start"].isoformat() if row["start"] else None,
             }

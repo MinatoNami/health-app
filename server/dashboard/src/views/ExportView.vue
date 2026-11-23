@@ -75,8 +75,8 @@ loadCatalog().then(refreshPreview)
     <section class="card" style="margin-bottom: 16px">
       <h3 class="card-title">Export to CSV</h3>
       <p class="card-sub">
-        One row per record, with source and timezone preserved. Leave every metric
-        unticked to export all of them.
+        One row per record, with source and timezone preserved. Tick metrics to narrow
+        the export; with none ticked, every metric is included.
       </p>
 
       <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 10px">
@@ -84,7 +84,11 @@ loadCatalog().then(refreshPreview)
         <button class="chip" @click="toggleAll">
           {{ chosen.length ? 'Clear selection' : 'Select all' }}
         </button>
-        <span class="muted">{{ chosen.length || 'all' }} selected</span>
+        <span class="muted">
+          {{ chosen.length ? `${chosen.length} of ${catalog.length} metrics` : 'Every metric' }}
+        </span>
+        <span class="spacer" />
+        <span class="muted">Numbers are all-time sample counts.</span>
       </div>
 
       <div class="checks">

@@ -29,7 +29,13 @@ enum Ink {
     static let primary = Color(red: 0.957, green: 0.945, blue: 0.925)  // #F4F1EC
     static let secondary = Color(red: 0.788, green: 0.761, blue: 0.784) // #C9C2C8
     static let muted = Color(red: 0.604, green: 0.576, blue: 0.608)    // #9A939B
-    static let faint = Color(red: 0.400, green: 0.373, blue: 0.408)    // #665F68
+    /// The quietest text: section labels, timestamps, units, placeholders.
+    ///
+    /// Was #665F68, which measured 3.05:1 on `ground` and 2.76:1 on `field` —
+    /// under WCAG AA for text, on the colour that carries the "not medical
+    /// advice" line. #8A838C clears 4.5:1 on every surface here (5.12 ground,
+    /// 4.93 surface, 4.63 field) and still sits a clear step below `muted`.
+    static let faint = Color(red: 0.541, green: 0.514, blue: 0.549)    // #8A838C
 
     /// What you said, behind your own words.
     ///
@@ -75,13 +81,65 @@ extension Font {
     static let sectionLabel = Font.system(size: 11, weight: .semibold, design: .monospaced)
 }
 
+/// A fixed point size that follows Dynamic Type.
+///
+/// `.system(size:)` is a fixed size, and nearly every label in this app was set
+/// with one, so the text-size setting in iOS changed nothing outside the few
+/// system-styled lists. `@ScaledMetric` returns exactly the base size at the
+/// default setting — so at default nothing moves — and scales it with the text
+/// style nearest that size when the person asks for bigger (or smaller) text.
+private struct ScaledFont: ViewModifier {
+    @ScaledMetric private var size: CGFloat
+    private let weight: Font.Weight
+    private let design: Font.Design
+
+    init(_ base: CGFloat, weight: Font.Weight, design: Font.Design) {
+        _size = ScaledMetric(wrappedValue: base, relativeTo: Self.style(for: base))
+        self.weight = weight
+        self.design = design
+    }
+
+    func body(content: Content) -> some View {
+        content.font(.system(size: size, weight: weight, design: design))
+    }
+
+    /// The system text style whose default size is nearest, so a 13pt caption
+    /// grows like a caption and a 26pt lead like a title.
+    private static func style(for size: CGFloat) -> Font.TextStyle {
+        switch size {
+        case ..<11.75: return .caption2
+        case ..<12.75: return .caption
+        case ..<14: return .footnote
+        case ..<15.5: return .subheadline
+        case ..<16.5: return .callout
+        case ..<19: return .body
+        case ..<24: return .title2
+        case ..<30: return .title
+        default: return .largeTitle
+        }
+    }
+}
+
 extension View {
-    /// A section header: small, spaced, uppercase, and quiet.
+    /// The system face at `size`, scaled with Dynamic Type.
+    func scaledFont(_ size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> some View {
+        modifier(ScaledFont(size, weight: weight, design: design))
+    }
+
+    /// `Font.figure`, scaled with Dynamic Type.
+    func figureFont(_ size: CGFloat, weight: Font.Weight = .semibold) -> some View {
+        scaledFont(size, weight: weight, design: .monospaced)
+    }
+
+    /// A section header: small, spaced, uppercase, and quiet. Marked as a
+    /// header, so VoiceOver's headings rotor can jump between sections on every
+    /// screen.
     func sectionLabelStyle() -> some View {
-        self.font(.sectionLabel)
+        self.scaledFont(11, weight: .semibold, design: .monospaced)
             .tracking(1.1)
             .textCase(.uppercase)
             .foregroundStyle(Ink.faint)
+            .accessibilityAddTraits(.isHeader)
     }
 
     /// A card: surface fill, hairline border, 14pt corners.
@@ -106,10 +164,13 @@ extension View {
     func prompt(_ text: String, visible: Bool, size: CGFloat = 14) -> some View {
         background(alignment: .leading) {
             if visible {
+                // Hidden from VoiceOver: it is drawn decoration, and the field
+                // carries its own label.
                 Text(text)
-                    .font(.system(size: size))
+                    .scaledFont(size)
                     .foregroundStyle(Ink.faint)
                     .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
         }
     }
