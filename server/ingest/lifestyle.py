@@ -32,7 +32,7 @@ late meal, travel, hard training — and never a condition.
 import bisect
 import math
 import statistics
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from django.db.models import Q
 
@@ -426,6 +426,11 @@ def overnight_vitals(morning: date | None = None, tz_name: str | None = None) ->
 
 MINUTES_PER_DAY = 1440
 
+# Mask slot states. A wall-clock minute that did not happen — the hour skipped
+# when clocks go forward — is neither asleep nor awake, and a pair compares only
+# the minutes both days actually had.
+AWAKE, ASLEEP, NONEXISTENT = 0, 1, 2
+
 # A sleep-day with less than this recorded is far more often a watch taken off
 # partway through the night than a three-hour night, and counting it would
 # score every missing hour as awake. Regularity indices are robust to data
@@ -461,6 +466,37 @@ def _sri_label(value: float) -> str:
     return "irregular"
 
 
+def _wall_clock_pieces(start: datetime, end: datetime, tz) -> list[tuple[datetime, datetime]]:
+    """An interval as naive local wall-clock pieces, split where the offset changes.
+
+    Projecting the two ends separately is wrong exactly when a clock change
+    falls inside the interval. Across fall-back a 20-minute stage from 01:50 BST
+    to 01:10 GMT projects to 01:50 → 01:10 — reversed, and was dropped. Each
+    piece here keeps one offset, so its wall-clock length is its real length.
+    The repeated autumn hour is landed in twice; the skipped spring hour never,
+    because no real instant falls in it — `_sleep_masks` marks those slots as
+    not existing rather than leaving them to read as awake.
+    """
+    pieces = []
+    while start < end:
+        offset = start.astimezone(tz).utcoffset()
+        cut = end
+        if (end - timedelta(microseconds=1)).astimezone(tz).utcoffset() != offset:
+            # A transition inside the interval: find it to the second.
+            low, high = start, end
+            while high - low > timedelta(seconds=1):
+                middle = low + (high - low) / 2
+                if middle.astimezone(tz).utcoffset() == offset:
+                    low = middle
+                else:
+                    high = middle
+            cut = high
+        local = start.astimezone(tz).replace(tzinfo=None)
+        pieces.append((local, local + (cut - start)))
+        start = cut
+    return pieces
+
+
 def _sleep_masks(first_morning: date, last_morning: date, tz_name: str | None) -> dict[date, bytearray]:
     """A minute-by-minute asleep mask for each sleep-day.
 
@@ -490,17 +526,32 @@ def _sleep_masks(first_morning: date, last_morning: date, tz_name: str | None) -
         .values("start", "end")
     )
     for row in rows:
-        if not row["start"] or not row["end"]:
+        if not row["start"] or not row["end"] or row["end"] <= row["start"]:
             continue
-        start = max(row["start"].astimezone(tz).replace(tzinfo=None), origin)
-        end = min(row["end"].astimezone(tz).replace(tzinfo=None), horizon)
-        if end <= start:
+        for piece_start, piece_end in _wall_clock_pieces(row["start"], row["end"], tz):
+            start = max(piece_start, origin)
+            end = min(piece_end, horizon)
+            if end <= start:
+                continue
+            first = int((start - origin).total_seconds() // 60)
+            last = int(math.ceil((end - origin).total_seconds() / 60))
+            for minute in range(first, min(last, days * MINUTES_PER_DAY)):
+                day, offset = divmod(minute, MINUTES_PER_DAY)
+                masks[first_morning + timedelta(days=day)][offset] = ASLEEP
+
+    # The spring-forward hour. Only a day whose offset grows between its two
+    # noons can have one, so the minute-by-minute check runs twice a year.
+    for index in range(days):
+        day_start = origin + timedelta(days=index)
+        before = day_start.replace(tzinfo=tz).utcoffset()
+        after = (day_start + timedelta(days=1)).replace(tzinfo=tz).utcoffset()
+        if after is None or before is None or after <= before:
             continue
-        first = int((start - origin).total_seconds() // 60)
-        last = int(math.ceil((end - origin).total_seconds() / 60))
-        for minute in range(first, min(last, days * MINUTES_PER_DAY)):
-            day, offset = divmod(minute, MINUTES_PER_DAY)
-            masks[first_morning + timedelta(days=day)][offset] = 1
+        mask = masks[first_morning + timedelta(days=index)]
+        for offset in range(MINUTES_PER_DAY):
+            wall = day_start + timedelta(minutes=offset)
+            if wall.replace(tzinfo=tz).astimezone(timezone.utc).astimezone(tz).replace(tzinfo=None) != wall:
+                mask[offset] = NONEXISTENT
     return masks
 
 
@@ -509,8 +560,9 @@ def _pair_scores(masks: dict[date, bytearray], mornings: list[date]) -> list[flo
 
     Phillips et al. 2017: the share of minutes in the same state 24 hours apart,
     rescaled so 100 is the same schedule every day and 0 is no relationship.
-    Every pair compares 1,440 minutes, so the window's index is the mean of
-    these — which also gives a spread to grade a change against.
+    Each pair compares the minutes both days had — all 1,440, except across a
+    spring-forward change — and the window's index is the mean of the pairs,
+    which also gives a spread to grade a change against.
     """
     scores = []
     for morning in mornings:
@@ -518,10 +570,15 @@ def _pair_scores(masks: dict[date, bytearray], mornings: list[date]) -> list[flo
         yesterday = masks.get(morning - timedelta(days=1))
         if today is None or yesterday is None:
             continue
-        if sum(today) < MIN_ASLEEP_MINUTES or sum(yesterday) < MIN_ASLEEP_MINUTES:
+        if today.count(ASLEEP) < MIN_ASLEEP_MINUTES or yesterday.count(ASLEEP) < MIN_ASLEEP_MINUTES:
             continue
-        same = sum(1 for a, b in zip(today, yesterday) if a == b)
-        scores.append(200 * same / MINUTES_PER_DAY - 100)
+        valid = same = 0
+        for a, b in zip(today, yesterday):
+            if a == NONEXISTENT or b == NONEXISTENT:
+                continue
+            valid += 1
+            same += a == b
+        scores.append(200 * same / valid - 100)
     return scores
 
 

@@ -261,7 +261,10 @@ mortality better than sleep duration did, and adding duration explained nothing
 more. Computed on a minute mask per noon-to-noon sleep-day, so overlapping
 sources collapse naturally. Minutes are wall-clock, not elapsed time — across a
 DST change an unchanged schedule is an hour apart in elapsed time, and scored as
-irregular. Same windows as everything else: this week against
+irregular. An interval is split where the offset changes before it is placed,
+so a stage straddling the autumn change is not reversed and dropped, and the
+hour skipped in spring is marked as not existing: a pair compares only the
+minutes both days had. Same windows as everything else: this week against
 the four before, graded against the spread of the person's own day-to-day
 scores. A sleep-day with under three hours recorded is left out rather than
 scored as awake — regularity indices tolerate data missing at random and are

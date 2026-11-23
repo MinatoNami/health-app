@@ -231,6 +231,63 @@ class SleepRegularityTests(LifestyleTestCase):
         self.assertEqual(result["sri"], 100)
         self.assertEqual(result["baseline"]["sri"], 100)
 
+    def stage(self, start: datetime, end: datetime):
+        self.counter += 1
+        Record.objects.create(
+            id=f"stage-{self.counter}", device=self.device, batch=self.batch,
+            kind=Record.Kind.SLEEP, metric="HKCategoryTypeIdentifierSleepAnalysis",
+            metric_slug="sleep_analysis", value=3, start=start, end=end,
+            extra={"is_asleep": True, "duration_seconds": (end - start).total_seconds()},
+        )
+
+    def test_a_stage_straddling_fall_back_is_split_not_dropped(self):
+        """01:50 BST to 01:10 GMT is twenty real minutes, and projecting the two
+        ends separately reversed it. London fell back on 2026-10-25 at
+        02:00 BST, which is 01:00 UTC."""
+        london = ZoneInfo("Europe/London")
+        utc = ZoneInfo("UTC")
+        straddle_start = datetime(2026, 10, 25, 0, 50, tzinfo=utc)  # 01:50 BST
+        straddle_end = datetime(2026, 10, 25, 1, 10, tzinfo=utc)  # 01:10 GMT
+
+        # The only asleep stage covering 01:00–01:10 on the wall clock: falls
+        # asleep at 01:50 BST, wakes briefly at 01:10 GMT, sleeps from 01:40.
+        self.stage(straddle_start, straddle_end)
+        self.stage(datetime(2026, 10, 25, 1, 40, tzinfo=utc), datetime(2026, 10, 25, 7, 0, tzinfo=utc))
+        morning = date(2026, 10, 25)
+
+        mask = lifestyle._sleep_masks(morning, morning, "Europe/London")[morning]
+
+        five_past_one = 13 * 60 + 5  # 01:05, counted from noon the day before
+        self.assertEqual(mask[five_past_one], 1)
+        self.assertEqual(
+            lifestyle._wall_clock_pieces(straddle_start, straddle_end, london),
+            [
+                (datetime(2026, 10, 25, 1, 50), datetime(2026, 10, 25, 2, 0)),
+                (datetime(2026, 10, 25, 1, 0), datetime(2026, 10, 25, 1, 10)),
+            ],
+        )
+
+    def test_a_staged_night_across_fall_back_stays_regular(self):
+        """23:00–07:00 local every night, recorded in stages, with one stage
+        straddling the autumn change."""
+        london = ZoneInfo("Europe/London")
+        as_of = date(2026, 10, 28)
+        for offset in range(36):
+            morning = as_of - timedelta(days=offset)
+            bed = datetime.combine(morning - timedelta(days=1), time(23), tzinfo=london)
+            first_wake = datetime.combine(morning, time(1, 50), tzinfo=london)
+            # Twenty real minutes on — across the change on 25 October.
+            second_wake = first_wake + timedelta(minutes=20)
+            up = datetime.combine(morning, time(7), tzinfo=london)
+            self.stage(bed, first_wake)
+            self.stage(first_wake, second_wake)
+            self.stage(second_wake, up)
+
+        result = lifestyle.sleep_regularity(as_of=as_of, tz_name="Europe/London")
+
+        self.assertEqual(result["sri"], 100)
+        self.assertEqual(result["baseline"]["sri"], 100)
+
     def test_sleep_tool_carries_regularity(self):
         for offset in range(8):
             self.night(self.as_of - timedelta(days=offset))
