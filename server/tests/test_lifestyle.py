@@ -6,7 +6,8 @@ week of exercise counted from one known day, and a fitness "gain" inside the
 watch's own error are all numbers this layer must decline to state.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from django.core.cache import cache
 
@@ -118,6 +119,18 @@ class NoiseFloorTests(LifestyleTestCase):
         self.assertEqual(fitness["direction"], "rising")
         self.assertGreater(fitness["change_over_window"], 3.5)
 
+    def test_a_sub_met_shift_is_not_an_anomaly(self):
+        """anomalies() graded VO2 max against its tiny spread alone, so a daily
+        walker's one-point drift read as a sustained shift."""
+        for offset in range(7, 35):
+            self.vo2(self.as_of - timedelta(days=offset), 40.0 + (offset % 3) * 0.1)
+        for offset in range(7):
+            self.vo2(self.as_of - timedelta(days=offset), 41.0)
+
+        found = [a["metric_slug"] for a in health_analysis.anomalies()]
+
+        self.assertNotIn("vo2_max", found)
+
     def test_no_vo2_data_is_no_section(self):
         self.assertIsNone(lifestyle.cardio_fitness())
 
@@ -193,6 +206,30 @@ class SleepRegularityTests(LifestyleTestCase):
 
         self.assertLess(result["change"], 0)
         self.assertEqual(result["significance"], "notable")
+
+    def test_an_unchanged_schedule_stays_regular_across_a_clock_change(self):
+        """Minutes are wall-clock, not elapsed. London moved to BST on
+        2026-03-29: elapsed-time masks put every night after it an hour away
+        from every night before, and a perfectly regular sleeper read as
+        irregular."""
+        london = ZoneInfo("Europe/London")
+        as_of = date(2026, 4, 1)
+        for offset in range(36):
+            morning = as_of - timedelta(days=offset)
+            self.counter += 1
+            start = datetime.combine(morning - timedelta(days=1), time(23), tzinfo=london)
+            end = datetime.combine(morning, time(7), tzinfo=london)
+            Record.objects.create(
+                id=f"sleep-dst-{self.counter}", device=self.device, batch=self.batch,
+                kind=Record.Kind.SLEEP, metric="HKCategoryTypeIdentifierSleepAnalysis",
+                metric_slug="sleep_analysis", value=1, start=start, end=end,
+                extra={"is_asleep": True, "duration_seconds": (end - start).total_seconds()},
+            )
+
+        result = lifestyle.sleep_regularity(as_of=as_of, tz_name="Europe/London")
+
+        self.assertEqual(result["sri"], 100)
+        self.assertEqual(result["baseline"]["sri"], 100)
 
     def test_sleep_tool_carries_regularity(self):
         for offset in range(8):
@@ -331,6 +368,69 @@ class OvernightVitalsTests(LifestyleTestCase):
 
         self.assertEqual(result["status"], "no_recent_night")
         self.assertEqual(result["metrics"], [])
+
+    def test_a_nap_does_not_stretch_the_night_into_the_day(self):
+        """Every asleep interval used to be filed under the date it ended, so a
+        14:00 nap made the night run to mid-afternoon and averaged the
+        morning's run into sleeping heart rate."""
+        self.history()
+        self.last_night()
+        self.reading(self.today, 10, "heart_rate", 165)
+        self.counter += 1
+        Record.objects.create(
+            id=f"nap-{self.counter}", device=self.device, batch=self.batch,
+            kind=Record.Kind.SLEEP, metric="HKCategoryTypeIdentifierSleepAnalysis",
+            metric_slug="sleep_analysis", value=1,
+            start=at(self.today, 13), end=at(self.today, 14),
+            extra={"is_asleep": True, "duration_seconds": 3600},
+        )
+
+        metrics = self.by_key(lifestyle.overnight_vitals())
+
+        self.assertEqual(metrics["sleeping_heart_rate"]["value"], 53)
+        self.assertEqual(metrics["sleeping_heart_rate"]["status"], "within")
+        self.assertEqual(metrics["sleep_duration"]["value"], 8.0)
+
+    def test_two_sources_for_one_night_count_once(self):
+        """A watch and a sleep app both recording the night is eight hours,
+        not sixteen."""
+        self.history()
+        self.last_night()
+        self.night(self.today)  # the second source, same interval
+
+        sleep = self.by_key(lifestyle.overnight_vitals())["sleep_duration"]
+
+        self.assertEqual(sleep["value"], 8.0)
+        self.assertEqual(sleep["status"], "within")
+
+    def test_a_past_date_gets_its_own_night(self):
+        """`as_of` reaches the overnight check too, not only the weekly
+        sections beside it."""
+        self.history(nights=14, start=40)
+        as_of = self.today - timedelta(days=41)
+
+        result = lifestyle.signals(as_of=as_of)
+
+        self.assertEqual(result["overnight"]["morning_of"], (as_of + timedelta(days=1)).isoformat())
+        body = self.client.get(
+            f"/v1/analysis/lifestyle?as_of={as_of.isoformat()}", headers=self.auth()
+        ).json()
+        self.assertEqual(body["overnight"]["morning_of"], (as_of + timedelta(days=1)).isoformat())
+
+    def test_the_brief_does_not_repeat_an_older_nights_flag(self):
+        """Last night not uploaded yet: the check falls back to the night
+        before, which yesterday's brief already flagged."""
+        self.history(nights=14, start=2, temperature=False)
+        yesterday = self.today - timedelta(days=1)
+        self.night(yesterday)
+        self.reading(yesterday, 3, "heart_rate", 62)
+        self.reading(yesterday, 2, "heart_rate_variability_sdnn", 35, unit="ms")
+        self.reading(yesterday, 4, "respiratory_rate", 14.2)
+
+        self.assertEqual(lifestyle.overnight_vitals()["status"], "outside_range")
+        brief = health_analysis.daily_brief()
+
+        self.assertNotIn("overnight", brief["line"])
 
     def test_the_brief_leads_with_a_flag(self):
         self.history(temperature=False)

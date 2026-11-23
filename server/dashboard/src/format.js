@@ -88,6 +88,7 @@ export function localToday() {
 export function tickLabel(value, step) {
   // One notation per axis: switching from "8,000" to "10.0K" halfway up reads
   // as two different scales.
+  if (step >= 1_000_000) return tickLabel(value / 1_000_000, step / 1_000_000) + 'M'
   if (step >= 1000) return tickLabel(value / 1000, step / 1000) + 'K'
   const decimals = step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step) - 1e-9))
   return value.toLocaleString(undefined, {

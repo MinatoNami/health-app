@@ -131,9 +131,70 @@ POSSIBLE_FACTORS = [
 ]
 
 
+# Asleep stretches this close together are one sleep: waking for twenty minutes
+# at 03:00 does not end the night, and a nap four hours after waking is not part
+# of it.
+BLOCK_GAP = timedelta(minutes=60)
+
+# A main sleep shorter than this is far more often a nap, or a watch taken off
+# partway through the night, than a night — the same bar sleep regularity uses.
+MIN_NIGHT_SECONDS = 3 * 3600
+
+
+def _main_sleeps(first_morning: date, last_morning: date, tz_name: str | None) -> dict[date, dict]:
+    """Each morning's main sleep: its start, end and time asleep.
+
+    Not `health_analysis._sleep_nights`, which files every asleep interval under
+    the date it ends. That is right for "hours slept on Tuesday", and wrong for
+    a window to read overnight signals inside: a 14:00 nap stretched the night
+    to mid-afternoon and averaged the morning's heart rate — a run included —
+    into "sleeping heart rate".
+
+    Built in two passes. Overlapping intervals are merged first, so a night
+    two sources both recorded is counted once rather than twice. Then stretches
+    no more than `BLOCK_GAP` apart are joined into sleeps, and each morning
+    keeps the longest one ending that day.
+    """
+    tz = analytics.zone(tz_name)
+    # A night ending on `first_morning` can begin the evening before.
+    start, end = health_analysis._bounds(first_morning - timedelta(days=1), last_morning, tz_name)
+    rows = (
+        analytics.live_records()
+        .filter(kind=Record.Kind.SLEEP, extra__is_asleep=True, end__gt=start, start__lt=end)
+        .values_list("start", "end")
+    )
+    intervals = sorted((s, e) for s, e in rows if s and e and e > s)
+
+    segments: list[list[datetime]] = []
+    for s, e in intervals:
+        if segments and s <= segments[-1][1]:
+            segments[-1][1] = max(segments[-1][1], e)
+        else:
+            segments.append([s, e])
+
+    blocks: list[dict] = []
+    for s, e in segments:
+        if blocks and s - blocks[-1]["end"] <= BLOCK_GAP:
+            blocks[-1]["end"] = e
+            blocks[-1]["seconds"] += (e - s).total_seconds()
+        else:
+            blocks.append({"start": s, "end": e, "seconds": (e - s).total_seconds()})
+
+    main: dict[date, dict] = {}
+    for block in blocks:
+        if block["seconds"] < MIN_NIGHT_SECONDS:
+            continue
+        morning = block["end"].astimezone(tz).date()
+        if not (first_morning <= morning <= last_morning):
+            continue
+        if morning not in main or block["seconds"] > main[morning]["seconds"]:
+            main[morning] = block
+    return main
+
+
 def _night_windows(nights: dict[date, dict]) -> list[tuple[datetime, datetime, date]]:
     windows = [
-        (entry["first"] - NIGHT_SLACK, entry["last"] + NIGHT_SLACK, morning)
+        (entry["start"] - NIGHT_SLACK, entry["end"] + NIGHT_SLACK, morning)
         for morning, entry in nights.items()
     ]
     windows.sort()
@@ -240,7 +301,7 @@ def overnight_vitals(morning: date | None = None, tz_name: str | None = None) ->
 
     # Everything that could be the target night or its baseline, in one read.
     first_morning = morning - timedelta(days=RECENT_NIGHT_DAYS + BASELINE_DAYS)
-    nights = health_analysis._sleep_nights(first_morning, morning, tz_name)
+    nights = _main_sleeps(first_morning, morning, tz_name)
 
     recent = sorted(
         (m for m in nights if m >= morning - timedelta(days=RECENT_NIGHT_DAYS)), reverse=True
@@ -409,9 +470,12 @@ def _sleep_masks(first_morning: date, last_morning: date, tz_name: str | None) -
     minute is asleep if any of them says so.
     """
     tz = analytics.zone(tz_name)
-    origin = datetime.combine(first_morning - timedelta(days=1), datetime.min.time(), tzinfo=tz)
-    origin += timedelta(hours=12)
     days = (last_morning - first_morning).days + 1
+    # Minutes are counted on the local wall clock, not as elapsed time. The
+    # index asks "was this person asleep at 03:10", and across a DST change an
+    # unchanged 23:00–07:00 schedule is an hour apart in elapsed time — which
+    # scored a perfectly regular sleeper as irregular twice a year.
+    origin = datetime.combine(first_morning - timedelta(days=1), datetime.min.time()) + timedelta(hours=12)
     horizon = origin + timedelta(days=days)
 
     masks = {first_morning + timedelta(days=i): bytearray(MINUTES_PER_DAY) for i in range(days)}
@@ -420,16 +484,16 @@ def _sleep_masks(first_morning: date, last_morning: date, tz_name: str | None) -
         .filter(
             kind=Record.Kind.SLEEP,
             extra__is_asleep=True,
-            end__gt=origin,
-            start__lt=horizon,
+            end__gt=origin.replace(tzinfo=tz),
+            start__lt=horizon.replace(tzinfo=tz),
         )
         .values("start", "end")
     )
     for row in rows:
         if not row["start"] or not row["end"]:
             continue
-        start = max(row["start"], origin)
-        end = min(row["end"], horizon)
+        start = max(row["start"].astimezone(tz).replace(tzinfo=None), origin)
+        end = min(row["end"].astimezone(tz).replace(tzinfo=None), horizon)
         if end <= start:
             continue
         first = int((start - origin).total_seconds() // 60)
@@ -739,7 +803,10 @@ def signals(as_of: date | None = None, tz_name: str | None = None) -> dict:
     it is `None` rather than an empty shape, so a client can leave it off the
     screen instead of drawing a card that says nothing."""
     as_of = as_of or health_analysis.last_complete_day(tz_name)
-    overnight = overnight_vitals(tz_name=tz_name)
+    # The night that ended the morning after `as_of` — this morning by default,
+    # and the matching night when a past date was asked for, rather than today's
+    # night beside a month-old week.
+    overnight = overnight_vitals(morning=as_of + timedelta(days=1), tz_name=tz_name)
     regularity = sleep_regularity(as_of=as_of, tz_name=tz_name)
     return {
         "as_of": as_of.isoformat(),

@@ -240,18 +240,28 @@ once** — the rule Apple's Vitals app uses, because one metric out on one night
 is what a sensor does. A flag lists ordinary explanations (alcohol, a late meal,
 travel, hard training) and never names a condition.
 
+Each night is its **main sleep**: overlapping intervals merged first, so a
+night two sources recorded counts once, then stretches under an hour apart
+joined, and the longest one ending that morning kept. Filing every asleep
+interval under the date it ended let a 14:00 nap stretch the night to
+mid-afternoon and average the morning's heart rate into "sleeping heart rate".
+
 This is the one place a date of *today* appears in the layer, deliberately:
 windows end yesterday because today is a partial *day*, but last night ended
 this morning and is complete. The night is always named by date, so a phone
 that has not synced yet shows the previous night as the previous night. A flag
-leads the morning brief.
+leads the morning brief — but only for the night that ended that morning, so an
+unsynced phone does not get yesterday's alert again. `as_of` moves the night
+with it: the night checked is the one ending the morning after.
 
 **Sleep regularity.** The Sleep Regularity Index (Phillips 2017): the share of
 minutes in the same state — asleep or awake — 24 hours apart, scaled so 100 is
 an identical schedule every day. In 60,977 UK Biobank adults it predicted
 mortality better than sleep duration did, and adding duration explained nothing
 more. Computed on a minute mask per noon-to-noon sleep-day, so overlapping
-sources collapse naturally. Same windows as everything else: this week against
+sources collapse naturally. Minutes are wall-clock, not elapsed time — across a
+DST change an unchanged schedule is an hour apart in elapsed time, and scored as
+irregular. Same windows as everything else: this week against
 the four before, graded against the spread of the person's own day-to-day
 scores. A sleep-day with under three hours recorded is left out rather than
 scored as awake — regularity indices tolerate data missing at random and are
@@ -279,7 +289,7 @@ baseline comparison. VO2 max is a 90-day trend rather than a weekly one — the
 watch estimates it only on outdoor walks and runs — and a change under one MET
 (3.5 mL/kg/min) is reported as steady: that is the unit the outcome research is
 measured in, and inside the watch's own error. `MetricSpec.noise_floor` applies
-the same floor to the weekly comparison.
+the same floor to the weekly comparison and to anomalies.
 
 **Nightly samples are filed under the morning they end.** Wrist temperature and
 breathing disturbances arrive as one sample spanning the night, so bucketing by

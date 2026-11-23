@@ -1515,10 +1515,15 @@ def daily_brief(as_of: date | None = None, tz_name: str | None = None) -> dict:
     # morning, when nothing was passed.
     from . import lifestyle
 
-    night = lifestyle.overnight_vitals(
-        morning=date.fromisoformat(snap["as_of"]) + timedelta(days=1), tz_name=tz_name
+    morning = date.fromisoformat(snap["as_of"]) + timedelta(days=1)
+    night = lifestyle.overnight_vitals(morning=morning, tz_name=tz_name)
+    # Only the night that ended this morning. When it has not uploaded yet the
+    # check falls back to the night before — right for a card that names its
+    # night, wrong for a notification that does not: yesterday's alert would
+    # fire again about the same night.
+    overnight_flagged = (
+        night["status"] == "outside_range" and night["morning_of"] == morning.isoformat()
     )
-    overnight_flagged = night["status"] == "outside_range"
 
     movers = sorted(
         (
@@ -1710,6 +1715,11 @@ def anomalies(
 
         z = comparison["change"] / spread
         if abs(z) < threshold:
+            continue
+        # The same floor the weekly comparison applies. Apple's VO2 max is so
+        # smoothed that its spread is tiny, and a change far inside the
+        # watch's own error would otherwise read as a sustained shift.
+        if abs(comparison["change"]) < spec.noise_floor:
             continue
 
         # Sustained, not a single day: how many of the current window's days sit
